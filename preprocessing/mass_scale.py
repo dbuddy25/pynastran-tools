@@ -166,6 +166,9 @@ class MassScaleTool(ctk.CTkFrame):
         self._groups = []
         self._wtmass = 1.0
         self._divide_386 = ctk.BooleanVar(master=self, value=False)
+        self._hide_zero = ctk.BooleanVar(master=self, value=False)
+        self._scale_overrides = {}
+        self._visible_indices = []
         self._sheet = None
 
         self._build_ui()
@@ -206,6 +209,11 @@ class MassScaleTool(ctk.CTkFrame):
         ctk.CTkCheckBox(
             info_bar, text="Multiply displayed masses by 386.1",
             variable=self._divide_386,
+            command=self._refresh_display).pack(side=tk.LEFT, padx=(20, 0))
+
+        ctk.CTkCheckBox(
+            info_bar, text="Hide zero-mass files",
+            variable=self._hide_zero,
             command=self._refresh_display).pack(side=tk.LEFT, padx=(20, 0))
 
         # Table (tksheet)
@@ -276,6 +284,7 @@ class MassScaleTool(ctk.CTkFrame):
         self._wtmass_label.configure(
             text=f"WTMASS = {self._wtmass:.4e}")
 
+        self._scale_overrides.clear()
         self._compute_groups()
         self._populate_sheet()
 
@@ -393,103 +402,75 @@ class MassScaleTool(ctk.CTkFrame):
     def _populate_sheet(self):
         """Fill the tksheet with group data."""
         multiplier = 386.1 if self._divide_386.get() else 1.0
+        hide_zero = self._hide_zero.get()
 
         data = []
-        for group in self._groups:
-            m = group.original_mass * multiplier
+        self._visible_indices = []
+        for i, group in enumerate(self._groups):
+            if hide_zero and group.original_mass == 0.0:
+                continue
+            self._visible_indices.append(i)
+            scale = self._scale_overrides.get(i, 1.0)
+            orig = group.original_mass * multiplier
+            scaled = group.original_mass * scale * multiplier
+            delta = (scale - 1.0) * 100 if group.original_mass != 0 else 0.0
             data.append([
-                group.filename,
-                f"{m:.4e}",
-                "1.0000",
-                f"{m:.4e}",
-                "+0%",
+                group.filename, f"{orig:.4e}", f"{scale:.4f}",
+                f"{scaled:.4e}", f"{delta:+.0f}%",
             ])
 
-        # TOTAL row
-        total_mass = sum(g.original_mass for g in self._groups) * multiplier
-        data.append([
-            "TOTAL",
-            f"{total_mass:.4e}",
-            "",
-            f"{total_mass:.4e}",
-            "+0%",
-        ])
+        # TOTAL row (always uses ALL groups, including hidden)
+        total_orig = sum(g.original_mass for g in self._groups) * multiplier
+        total_scaled = sum(
+            g.original_mass * self._scale_overrides.get(i, 1.0)
+            for i, g in enumerate(self._groups)) * multiplier
+        total_delta = ((total_scaled / total_orig - 1.0) * 100
+                       if total_orig != 0 else 0.0)
+        data.append(["TOTAL", f"{total_orig:.4e}", "",
+                     f"{total_scaled:.4e}", f"{total_delta:+.0f}%"])
 
         self._sheet.set_sheet_data(data)
         self._sheet.readonly_columns(columns=[0, 1, 3, 4])
 
-        # Make the TOTAL row read-only (scale factor cell too)
-        total_row = len(self._groups)
+        total_row = len(self._visible_indices)
         self._sheet.readonly_cells(row=total_row, column=2)
+        self._sheet.highlight_rows(rows=[total_row], bg="gray30", fg="white")
 
-        # Highlight TOTAL row
-        self._sheet.highlight_rows(
-            rows=[total_row], bg="gray30", fg="white")
-
-        # Disable scale factor for groups with nothing scalable
-        for i, group in enumerate(self._groups):
+        for vi, gi in enumerate(self._visible_indices):
+            group = self._groups[gi]
             has_scalable = (group.material_ids or group.property_ids
                            or group.mass_elem_ids or group.conrod_ids
                            or group.original_mass != 0.0)
             if not has_scalable:
-                self._sheet.readonly_cells(row=i, column=2)
+                self._sheet.readonly_cells(row=vi, column=2)
+
+        # Gray out zero-mass rows (when visible)
+        if not hide_zero:
+            zero_rows = [vi for vi, gi in enumerate(self._visible_indices)
+                         if self._groups[gi].original_mass == 0.0]
+            if zero_rows:
+                self._sheet.highlight_rows(rows=zero_rows,
+                                           bg="gray25", fg="gray60")
 
         self._update_summary()
 
     # --------------------------------------------- Live preview
 
     def _on_sheet_modified(self, event=None):
-        """Called when user edits a cell in the sheet."""
+        """Called when user edits a cell — sync to _scale_overrides."""
+        for vi, gi in enumerate(self._visible_indices):
+            try:
+                val = float(self._sheet.get_cell_data(vi, 2))
+                self._scale_overrides[gi] = val
+            except (ValueError, TypeError):
+                pass
         self._refresh_display()
 
-    def _get_scale(self, row_idx):
-        """Read scale factor from sheet column 2."""
-        try:
-            val = self._sheet.get_cell_data(row_idx, 2)
-            return float(val)
-        except (ValueError, TypeError):
-            return 1.0
-
     def _refresh_display(self):
-        """Recompute all displayed values from current scale factors and toggle."""
+        """Rebuild the table from _scale_overrides."""
         if not self._groups:
             return
-
-        multiplier = 386.1 if self._divide_386.get() else 1.0
-        total_orig = 0.0
-        total_scaled = 0.0
-
-        for i, group in enumerate(self._groups):
-            scale = self._get_scale(i)
-            orig = group.original_mass
-            scaled = orig * scale
-            delta_pct = (scale - 1.0) * 100 if orig != 0 else 0.0
-
-            total_orig += orig
-            total_scaled += scaled
-
-            disp_orig = orig * multiplier
-            disp_scaled = scaled * multiplier
-
-            self._sheet.set_cell_data(i, 1, f"{disp_orig:.4e}")
-            self._sheet.set_cell_data(i, 3, f"{disp_scaled:.4e}")
-            self._sheet.set_cell_data(i, 4, f"{delta_pct:+.0f}%")
-
-        # TOTAL row
-        total_row = len(self._groups)
-        total_delta = (
-            (total_scaled / total_orig - 1.0) * 100
-            if total_orig != 0 else 0.0)
-
-        disp_total_orig = total_orig * multiplier
-        disp_total_scaled = total_scaled * multiplier
-
-        self._sheet.set_cell_data(total_row, 1, f"{disp_total_orig:.4e}")
-        self._sheet.set_cell_data(total_row, 3, f"{disp_total_scaled:.4e}")
-        self._sheet.set_cell_data(total_row, 4, f"{total_delta:+.0f}%")
-
-        self._sheet.redraw()
-        self._update_summary()
+        self._populate_sheet()
 
     def _update_summary(self):
         """Update the summary label at the bottom."""
@@ -500,7 +481,7 @@ class MassScaleTool(ctk.CTkFrame):
         multiplier = 386.1 if self._divide_386.get() else 1.0
         total_orig = sum(g.original_mass for g in self._groups)
         total_scaled = sum(
-            g.original_mass * self._get_scale(i)
+            g.original_mass * self._scale_overrides.get(i, 1.0)
             for i, g in enumerate(self._groups))
 
         disp_orig = total_orig * multiplier
@@ -515,9 +496,8 @@ class MassScaleTool(ctk.CTkFrame):
     def _reset_all(self):
         if not self._groups:
             return
-        for i in range(len(self._groups)):
-            self._sheet.set_cell_data(i, 2, "1.0000")
-        self._refresh_display()
+        self._scale_overrides.clear()
+        self._populate_sheet()
 
     # ----------------------------------------- Backup / restore originals
 
@@ -628,16 +608,7 @@ class MassScaleTool(ctk.CTkFrame):
 
         scales = {}
         for i, group in enumerate(self._groups):
-            raw = str(self._sheet.get_cell_data(i, 2)).strip()
-            try:
-                val = float(raw)
-            except (ValueError, TypeError):
-                messagebox.showerror(
-                    "Invalid scale factor",
-                    f"Scale factor for '{group.filename}' "
-                    f"is not a valid number: '{raw}'")
-                return
-            scales[group.ifile] = val
+            scales[group.ifile] = self._scale_overrides.get(i, 1.0)
 
         if all(v == 1.0 for v in scales.values()):
             if not messagebox.askyesno(
@@ -726,25 +697,20 @@ class MassScaleTool(ctk.CTkFrame):
             mapping = {}
             for af in active:
                 af_abs = os.path.abspath(af)
-                if af_abs in parser_abs:
+                # ONLY include scaled files in the write mapping
+                if af_abs in parser_abs and af_abs not in unscaled_abs:
                     idx = parser_abs.index(af_abs)
-                    src_fp = filenames[idx]
-                    dst = out_filenames[src_fp]
-                    # Skip unscaled files in overwrite mode (leave untouched)
-                    if (af_abs in unscaled_abs
-                            and af_abs == os.path.abspath(dst)):
-                        continue
-                    mapping[af] = dst
+                    mapping[af] = out_filenames[filenames[idx]]
             if mapping:
                 model.write_bdfs(mapping)
-                # Overwrite unscaled outputs with copies of originals
-                for fp in filenames:
-                    fp_abs = os.path.abspath(fp)
-                    if fp_abs in unscaled_abs:
-                        dst = out_filenames[fp]
-                        if fp_abs != os.path.abspath(dst):
-                            shutil.copy2(fp, dst)
-                return
+            # Copy unscaled files (skip if same path = overwrite mode)
+            for fp in filenames:
+                fp_abs = os.path.abspath(fp)
+                if fp_abs in unscaled_abs:
+                    dst = out_filenames[fp]
+                    if fp_abs != os.path.abspath(dst):
+                        shutil.copy2(fp, dst)
+            return
 
         main_out = out_filenames[filenames[0]]
         model.write_bdf(main_out)
