@@ -166,6 +166,7 @@ class MassScaleTool(ctk.CTkFrame):
 
         self.model = None
         self._bdf_path = None
+        self._file_structure_saved = False
         self._groups = []
         self._wtmass = 1.0
         self._divide_386 = ctk.BooleanVar(master=self, value=False)
@@ -262,6 +263,7 @@ class MassScaleTool(ctk.CTkFrame):
         model = None
 
         # Try with file-structure tracking first; fall back without it
+        file_structure_saved = False
         for save_structure in (True, False):
             try:
                 model = make_model(_CARDS_TO_SKIP)
@@ -270,6 +272,7 @@ class MassScaleTool(ctk.CTkFrame):
                 else:
                     model.read_bdf(path)
                 model.cross_reference()
+                file_structure_saved = save_structure
                 break
             except Exception:
                 model = None
@@ -284,6 +287,7 @@ class MassScaleTool(ctk.CTkFrame):
 
         self.model = model
         self._bdf_path = path
+        self._file_structure_saved = file_structure_saved
         self._wtmass = _read_wtmass(model)
 
         self._wtmass_label.configure(
@@ -698,7 +702,7 @@ class MassScaleTool(ctk.CTkFrame):
             return
 
         active = getattr(model, 'active_filenames', None)
-        if active and hasattr(model, 'write_bdfs'):
+        if active and hasattr(model, 'write_bdfs') and self._file_structure_saved:
             parser_abs = [os.path.abspath(fp) for fp in filenames]
             mapping = {}
             for af in active:

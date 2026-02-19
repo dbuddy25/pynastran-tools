@@ -1341,14 +1341,14 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._simple_sheet = tksheet.Sheet(
             self._table_container,
             headers=['File', 'Entity Types', 'Total Count',
-                     'New Start', 'New End'],
+                     'Cur Start', 'Cur End', 'New Start', 'New End'],
             show_x_scrollbar=True, show_y_scrollbar=True,
             height=300)
         self._simple_sheet.enable_bindings(
             "single_select", "column_select", "row_select",
             "arrowkeys", "edit_cell", "copy", "paste",
             "column_width_resize")
-        self._simple_sheet.readonly_columns(columns=[0, 1, 2])
+        self._simple_sheet.readonly_columns(columns=[0, 1, 2, 3, 4])
         self._simple_sheet.pack(fill=tk.BOTH, expand=True)
         self._simple_sheet.bind("<<SheetModified>>",
                                  self._on_simple_sheet_modified)
@@ -1420,19 +1420,16 @@ class RenumberIncludesTool(ctk.CTkFrame):
             except (ValueError, TypeError):
                 total_count = 0
             if total_count == 0:
-                data[i][3] = str(cursor)
-                data[i][4] = str(cursor)
+                data[i][5] = str(cursor)
+                data[i][6] = str(cursor)
                 cursor += 1
                 continue
 
-            raw_end = cursor + total_count - 1
-            if raw_end <= 0:
-                mag = 1
-            else:
-                mag = 10 ** int(math.floor(math.log10(raw_end)))
-            rounded_end = int(math.ceil(raw_end / mag) * mag)
-            data[i][3] = str(cursor)
-            data[i][4] = str(rounded_end)
+            count_mag = 10 ** max(1, int(math.floor(math.log10(max(total_count, 1)))))
+            rounded_count = int(math.ceil(total_count / count_mag) * count_mag)
+            rounded_end = cursor + rounded_count - 1
+            data[i][5] = str(cursor)
+            data[i][6] = str(rounded_end)
             cursor = rounded_end + 1
 
         self._simple_sheet.set_sheet_data(data)
@@ -1447,8 +1444,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
         # We just re-cascade all rows: each New Start = prev New End + 1
         for i in range(1, len(data)):
             try:
-                prev_end = int(str(data[i - 1][4]).strip())
-                data[i][3] = str(prev_end + 1)
+                prev_end = int(str(data[i - 1][6]).strip())
+                data[i][5] = str(prev_end + 1)
             except (ValueError, TypeError):
                 pass
 
@@ -1583,6 +1580,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
                 str(total_count),
                 str(overall_min),
                 str(overall_max),
+                str(overall_min),
+                str(overall_max),
             ])
             self._simple_row_map.append((filepath, etypes_present))
 
@@ -1607,8 +1606,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
                 break
             row = data[i]
             try:
-                start = int(str(row[3]).strip())
-                end = int(str(row[4]).strip())
+                start = int(str(row[5]).strip())
+                end = int(str(row[6]).strip())
             except (ValueError, TypeError):
                 messagebox.showerror(
                     "Invalid Range",
@@ -1763,8 +1762,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
                 break
             row = simple_data[i]
             try:
-                s = int(str(row[3]).strip())
-                e = int(str(row[4]).strip())
+                s = int(str(row[5]).strip())
+                e = int(str(row[6]).strip())
                 simple_ranges[os.path.basename(filepath)] = [s, e]
             except (ValueError, TypeError):
                 pass
@@ -1802,8 +1801,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
                 fname = os.path.basename(filepath)
                 if fname in simple_cfg:
                     s, e = simple_cfg[fname]
-                    simple_data[i][3] = str(s)
-                    simple_data[i][4] = str(e)
+                    simple_data[i][5] = str(s)
+                    simple_data[i][6] = str(e)
                     applied += 1
             self._simple_sheet.set_sheet_data(simple_data)
 
