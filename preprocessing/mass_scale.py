@@ -1,0 +1,732 @@
+#!/usr/bin/env python3
+"""BDF Mass Scaling Tool.
+
+Standalone GUI that reads a Nastran BDF/DAT file (with includes), shows
+mass breakdown by include file, lets the user apply per-group scale factors
+(scaling material density, NSM, CONM2 mass & inertia), previews the effect
+live, and writes the scaled model back preserving the include file structure.
+
+Usage:
+    python mass_scale.py
+"""
+import copy
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from collections import namedtuple, defaultdict
+
+import customtkinter as ctk
+from tksheet import Sheet
+
+from bdf_utils import IncludeFileParser, make_model
+
+
+GroupInfo = namedtuple('GroupInfo', [
+    'ifile', 'filename', 'filepath', 'original_mass',
+    'material_ids', 'property_ids', 'mass_elem_ids', 'conrod_ids',
+])
+
+_NSM_PROP_TYPES = frozenset((
+    'PSHELL', 'PCOMP', 'PCOMPG', 'PBAR', 'PBARL',
+    'PBEAM', 'PBEAML', 'PROD',
+))
+
+_RHO_MAT_TYPES = frozenset(('MAT1', 'MAT8', 'MAT9'))
+
+# Cards irrelevant for mass calculations — safe to skip.
+# They are stored as rejected card text and written back out unchanged.
+_CARDS_TO_SKIP = [
+    'BCPROPS', 'BCTPARM', 'BSURF', 'BSURFS', 'BCPARA', 'BCTSET',
+    'BCONP', 'BFRIC', 'BLSEG', 'BOUTPUT', 'BGPARM', 'BGSET',
+    'BEDGE', 'BCRPARA', 'BCHANGE', 'BCBODY', 'BCAUTOP',
+]
+
+
+def _read_wtmass(model):
+    """Read WTMASS parameter from model; default 1.0."""
+    if 'WTMASS' not in model.params:
+        return 1.0
+    param = model.params['WTMASS']
+    try:
+        if hasattr(param, 'values') and param.values:
+            return float(param.values[0])
+    except (ValueError, TypeError, IndexError):
+        pass
+    return 1.0
+
+
+# ---------------------------------------------------------------- Save dialog
+
+class SaveModeDialog(ctk.CTkToplevel):
+    """Modal dialog for choosing how to save the scaled BDF."""
+
+    def __init__(self, parent, original_path):
+        super().__init__(parent)
+        self.title("Write Scaled BDF")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result = None
+        self._original_path = original_path
+        self._mode = tk.StringVar(value='suffix')
+        self._suffix = tk.StringVar(value='_scaled')
+        self._outdir = tk.StringVar()
+
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _build_ui(self):
+        pad = {'padx': 10, 'pady': 4}
+
+        f1 = ctk.CTkFrame(self, fg_color="transparent")
+        f1.pack(fill=tk.X, **pad)
+        ctk.CTkRadioButton(
+            f1, text="Add suffix to filenames:",
+            variable=self._mode, value='suffix').pack(side=tk.LEFT)
+        ctk.CTkEntry(f1, textvariable=self._suffix, width=120).pack(
+            side=tk.LEFT, padx=5)
+
+        f2 = ctk.CTkFrame(self, fg_color="transparent")
+        f2.pack(fill=tk.X, **pad)
+        ctk.CTkRadioButton(
+            f2, text="Choose output directory:",
+            variable=self._mode, value='directory').pack(side=tk.LEFT)
+        ctk.CTkEntry(f2, textvariable=self._outdir, width=220).pack(
+            side=tk.LEFT, padx=5)
+        ctk.CTkButton(f2, text="Browse\u2026", width=80,
+                      command=self._browse_dir).pack(side=tk.LEFT)
+
+        f3 = ctk.CTkFrame(self, fg_color="transparent")
+        f3.pack(fill=tk.X, **pad)
+        ctk.CTkRadioButton(
+            f3, text="Overwrite original files",
+            variable=self._mode, value='overwrite').pack(side=tk.LEFT)
+
+        bf = ctk.CTkFrame(self, fg_color="transparent")
+        bf.pack(fill=tk.X, padx=10, pady=10)
+        ctk.CTkButton(bf, text="Write", command=self._ok).pack(
+            side=tk.RIGHT, padx=5)
+        ctk.CTkButton(bf, text="Cancel", command=self._cancel).pack(
+            side=tk.RIGHT)
+
+    def _browse_dir(self):
+        d = filedialog.askdirectory(title="Select output directory")
+        if d:
+            self._outdir.set(d)
+            self._mode.set('directory')
+
+    def _ok(self):
+        mode = self._mode.get()
+
+        if mode == 'suffix':
+            suffix = self._suffix.get().strip()
+            if not suffix:
+                messagebox.showwarning(
+                    "No suffix", "Please enter a suffix.", parent=self)
+                return
+            self.result = ('suffix', suffix)
+        elif mode == 'directory':
+            outdir = self._outdir.get().strip()
+            if not outdir:
+                messagebox.showwarning(
+                    "No directory",
+                    "Please choose an output directory.", parent=self)
+                return
+            self.result = ('directory', outdir)
+        elif mode == 'overwrite':
+            if not messagebox.askyesno(
+                    "Confirm overwrite",
+                    "This will overwrite the original BDF files.\n\n"
+                    "Are you sure?",
+                    parent=self):
+                return
+            self.result = ('overwrite', None)
+
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
+# ---------------------------------------------------------------- Main app
+
+class MassScaleTool(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("BDF Mass Scaling Tool")
+        self.geometry("1050x500")
+
+        self.model = None
+        self._bdf_path = None
+        self._groups = []
+        self._wtmass = 1.0
+        self._divide_386 = ctk.BooleanVar(value=False)
+        self._sheet = None
+
+        self._build_ui()
+
+    # ------------------------------------------------------------------ UI
+
+    def _build_ui(self):
+        # Toolbar
+        toolbar = ctk.CTkFrame(self, fg_color="transparent")
+        toolbar.pack(fill=tk.X, padx=5, pady=(5, 0))
+
+        ctk.CTkButton(
+            toolbar, text="Open BDF\u2026", width=100,
+            command=self._open_bdf).pack(side=tk.LEFT)
+
+        self._path_label = ctk.CTkLabel(
+            toolbar, text="No BDF loaded", text_color="gray")
+        self._path_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        self._write_btn = ctk.CTkButton(
+            toolbar, text="Write Scaled BDF\u2026", width=140,
+            command=self._write_scaled, state=tk.DISABLED)
+        self._write_btn.pack(side=tk.RIGHT, padx=(0, 5))
+
+        self._reset_btn = ctk.CTkButton(
+            toolbar, text="Reset All to 1.0", width=120,
+            command=self._reset_all, state=tk.DISABLED)
+        self._reset_btn.pack(side=tk.RIGHT)
+
+        # Info bar (WTMASS + /386.1 toggle)
+        info_bar = ctk.CTkFrame(self, fg_color="transparent")
+        info_bar.pack(fill=tk.X, padx=10, pady=(4, 0))
+
+        self._wtmass_label = ctk.CTkLabel(
+            info_bar, text="WTMASS = 1.0000e+00")
+        self._wtmass_label.pack(side=tk.LEFT)
+
+        ctk.CTkCheckBox(
+            info_bar, text="Divide displayed masses by 386.1",
+            variable=self._divide_386,
+            command=self._refresh_display).pack(side=tk.LEFT, padx=(20, 0))
+
+        # Table (tksheet)
+        self._sheet = Sheet(
+            self,
+            headers=["File Name", "Original Mass", "Scale Factor",
+                     "Scaled Mass", "Delta"],
+            show_top_left=False,
+            show_row_index=False,
+            height=350,
+        )
+        self._sheet.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._sheet.enable_bindings(
+            "single_select", "edit_cell", "copy", "paste",
+            "arrowkeys", "column_width_resize",
+        )
+        # Only column 2 (Scale Factor) is editable
+        self._sheet.readonly_columns(columns=[0, 1, 3, 4])
+        self._sheet.bind("<<SheetModified>>", self._on_sheet_modified)
+
+        # Summary bar
+        self._summary_label = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(weight="bold"))
+        self._summary_label.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+    # ---------------------------------------------------------- BDF loading
+
+    def _open_bdf(self):
+        path = filedialog.askopenfilename(
+            title="Open BDF File",
+            filetypes=[("BDF files", "*.bdf *.dat *.nas *.pch"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+
+        self._path_label.configure(
+            text=f"Loading {os.path.basename(path)}\u2026",
+            text_color=("gray10", "gray90"))
+        self.update_idletasks()
+
+        model = None
+
+        # Try with file-structure tracking first; fall back without it
+        for save_structure in (True, False):
+            try:
+                model = make_model(_CARDS_TO_SKIP)
+                if save_structure:
+                    model.read_bdf(path, save_file_structure=True)
+                else:
+                    model.read_bdf(path)
+                model.cross_reference()
+                break
+            except Exception:
+                model = None
+                if not save_structure:
+                    import traceback
+                    messagebox.showerror(
+                        "Error",
+                        f"Could not read BDF:\n{traceback.format_exc()}")
+                    self._path_label.configure(
+                        text="Load failed", text_color="red")
+                    return
+
+        self.model = model
+        self._bdf_path = path
+        self._wtmass = _read_wtmass(model)
+
+        self._wtmass_label.configure(
+            text=f"WTMASS = {self._wtmass:.4e}")
+
+        self._compute_groups()
+        self._populate_sheet()
+
+        self._path_label.configure(
+            text=path,
+            text_color=("gray10", "gray90"))
+        self._write_btn.configure(state=tk.NORMAL)
+        self._reset_btn.configure(state=tk.NORMAL)
+
+    # ------------------------------------------------- Mass grouping
+
+    def _build_ifile_lookup(self):
+        """Use IncludeFileParser to map card IDs to file indices."""
+        parser = IncludeFileParser()
+        parser.parse(self._bdf_path)
+        filenames = parser.all_files
+
+        eid_to_ifile = {}
+        mid_to_ifile = {}
+        pid_to_ifile = {}
+
+        for idx, filepath in enumerate(filenames):
+            ids_by_type = parser.file_ids.get(filepath, {})
+            for eid in ids_by_type.get('eid', set()):
+                eid_to_ifile[eid] = idx
+            for mid in ids_by_type.get('mid', set()):
+                mid_to_ifile[mid] = idx
+            for pid in ids_by_type.get('pid', set()):
+                pid_to_ifile[pid] = idx
+
+        return filenames, eid_to_ifile, mid_to_ifile, pid_to_ifile
+
+    def _compute_groups(self):
+        """Build mass breakdown grouped by include file."""
+        model = self.model
+
+        filenames, eid_to_ifile, mid_to_ifile, pid_to_ifile = \
+            self._build_ifile_lookup()
+        self._include_filenames = filenames
+
+        mass_by_ifile = defaultdict(float)
+        mats_by_ifile = defaultdict(set)
+        props_by_ifile = defaultdict(set)
+        mass_elems_by_ifile = defaultdict(set)
+        conrods_by_ifile = defaultdict(set)
+
+        for eid, elem in model.elements.items():
+            ifile = eid_to_ifile.get(eid, 0)
+            try:
+                mass_by_ifile[ifile] += elem.Mass()
+            except Exception:
+                pass
+            if elem.type == 'CONROD':
+                conrods_by_ifile[ifile].add(eid)
+
+        for eid, mass_elem in model.masses.items():
+            ifile = eid_to_ifile.get(eid, 0)
+            try:
+                if mass_elem.type == 'CONM2':
+                    mass_by_ifile[ifile] += mass_elem.mass
+                else:
+                    mass_by_ifile[ifile] += mass_elem.Mass()
+            except Exception:
+                pass
+            mass_elems_by_ifile[ifile].add(eid)
+
+        for mid, mat in model.materials.items():
+            if mat.type in _RHO_MAT_TYPES:
+                rho = getattr(mat, 'rho', None)
+                if rho is not None and rho != 0.0:
+                    ifile = mid_to_ifile.get(mid, 0)
+                    mats_by_ifile[ifile].add(mid)
+
+        for pid, prop in model.properties.items():
+            if prop.type in _NSM_PROP_TYPES:
+                nsm = getattr(prop, 'nsm', None)
+                if nsm is not None and nsm != 0.0:
+                    ifile = pid_to_ifile.get(pid, 0)
+                    props_by_ifile[ifile].add(pid)
+
+        all_ifiles = set(range(len(filenames)))
+        for d in (mass_by_ifile, mats_by_ifile, props_by_ifile,
+                  mass_elems_by_ifile, conrods_by_ifile):
+            all_ifiles.update(d.keys())
+
+        self._groups = []
+        for ifile in sorted(all_ifiles):
+            if ifile < len(filenames):
+                filepath = filenames[ifile]
+                filename = os.path.basename(filepath)
+            else:
+                filepath = f"<unknown file {ifile}>"
+                filename = filepath
+
+            self._groups.append(GroupInfo(
+                ifile=ifile,
+                filename=filename,
+                filepath=filepath,
+                original_mass=mass_by_ifile.get(ifile, 0.0),
+                material_ids=mats_by_ifile.get(ifile, set()),
+                property_ids=props_by_ifile.get(ifile, set()),
+                mass_elem_ids=mass_elems_by_ifile.get(ifile, set()),
+                conrod_ids=conrods_by_ifile.get(ifile, set()),
+            ))
+
+    # ------------------------------------------------- Table population
+    #
+    # Columns:
+    #   0  File Name
+    #   1  Original Mass
+    #   2  Scale Factor  (editable)
+    #   3  Scaled Mass
+    #   4  Delta
+
+    def _populate_sheet(self):
+        """Fill the tksheet with group data."""
+        divisor = 386.1 if self._divide_386.get() else 1.0
+
+        data = []
+        for group in self._groups:
+            m = group.original_mass / divisor
+            data.append([
+                group.filename,
+                f"{m:.4e}",
+                "1.0000",
+                f"{m:.4e}",
+                "+0%",
+            ])
+
+        # TOTAL row
+        total_mass = sum(g.original_mass for g in self._groups) / divisor
+        data.append([
+            "TOTAL",
+            f"{total_mass:.4e}",
+            "",
+            f"{total_mass:.4e}",
+            "+0%",
+        ])
+
+        self._sheet.set_sheet_data(data)
+        self._sheet.readonly_columns(columns=[0, 1, 3, 4])
+
+        # Make the TOTAL row read-only (scale factor cell too)
+        total_row = len(self._groups)
+        self._sheet.readonly_cells(row=total_row, column=2)
+
+        # Highlight TOTAL row
+        self._sheet.highlight_rows(
+            rows=[total_row], bg="gray30", fg="white")
+
+        # Disable scale factor for groups with nothing scalable
+        for i, group in enumerate(self._groups):
+            has_scalable = (group.material_ids or group.property_ids
+                           or group.mass_elem_ids or group.conrod_ids
+                           or group.original_mass != 0.0)
+            if not has_scalable:
+                self._sheet.readonly_cells(row=i, column=2)
+
+        self._update_summary()
+
+    # --------------------------------------------- Live preview
+
+    def _on_sheet_modified(self, event=None):
+        """Called when user edits a cell in the sheet."""
+        self._refresh_display()
+
+    def _get_scale(self, row_idx):
+        """Read scale factor from sheet column 2."""
+        try:
+            val = self._sheet.get_cell_data(row_idx, 2)
+            return float(val)
+        except (ValueError, TypeError):
+            return 1.0
+
+    def _refresh_display(self):
+        """Recompute all displayed values from current scale factors and toggle."""
+        if not self._groups:
+            return
+
+        divisor = 386.1 if self._divide_386.get() else 1.0
+        total_orig = 0.0
+        total_scaled = 0.0
+
+        for i, group in enumerate(self._groups):
+            scale = self._get_scale(i)
+            orig = group.original_mass
+            scaled = orig * scale
+            delta_pct = (scale - 1.0) * 100 if orig != 0 else 0.0
+
+            total_orig += orig
+            total_scaled += scaled
+
+            disp_orig = orig / divisor
+            disp_scaled = scaled / divisor
+
+            self._sheet.set_cell_data(i, 1, f"{disp_orig:.4e}")
+            self._sheet.set_cell_data(i, 3, f"{disp_scaled:.4e}")
+            self._sheet.set_cell_data(i, 4, f"{delta_pct:+.0f}%")
+
+        # TOTAL row
+        total_row = len(self._groups)
+        total_delta = (
+            (total_scaled / total_orig - 1.0) * 100
+            if total_orig != 0 else 0.0)
+
+        disp_total_orig = total_orig / divisor
+        disp_total_scaled = total_scaled / divisor
+
+        self._sheet.set_cell_data(total_row, 1, f"{disp_total_orig:.4e}")
+        self._sheet.set_cell_data(total_row, 3, f"{disp_total_scaled:.4e}")
+        self._sheet.set_cell_data(total_row, 4, f"{total_delta:+.0f}%")
+
+        self._sheet.redraw()
+        self._update_summary()
+
+    def _update_summary(self):
+        """Update the summary label at the bottom."""
+        if not self._groups:
+            self._summary_label.configure(text="")
+            return
+
+        divisor = 386.1 if self._divide_386.get() else 1.0
+        total_orig = sum(g.original_mass for g in self._groups)
+        total_scaled = sum(
+            g.original_mass * self._get_scale(i)
+            for i, g in enumerate(self._groups))
+
+        disp_orig = total_orig / divisor
+        disp_scaled = total_scaled / divisor
+
+        self._summary_label.configure(
+            text=f"Total: {disp_scaled:.4e}  "
+                 f"(original: {disp_orig:.4e})")
+
+    # ------------------------------------------------ Reset
+
+    def _reset_all(self):
+        if not self._groups:
+            return
+        for i in range(len(self._groups)):
+            self._sheet.set_cell_data(i, 2, "1.0000")
+        self._refresh_display()
+
+    # ----------------------------------------- Backup / restore originals
+
+    def _capture_originals(self):
+        model = self.model
+        originals = {}
+
+        for mid, mat in model.materials.items():
+            if mat.type in _RHO_MAT_TYPES:
+                originals[('mat', mid)] = getattr(mat, 'rho', None)
+
+        for pid, prop in model.properties.items():
+            if prop.type in _NSM_PROP_TYPES:
+                originals[('prop', pid)] = getattr(prop, 'nsm', None)
+
+        for eid, elem in model.elements.items():
+            if elem.type == 'CONROD':
+                originals[('conrod', eid)] = getattr(elem, 'nsm', None)
+
+        for eid, mass_elem in model.masses.items():
+            if mass_elem.type == 'CONM2':
+                I = mass_elem.I
+                I_copy = list(I) if I is not None else None
+                originals[('conm2', eid)] = (mass_elem.mass, I_copy)
+            elif mass_elem.type == 'CONM1':
+                mm = getattr(mass_elem, 'mass_matrix', None)
+                originals[('conm1', eid)] = copy.deepcopy(mm)
+            elif mass_elem.type in ('CMASS1', 'CMASS2'):
+                originals[('cmass', eid)] = getattr(mass_elem, 'mass', None)
+
+        return originals
+
+    def _restore_originals(self, originals):
+        model = self.model
+
+        for key, val in originals.items():
+            kind, card_id = key
+
+            if kind == 'mat':
+                model.materials[card_id].rho = val
+            elif kind == 'prop':
+                model.properties[card_id].nsm = val
+            elif kind == 'conrod':
+                model.elements[card_id].nsm = val
+            elif kind == 'conm2':
+                mass_val, I_copy = val
+                model.masses[card_id].mass = mass_val
+                if I_copy is not None:
+                    model.masses[card_id].I = list(I_copy)
+            elif kind == 'conm1':
+                if val is not None:
+                    model.masses[card_id].mass_matrix = copy.deepcopy(val)
+            elif kind == 'cmass':
+                model.masses[card_id].mass = val
+
+    # --------------------------------------------- Apply scale factors
+
+    def _apply_scale_factors_inplace(self, scale_by_ifile):
+        model = self.model
+
+        for group in self._groups:
+            scale = scale_by_ifile.get(group.ifile, 1.0)
+            if scale == 1.0:
+                continue
+
+            for mid in group.material_ids:
+                mat = model.materials[mid]
+                rho = getattr(mat, 'rho', None)
+                if rho is not None and rho != 0.0:
+                    mat.rho = rho * scale
+
+            for pid in group.property_ids:
+                prop = model.properties[pid]
+                nsm = getattr(prop, 'nsm', None)
+                if nsm is not None and nsm != 0.0:
+                    prop.nsm = nsm * scale
+
+            for eid in group.conrod_ids:
+                elem = model.elements[eid]
+                nsm = getattr(elem, 'nsm', None)
+                if nsm is not None and nsm != 0.0:
+                    elem.nsm = nsm * scale
+
+            for eid in group.mass_elem_ids:
+                mass_elem = model.masses[eid]
+                if mass_elem.type == 'CONM2':
+                    mass_elem.mass *= scale
+                    if mass_elem.I is not None:
+                        mass_elem.I = [x * scale for x in mass_elem.I]
+                elif mass_elem.type == 'CONM1':
+                    mm = getattr(mass_elem, 'mass_matrix', None)
+                    if mm is not None:
+                        try:
+                            mass_elem.mass_matrix = [
+                                [x * scale for x in row] for row in mm]
+                        except TypeError:
+                            mass_elem.mass_matrix = mm * scale
+                elif mass_elem.type in ('CMASS1', 'CMASS2'):
+                    m = getattr(mass_elem, 'mass', None)
+                    if m is not None:
+                        mass_elem.mass = m * scale
+
+    # ------------------------------------------------ Write output
+
+    def _write_scaled(self):
+        if self.model is None:
+            return
+
+        scales = {}
+        for i, group in enumerate(self._groups):
+            raw = str(self._sheet.get_cell_data(i, 2)).strip()
+            try:
+                val = float(raw)
+            except (ValueError, TypeError):
+                messagebox.showerror(
+                    "Invalid scale factor",
+                    f"Scale factor for '{group.filename}' "
+                    f"is not a valid number: '{raw}'")
+                return
+            scales[group.ifile] = val
+
+        if all(v == 1.0 for v in scales.values()):
+            if not messagebox.askyesno(
+                    "No scaling",
+                    "All scale factors are 1.0 (no changes).\n\n"
+                    "Write anyway?"):
+                return
+
+        dlg = SaveModeDialog(self, self._bdf_path)
+        if dlg.result is None:
+            return
+        mode, param = dlg.result
+
+        model = self.model
+        filenames = getattr(self, '_include_filenames', None)
+        if not filenames:
+            filenames = [self._bdf_path]
+
+        out_filenames = {}
+        if mode == 'suffix':
+            for fp in filenames:
+                base, ext = os.path.splitext(fp)
+                out_filenames[fp] = f"{base}{param}{ext}"
+        elif mode == 'directory':
+            main_dir = os.path.dirname(filenames[0])
+            for fp in filenames:
+                rel = os.path.relpath(fp, main_dir)
+                out_filenames[fp] = os.path.join(param, rel)
+        elif mode == 'overwrite':
+            for fp in filenames:
+                out_filenames[fp] = fp
+
+        for out_path in out_filenames.values():
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+
+        main_out = out_filenames[filenames[0]]
+
+        originals = self._capture_originals()
+        try:
+            self._apply_scale_factors_inplace(scales)
+            model.uncross_reference()
+
+            if len(filenames) > 1:
+                self._write_multi_file(model, filenames, out_filenames)
+            else:
+                model.write_bdf(main_out)
+
+        except Exception as exc:
+            messagebox.showerror("Write failed", str(exc))
+            return
+        finally:
+            self._restore_originals(originals)
+            try:
+                model.cross_reference()
+            except Exception:
+                pass
+
+        messagebox.showinfo(
+            "Success", f"Scaled BDF written to:\n{main_out}")
+
+    def _write_multi_file(self, model, filenames, out_filenames):
+        out_list = [out_filenames[fp] for fp in filenames]
+
+        if hasattr(model, 'write_bdfs'):
+            try:
+                model.write_bdfs(out_list)
+                return
+            except TypeError:
+                try:
+                    mapping = dict(zip(filenames, out_list))
+                    model.write_bdfs(mapping)
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        main_out = out_list[0]
+        model.write_bdf(main_out)
+        messagebox.showinfo(
+            "Note",
+            "write_bdfs not available in this pyNastran version.\n"
+            "Wrote single consolidated BDF file instead.")
+
+
+def main():
+    app = MassScaleTool()
+    app.mainloop()
+
+
+if __name__ == '__main__':
+    main()
