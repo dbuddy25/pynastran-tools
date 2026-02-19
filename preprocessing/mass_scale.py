@@ -194,7 +194,7 @@ class MassScaleTool(ctk.CTkFrame):
             command=self._reset_all, state=tk.DISABLED)
         self._reset_btn.pack(side=tk.RIGHT)
 
-        # Info bar (WTMASS + /386.1 toggle)
+        # Info bar (WTMASS + *386.1 toggle)
         info_bar = ctk.CTkFrame(self, fg_color="transparent")
         info_bar.pack(fill=tk.X, padx=10, pady=(4, 0))
 
@@ -203,7 +203,7 @@ class MassScaleTool(ctk.CTkFrame):
         self._wtmass_label.pack(side=tk.LEFT)
 
         ctk.CTkCheckBox(
-            info_bar, text="Divide displayed masses by 386.1",
+            info_bar, text="Multiply displayed masses by 386.1",
             variable=self._divide_386,
             command=self._refresh_display).pack(side=tk.LEFT, padx=(20, 0))
 
@@ -391,11 +391,11 @@ class MassScaleTool(ctk.CTkFrame):
 
     def _populate_sheet(self):
         """Fill the tksheet with group data."""
-        divisor = 386.1 if self._divide_386.get() else 1.0
+        multiplier = 386.1 if self._divide_386.get() else 1.0
 
         data = []
         for group in self._groups:
-            m = group.original_mass / divisor
+            m = group.original_mass * multiplier
             data.append([
                 group.filename,
                 f"{m:.4e}",
@@ -405,7 +405,7 @@ class MassScaleTool(ctk.CTkFrame):
             ])
 
         # TOTAL row
-        total_mass = sum(g.original_mass for g in self._groups) / divisor
+        total_mass = sum(g.original_mass for g in self._groups) * multiplier
         data.append([
             "TOTAL",
             f"{total_mass:.4e}",
@@ -454,7 +454,7 @@ class MassScaleTool(ctk.CTkFrame):
         if not self._groups:
             return
 
-        divisor = 386.1 if self._divide_386.get() else 1.0
+        multiplier = 386.1 if self._divide_386.get() else 1.0
         total_orig = 0.0
         total_scaled = 0.0
 
@@ -467,8 +467,8 @@ class MassScaleTool(ctk.CTkFrame):
             total_orig += orig
             total_scaled += scaled
 
-            disp_orig = orig / divisor
-            disp_scaled = scaled / divisor
+            disp_orig = orig * multiplier
+            disp_scaled = scaled * multiplier
 
             self._sheet.set_cell_data(i, 1, f"{disp_orig:.4e}")
             self._sheet.set_cell_data(i, 3, f"{disp_scaled:.4e}")
@@ -480,8 +480,8 @@ class MassScaleTool(ctk.CTkFrame):
             (total_scaled / total_orig - 1.0) * 100
             if total_orig != 0 else 0.0)
 
-        disp_total_orig = total_orig / divisor
-        disp_total_scaled = total_scaled / divisor
+        disp_total_orig = total_orig * multiplier
+        disp_total_scaled = total_scaled * multiplier
 
         self._sheet.set_cell_data(total_row, 1, f"{disp_total_orig:.4e}")
         self._sheet.set_cell_data(total_row, 3, f"{disp_total_scaled:.4e}")
@@ -496,14 +496,14 @@ class MassScaleTool(ctk.CTkFrame):
             self._summary_label.configure(text="")
             return
 
-        divisor = 386.1 if self._divide_386.get() else 1.0
+        multiplier = 386.1 if self._divide_386.get() else 1.0
         total_orig = sum(g.original_mass for g in self._groups)
         total_scaled = sum(
             g.original_mass * self._get_scale(i)
             for i, g in enumerate(self._groups))
 
-        disp_orig = total_orig / divisor
-        disp_scaled = total_scaled / divisor
+        disp_orig = total_orig * multiplier
+        disp_scaled = total_scaled * multiplier
 
         self._summary_label.configure(
             text=f"Total: {disp_scaled:.4e}  "
