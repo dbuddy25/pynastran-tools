@@ -11,8 +11,8 @@ Usage:
 """
 import copy
 import os
-import shutil
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, messagebox
 from collections import namedtuple, defaultdict
 
@@ -745,6 +745,66 @@ class MassScaleTool(ctk.CTkFrame):
 
     # ------------------------------------------------ Write output
 
+    def _write_summary(self, summary_path, written_files, scales):
+        """Write a markdown summary of the scaling operation."""
+        lines = ['# Mass Scale Summary', '']
+        lines.append(f'**Date:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+        lines.append(f'**Original BDF:** {self._bdf_path}')
+        lines.append(f'**WTMASS:** {self._wtmass:.4e}')
+        lines.append('')
+
+        # Scaled files table
+        lines.append('## Scaled Files')
+        lines.append('')
+        lines.append('| File | Scale | Original Mass | Scaled Mass | Delta'
+                     ' | MATs | PROPs | Mass Elems | CONRODs |')
+        lines.append('|------|-------|---------------|-------------|------'
+                     '|------|-------|------------|---------|')
+
+        total_orig = 0.0
+        total_scaled = 0.0
+        for group, out_path in written_files:
+            scale = scales.get(group.ifile, 1.0)
+            orig_mass = group.original_mass
+            scaled_mass = orig_mass * scale
+            total_orig += orig_mass
+            total_scaled += scaled_mass
+            if orig_mass != 0:
+                delta_pct = (scale - 1.0) * 100.0
+                delta_str = f'{delta_pct:+.0f}%'
+            else:
+                delta_str = 'N/A'
+            lines.append(
+                f'| {group.filename} | {scale:.4f} '
+                f'| {orig_mass:.4e} | {scaled_mass:.4e} | {delta_str} '
+                f'| {len(group.material_ids)} | {len(group.property_ids)} '
+                f'| {len(group.mass_elem_ids)} | {len(group.conrod_ids)} |')
+
+        lines.append('')
+        lines.append(f'**Total Original Mass:** {total_orig:.4e}')
+        lines.append(f'**Total Scaled Mass:** {total_scaled:.4e}')
+        lines.append('')
+
+        # Output files list
+        lines.append('## Output Files')
+        lines.append('')
+        for _group, out_path in written_files:
+            lines.append(f'- `{out_path}`')
+        lines.append('')
+
+        # Unmodified files list
+        scaled_ifiles = {g.ifile for g, _ in written_files}
+        unmodified = [g for g in self._groups if g.ifile not in scaled_ifiles]
+        if unmodified:
+            lines.append('## Unmodified Files')
+            lines.append('')
+            for g in unmodified:
+                lines.append(f'- `{g.filename}`')
+            lines.append('')
+
+        with open(summary_path, 'w') as f:
+            f.write('\n'.join(lines))
+
     def _write_scaled(self):
         if self.model is None:
             return
@@ -784,14 +844,8 @@ class MassScaleTool(ctk.CTkFrame):
             for fp in filenames:
                 out_filenames[fp] = fp
 
-        for out_path in out_filenames.values():
-            out_dir = os.path.dirname(out_path)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-
-        main_out = out_filenames[filenames[0]]
-
         originals = self._capture_originals()
+        written_files = []
         try:
             self._apply_scale_factors_inplace(scales)
             model.uncross_reference()
@@ -803,13 +857,16 @@ class MassScaleTool(ctk.CTkFrame):
                     continue
 
                 if scales.get(group.ifile, 1.0) == 1.0:
-                    # Unscaled — copy verbatim (skip if same path)
-                    if os.path.abspath(fp) != os.path.abspath(dst):
-                        shutil.copy2(fp, dst)
-                else:
-                    lookup = _build_scaled_lookup(model, group)
-                    is_main = (i == 0)
-                    _rewrite_file_with_scaled_cards(fp, dst, lookup, is_main)
+                    continue  # skip unscaled files entirely
+
+                out_dir = os.path.dirname(dst)
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+
+                lookup = _build_scaled_lookup(model, group)
+                is_main = (i == 0)
+                _rewrite_file_with_scaled_cards(fp, dst, lookup, is_main)
+                written_files.append((group, dst))
 
         except Exception as exc:
             messagebox.showerror("Write failed", str(exc))
@@ -821,8 +878,16 @@ class MassScaleTool(ctk.CTkFrame):
             except Exception:
                 pass
 
-        messagebox.showinfo(
-            "Success", f"Scaled BDF written to:\n{main_out}")
+        if written_files:
+            summary_dir = os.path.dirname(written_files[0][1])
+            summary_path = os.path.join(summary_dir, 'scale_summary.md')
+            self._write_summary(summary_path, written_files, scales)
+            messagebox.showinfo(
+                "Success",
+                f"Scaled BDF written ({len(written_files)} file(s)).\n"
+                f"Summary: {summary_path}")
+        else:
+            messagebox.showinfo("Success", "No files needed scaling.")
 
 
 def main():
