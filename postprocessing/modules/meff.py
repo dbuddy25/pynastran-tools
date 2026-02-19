@@ -6,7 +6,10 @@ between two OP2 files with mode matching by number and by MEFFMASS
 cosine similarity.
 """
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+from tksheet import Sheet
 
 import numpy as np
 import scipy.sparse
@@ -14,30 +17,19 @@ import scipy.sparse
 
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 
-# Column definitions: (id, header_text, width)
-_SINGLE_COLS = [('mode', 'Mode', 60), ('freq', 'Freq (Hz)', 100)]
+# Header definitions for tksheet
+_SINGLE_HEADERS = ['Mode', 'Freq (Hz)']
 for _d in DIRECTIONS:
-    _SINGLE_COLS.append((f'{_d}_frac', 'Frac', 75))
-    _SINGLE_COLS.append((f'{_d}_sum', 'Sum', 75))
+    _SINGLE_HEADERS.extend([f'{_d} Frac', f'{_d} Sum'])
 
-_NUM_COLS = [
-    ('mode', 'Mode', 60),
-    ('freq_a', 'Freq A', 90), ('freq_b', 'Freq B', 90),
-    ('delta_hz', '\u0394 Hz', 80), ('delta_pct', '\u0394 %', 70),
-]
+_NUM_HEADERS = ['Mode', 'Freq A', 'Freq B', '\u0394 Hz', '\u0394 %']
 for _d in DIRECTIONS:
-    _NUM_COLS.append((f'd{_d}', f'\u0394{_d}', 70))
+    _NUM_HEADERS.append(f'\u0394{_d}')
 
-_MEFF_COLS = [
-    ('mode_a', 'Mode A', 65), ('match_b', 'Match B', 65),
-    ('sim', 'Similarity', 80),
-    ('freq_a', 'Freq A', 90), ('freq_b', 'Freq B', 90),
-    ('delta_hz', '\u0394 Hz', 80), ('delta_pct', '\u0394 %', 70),
-]
+_MEFF_HEADERS = ['Mode A', 'Match B', 'Similarity', 'Freq A', 'Freq B',
+                 '\u0394 Hz', '\u0394 %']
 for _d in DIRECTIONS:
-    _MEFF_COLS.append((f'd{_d}', f'\u0394{_d}', 70))
-
-COL_IDS = [c[0] for c in _SINGLE_COLS]
+    _MEFF_HEADERS.append(f'\u0394{_d}')
 
 
 # ---------------------------------------------------------------- comparison logic
@@ -348,76 +340,147 @@ def write_comparison_meff_sheet(ws, comparison, styles):
 # ---------------------------------------------------------------- GUI module
 
 class MeffModule:
-    name = "Effective Mass Fractions"
+    name = "MEFF Viewer"
 
     def __init__(self, parent):
-        self.frame = ttk.Frame(parent)
+        self.frame = ctk.CTkFrame(parent)
         self.data = None
         self.data_b = None
         self.comparison = None
+        self._op2_path = None
+        self._op2_b_path = None
         self._view_mode = 'single'
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
-        toolbar = ttk.Frame(self.frame)
+        toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=5, pady=(5, 0))
 
-        self.export_btn = ttk.Button(toolbar, text="Export to Excel\u2026",
-                                     command=self._export_excel)
-        self.export_btn.pack(side=tk.RIGHT)
+        ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
+                       command=self._open_op2).pack(side=tk.LEFT)
+
+        self._compare_btn = ctk.CTkButton(
+            toolbar, text="Compare OP2\u2026", width=120,
+            command=self._open_comparison, state=tk.DISABLED)
+        self._compare_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        self._clear_btn = ctk.CTkButton(
+            toolbar, text="Clear Comparison", width=120,
+            command=self.clear_comparison, state=tk.DISABLED)
+        self._clear_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        ctk.CTkButton(toolbar, text="Export to Excel\u2026", width=130,
+                       command=self._export_excel).pack(side=tk.RIGHT)
+
+        # Status label
+        self._status_label = ctk.CTkLabel(
+            toolbar, text="No OP2 loaded", text_color="gray")
+        self._status_label.pack(side=tk.LEFT, padx=(10, 0))
 
         # Comparison radio buttons (hidden until comparison loaded)
         self._radio_var = tk.StringVar(value='number')
-        self._radio_frame = ttk.Frame(toolbar)
-        ttk.Radiobutton(self._radio_frame, text="By Mode Number",
-                        variable=self._radio_var, value='number',
-                        command=self._on_radio_change).pack(side=tk.LEFT,
-                                                            padx=(0, 8))
-        ttk.Radiobutton(self._radio_frame, text="By MEFF Match",
-                        variable=self._radio_var, value='meff',
-                        command=self._on_radio_change).pack(side=tk.LEFT)
+        self._radio_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        ctk.CTkRadioButton(self._radio_frame, text="By Mode Number",
+                           variable=self._radio_var, value='number',
+                           command=self._on_radio_change).pack(side=tk.LEFT,
+                                                               padx=(0, 8))
+        ctk.CTkRadioButton(self._radio_frame, text="By MEFF Match",
+                           variable=self._radio_var, value='meff',
+                           command=self._on_radio_change).pack(side=tk.LEFT)
         # Not packed yet -- shown when comparison is loaded
 
-        # Table
-        container = ttk.Frame(self.frame)
-        container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Table (tksheet)
+        self._sheet = Sheet(
+            self.frame,
+            headers=list(_SINGLE_HEADERS),
+            show_top_left=False,
+            show_row_index=False,
+        )
+        self._sheet.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._sheet.disable_bindings()
+        self._sheet.enable_bindings(
+            "single_select", "copy", "arrowkeys",
+            "column_width_resize", "row_height_resize",
+        )
+        self._sheet.readonly_columns(
+            columns=list(range(len(_SINGLE_HEADERS))))
 
-        self.tree = ttk.Treeview(container, columns=[c[0] for c in _SINGLE_COLS],
-                                 show='headings', selectmode='browse')
-        vsb = ttk.Scrollbar(container, orient=tk.VERTICAL,
-                            command=self.tree.yview)
-        hsb = ttk.Scrollbar(container, orient=tk.HORIZONTAL,
-                            command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    def _configure_sheet(self, headers):
+        """Reconfigure sheet with new headers and clear data."""
+        self._sheet.headers(headers)
+        self._sheet.set_sheet_data([])
+        self._sheet.readonly_columns(columns=list(range(len(headers))))
 
-        self.tree.grid(row=0, column=0, sticky='nsew')
-        vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
-        container.grid_rowconfigure(0, weight=1)
-        container.grid_columnconfigure(0, weight=1)
+    # ---------------------------------------------------------- OP2 loading
+    def _open_op2(self):
+        """Open a primary OP2 file."""
+        path = filedialog.askopenfilename(
+            title="Open OP2 File",
+            filetypes=[("OP2 files", "*.op2"), ("All files", "*.*")])
+        if not path:
+            return
 
-        for col_id, heading, width in _SINGLE_COLS:
-            self.tree.heading(col_id, text=heading)
-            self.tree.column(col_id, width=width, minwidth=50, anchor=tk.E)
+        self._status_label.configure(text=f"Loading\u2026", text_color="gray")
+        self.frame.update_idletasks()
 
-        # Tag for weak matches (red text)
-        self.tree.tag_configure('weak', foreground='red')
+        try:
+            from pyNastran.op2.op2 import OP2
+            op2 = OP2()
+            op2.read_op2(path)
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
+            self._status_label.configure(text="Load failed", text_color="red")
+            return
 
-    def _configure_tree(self, col_defs):
-        """Reconfigure Treeview columns dynamically."""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.tree['columns'] = [c[0] for c in col_defs]
-        for col_id, heading, width in col_defs:
-            self.tree.heading(col_id, text=heading)
-            self.tree.column(col_id, width=width, minwidth=50, anchor=tk.E)
+        # Clear any existing comparison before loading new primary
+        if self.data_b is not None:
+            self.clear_comparison()
+
+        self._op2_path = path
+        self._status_label.configure(
+            text=path, text_color=("gray10", "gray90"))
+        self._compare_btn.configure(state=tk.NORMAL)
+
+        self.load(op2)
+
+    def _open_comparison(self):
+        """Open a second OP2 for comparison."""
+        if self.data is None:
+            return
+
+        path = filedialog.askopenfilename(
+            title="Open Comparison OP2 File",
+            filetypes=[("OP2 files", "*.op2"), ("All files", "*.*")])
+        if not path:
+            return
+
+        self._status_label.configure(
+            text=f"Loading comparison\u2026", text_color="gray")
+        self.frame.update_idletasks()
+
+        try:
+            from pyNastran.op2.op2 import OP2
+            op2_b = OP2()
+            op2_b.read_op2(path)
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
+            self._status_label.configure(
+                text=self._op2_path, text_color=("gray10", "gray90"))
+            return
+
+        self._op2_b_path = path
+        self._status_label.configure(
+            text=f"A: {self._op2_path}  |  B: {self._op2_b_path}",
+            text_color=("gray10", "gray90"))
+        self._clear_btn.configure(state=tk.NORMAL)
+
+        self.load_comparison(op2_b)
 
     # -------------------------------------------------------------- load
     def load(self, op2):
         """Populate table from OP2 data."""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self._configure_sheet(list(_SINGLE_HEADERS))
         self.data = None
 
         if not op2.eigenvalues:
@@ -499,15 +562,21 @@ class MeffModule:
         self.comparison = compare_meff_data(self.data, self.data_b)
         self._view_mode = 'number'
         self._radio_var.set('number')
-        self._radio_frame.pack(side=tk.LEFT, padx=(8, 0))
+        self._radio_frame.pack(fill=tk.X, padx=5, pady=(0, 2),
+                               before=self._sheet)
         self._show_by_number_view()
 
     def clear_comparison(self):
         """Reset to single-file view."""
         self.data_b = None
         self.comparison = None
+        self._op2_b_path = None
         self._view_mode = 'single'
         self._radio_frame.pack_forget()
+        self._clear_btn.configure(state=tk.DISABLED)
+        if self._op2_path:
+            self._status_label.configure(
+                text=self._op2_path, text_color=("gray10", "gray90"))
         if self.data is not None:
             self._show_single_view()
 
@@ -521,51 +590,61 @@ class MeffModule:
 
     def _show_single_view(self):
         self._view_mode = 'single'
-        self._configure_tree(_SINGLE_COLS)
+        self._configure_sheet(list(_SINGLE_HEADERS))
         if self.data is None:
             return
         modes, freqs = self.data['modes'], self.data['freqs']
         frac, cumsum = self.data['frac'], self.data['cumsum']
+        data = []
         for i in range(len(modes)):
-            vals = [int(modes[i]), f"{freqs[i]:.4f}"]
+            row = [int(modes[i]), f"{freqs[i]:.4f}"]
             for j in range(6):
-                vals.extend([f"{frac[i, j]:.4f}", f"{cumsum[i, j]:.4f}"])
-            self.tree.insert('', tk.END, values=vals)
+                row.extend([f"{frac[i, j]:.4f}", f"{cumsum[i, j]:.4f}"])
+            data.append(row)
+        self._sheet.set_sheet_data(data)
 
     def _show_by_number_view(self):
         self._view_mode = 'number'
-        self._configure_tree(_NUM_COLS)
+        self._configure_sheet(list(_NUM_HEADERS))
         if self.comparison is None:
             return
         bn = self.comparison['by_number']
+        data = []
         for i in range(len(bn['mode'])):
-            vals = [
+            row = [
                 bn['mode'][i],
                 f"{bn['freq_a'][i]:.4f}", f"{bn['freq_b'][i]:.4f}",
                 f"{bn['delta_hz'][i]:.4f}", f"{bn['delta_pct'][i]:.2f}",
             ]
             for j in range(6):
-                vals.append(f"{bn['delta_frac'][i, j]:.4f}")
-            self.tree.insert('', tk.END, values=vals)
+                row.append(f"{bn['delta_frac'][i, j]:.4f}")
+            data.append(row)
+        self._sheet.set_sheet_data(data)
 
     def _show_by_meff_view(self):
         self._view_mode = 'meff'
-        self._configure_tree(_MEFF_COLS)
+        self._configure_sheet(list(_MEFF_HEADERS))
         if self.comparison is None:
             return
         bm = self.comparison['by_meff']
+        data = []
+        weak_rows = []
         for i in range(len(bm['mode_a'])):
             sim = bm['similarity'][i]
-            vals = [
+            row = [
                 bm['mode_a'][i], bm['match_b'][i],
                 f"{sim:.4f}",
                 f"{bm['freq_a'][i]:.4f}", f"{bm['freq_b'][i]:.4f}",
                 f"{bm['delta_hz'][i]:.4f}", f"{bm['delta_pct'][i]:.2f}",
             ]
             for j in range(6):
-                vals.append(f"{bm['delta_frac'][i, j]:.4f}")
-            tags = ('weak',) if sim < 0.5 else ()
-            self.tree.insert('', tk.END, values=vals, tags=tags)
+                row.append(f"{bm['delta_frac'][i, j]:.4f}")
+            data.append(row)
+            if sim < 0.5:
+                weak_rows.append(i)
+        self._sheet.set_sheet_data(data)
+        if weak_rows:
+            self._sheet.highlight_rows(rows=weak_rows, fg="red")
 
     # ------------------------------------------------------------ export
     def _export_excel(self):

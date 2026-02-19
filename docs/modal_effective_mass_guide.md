@@ -116,13 +116,13 @@ Produces a 4-sheet workbook:
 
 ## GUI usage
 
-The GUI (`python postprocessing/nastran_tool.py`) provides the same functionality through a tab-based interface:
+The MEFF Viewer is available in the unified GUI (`python nastran_tools.py`, under Post-Processing) or as a module embedded in the sidebar. The toolbar provides:
 
-1. **Open primary OP2**: File -> Open OP2 (Cmd+O / Ctrl+O)
-2. **Open comparison OP2**: File -> Open Comparison OP2 (Cmd+Shift+O / Ctrl+Shift+O) — enabled after primary file is loaded
-3. **Toggle comparison views**: Radio buttons appear above the table — "By Mode Number" and "By MEFF Match"
-4. **Clear comparison**: File -> Clear Comparison — reverts to single-file view
-5. **Export to Excel**: Click "Export to Excel..." — produces single-sheet or 4-sheet workbook depending on whether a comparison is active
+1. **Open OP2...** — load a primary OP2 file
+2. **Compare OP2...** — load a second OP2 for comparison (enabled after primary is loaded)
+3. **Clear Comparison** — revert to single-file view
+4. **Toggle comparison views**: Radio buttons appear above the table — "By Mode Number" and "By MEFF Match"
+5. **Export to Excel...** — produces single-sheet or 4-sheet workbook depending on whether a comparison is active
 
 Opening a new primary OP2 automatically clears any existing comparison.
 
@@ -148,4 +148,4 @@ If MEFFMASS data is missing from the OP2, the script prints an error with this i
 
 ## Source
 
-See `postprocessing/modal_effective_mass.py` and `postprocessing/modules/meff.py`.
+See `postprocessing/modal_effective_mass.py` (CLI) and `postprocessing/modules/meff.py` (GUI module + shared logic). The unified GUI is `nastran_tools.py`.

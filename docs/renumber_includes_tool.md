@@ -25,7 +25,8 @@ A standalone Python GUI (CustomTkinter + tksheet) that:
 ## Usage
 
 ```
-python preprocessing/renumber_includes.py
+python nastran_tools.py                  # unified app (Pre-Processing > Renumber)
+python preprocessing/renumber_includes.py  # standalone
 ```
 
 ### Workflow

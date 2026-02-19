@@ -1,10 +1,11 @@
 # BDF Mass Scaling Tool — Implementation
 
-Standalone GUI app. No modifications to any existing files required.
+GUI tool available standalone or in the unified app.
 
 ```
 pip install customtkinter tksheet
-python preprocessing/mass_scale.py
+python nastran_tools.py          # unified app (Pre-Processing > Mass Scale)
+python preprocessing/mass_scale.py  # standalone
 ```
 
 ## What It Does

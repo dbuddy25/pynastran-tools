@@ -18,7 +18,10 @@ from collections import namedtuple, defaultdict
 import customtkinter as ctk
 from tksheet import Sheet
 
-from bdf_utils import IncludeFileParser, make_model
+try:
+    from bdf_utils import IncludeFileParser, make_model
+except ImportError:
+    from preprocessing.bdf_utils import IncludeFileParser, make_model
 
 
 GroupInfo = namedtuple('GroupInfo', [
@@ -153,17 +156,15 @@ class SaveModeDialog(ctk.CTkToplevel):
 
 # ---------------------------------------------------------------- Main app
 
-class MassScaleTool(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("BDF Mass Scaling Tool")
-        self.geometry("1050x500")
+class MassScaleTool(ctk.CTkFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
         self.model = None
         self._bdf_path = None
         self._groups = []
         self._wtmass = 1.0
-        self._divide_386 = ctk.BooleanVar(value=False)
+        self._divide_386 = ctk.BooleanVar(master=self, value=False)
         self._sheet = None
 
         self._build_ui()
@@ -644,7 +645,7 @@ class MassScaleTool(ctk.CTk):
                     "Write anyway?"):
                 return
 
-        dlg = SaveModeDialog(self, self._bdf_path)
+        dlg = SaveModeDialog(self.winfo_toplevel(), self._bdf_path)
         if dlg.result is None:
             return
         mode, param = dlg.result
@@ -724,8 +725,12 @@ class MassScaleTool(ctk.CTk):
 
 
 def main():
-    app = MassScaleTool()
-    app.mainloop()
+    root = ctk.CTk()
+    root.title("BDF Mass Scaling Tool")
+    root.geometry("1050x500")
+    app = MassScaleTool(root)
+    app.pack(fill=tk.BOTH, expand=True)
+    root.mainloop()
 
 
 if __name__ == '__main__':

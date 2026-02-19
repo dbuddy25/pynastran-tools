@@ -21,10 +21,16 @@ import tksheet
 
 from pyNastran.bdf.bdf import BDF
 
-from bdf_utils import (
-    IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-    make_model,
-)
+try:
+    from bdf_utils import (
+        IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
+        make_model,
+    )
+except ImportError:
+    from preprocessing.bdf_utils import (
+        IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
+        make_model,
+    )
 
 # Cards that pyNastran may not support — disable to avoid parse errors.
 # Shorter list than mass_scale because the renumber tool needs most contact cards.
@@ -1269,15 +1275,11 @@ class OutputWriter:
 # Section 7: GUI (CustomTkinter + tksheet)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class RenumberIncludesTool(ctk.CTk):
+class RenumberIncludesTool(ctk.CTkFrame):
     """Main GUI application for include file renumbering."""
 
-    def __init__(self):
-        super().__init__()
-        self.title("Nastran Include File Renumbering Tool")
-        self.geometry("1200x780")
-        ctk.set_appearance_mode("System")
-        ctk.set_default_color_theme("blue")
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
         self._bdf_path = None
         self._parser = None
@@ -1936,8 +1938,14 @@ class RenumberIncludesTool(ctk.CTk):
 
 
 def main():
-    app = RenumberIncludesTool()
-    app.mainloop()
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    root.title("Nastran Include File Renumbering Tool")
+    root.geometry("1200x780")
+    app = RenumberIncludesTool(root)
+    app.pack(fill=tk.BOTH, expand=True)
+    root.mainloop()
 
 
 if __name__ == '__main__':

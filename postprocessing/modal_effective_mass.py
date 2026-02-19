@@ -30,10 +30,16 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
-from modules.meff import (compare_meff_data, make_meff_styles,
-                           write_meff_single_sheet,
-                           write_comparison_number_sheet,
-                           write_comparison_meff_sheet)
+try:
+    from modules.meff import (compare_meff_data, make_meff_styles,
+                               write_meff_single_sheet,
+                               write_comparison_number_sheet,
+                               write_comparison_meff_sheet)
+except ImportError:
+    from postprocessing.modules.meff import (compare_meff_data, make_meff_styles,
+                                              write_meff_single_sheet,
+                                              write_comparison_number_sheet,
+                                              write_comparison_meff_sheet)
 
 
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
