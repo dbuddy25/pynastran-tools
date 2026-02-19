@@ -1451,42 +1451,6 @@ class RenumberIncludesTool(ctk.CTkFrame):
 
         self._simple_sheet.set_sheet_data(data)
 
-    def _auto_allocate(self, file_ranges):
-        """Auto-allocate sub-ranges per entity type within a file's range.
-
-        Args:
-            file_ranges: dict[filepath, (start, end)]
-
-        Returns:
-            dict[filepath, dict[etype, (start, end)]]
-        """
-        result = {}
-        for filepath, (file_start, file_end) in file_ranges.items():
-            etypes_present = []
-            for etype in ENTITY_TYPES:
-                ids = self._parser.file_ids.get(filepath, {}).get(etype, set())
-                if ids:
-                    etypes_present.append(etype)
-
-            if not etypes_present:
-                continue
-
-            total_range = file_end - file_start + 1
-            n_types = len(etypes_present)
-            block_size = total_range // n_types
-
-            alloc = {}
-            for j, etype in enumerate(etypes_present):
-                block_start = file_start + j * block_size
-                if j == n_types - 1:
-                    block_end = file_end  # last block gets remainder
-                else:
-                    block_end = block_start + block_size - 1
-                alloc[etype] = (block_start, block_end)
-
-            result[filepath] = alloc
-        return result
-
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _log_msg(self, msg):
@@ -1598,9 +1562,13 @@ class RenumberIncludesTool(ctk.CTkFrame):
         return self._get_ranges_simple()
 
     def _get_ranges_simple(self):
-        """Read ranges from simple sheet, auto-allocate to per-entity."""
+        """Read ranges from simple sheet.
+
+        All entity types share the same range (separate namespaces in
+        Nastran), so no sub-allocation is needed.
+        """
         data = self._simple_sheet.get_sheet_data()
-        file_ranges = {}
+        ranges = {}
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(data):
                 break
@@ -1614,14 +1582,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
                     f"Invalid number in range for "
                     f"{os.path.basename(filepath)}")
                 return None
-            file_ranges[filepath] = (start, end)
-
-        allocated = self._auto_allocate(file_ranges)
-
-        # Flatten to standard ranges dict
-        ranges = {}
-        for filepath, alloc in allocated.items():
-            ranges[filepath] = alloc
+            # All entity types share the same range (separate namespaces)
+            ranges[filepath] = {etype: (start, end) for etype in etypes}
         return ranges
 
     # ── Validate / Apply ─────────────────────────────────────────────────────

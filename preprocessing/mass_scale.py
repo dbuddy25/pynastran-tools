@@ -49,6 +49,55 @@ _CARDS_TO_SKIP = [
 ]
 
 
+def _read_header(filepath):
+    """Read original file up to and including the BEGIN BULK line.
+
+    Returns (header_lines, found_begin_bulk).
+    """
+    header = []
+    found = False
+    with open(filepath, 'r', errors='replace') as f:
+        for line in f:
+            header.append(line)
+            if line.strip().upper().startswith('BEGIN') and \
+                    'BULK' in line.strip().upper():
+                found = True
+                break
+    return header, found
+
+
+def _replace_header(original_path, output_path):
+    """Replace the exec/case control in output_path with the original header.
+
+    Preserves everything from BEGIN BULK onward in the output (INCLUDE
+    statements and bulk data written by write_bdfs), but restores the
+    original exec/case control above it.
+    """
+    orig_header, orig_found = _read_header(original_path)
+    if not orig_found:
+        return  # nothing to fix — punch file or similar
+
+    # Read entire output
+    with open(output_path, 'r', errors='replace') as f:
+        out_lines = f.readlines()
+
+    # Find BEGIN BULK in the output
+    bulk_idx = None
+    for i, line in enumerate(out_lines):
+        upper = line.strip().upper()
+        if upper.startswith('BEGIN') and 'BULK' in upper:
+            bulk_idx = i
+            break
+
+    if bulk_idx is None:
+        return  # no BEGIN BULK in output — leave as-is
+
+    # Replace: original header (includes BEGIN BULK) + output bulk data
+    with open(output_path, 'w') as f:
+        f.writelines(orig_header)
+        f.writelines(out_lines[bulk_idx + 1:])
+
+
 def _read_wtmass(model):
     """Read WTMASS parameter from model; default 1.0."""
     if 'WTMASS' not in model.params:
@@ -667,7 +716,14 @@ class MassScaleTool(ctk.CTkFrame):
                 self._write_multi_file(model, filenames, out_filenames,
                                        scales)
             else:
-                model.write_bdf(main_out)
+                header, found = _read_header(self._bdf_path)
+                if found:
+                    with open(main_out, 'w') as f:
+                        f.writelines(header)
+                        model.write_bulk_data(f, size=8, enddata=True,
+                                              close=False)
+                else:
+                    model.write_bdf(main_out)  # punch file fallback
 
         except Exception as exc:
             messagebox.showerror("Write failed", str(exc))
@@ -713,6 +769,11 @@ class MassScaleTool(ctk.CTkFrame):
                     mapping[af] = out_filenames[filenames[idx]]
             if mapping:
                 model.write_bdfs(mapping)
+            # Fix up the main file's header (write_bdfs regenerates it)
+            main_abs = os.path.abspath(filenames[0])
+            if main_abs not in unscaled_abs:
+                _replace_header(filenames[0],
+                                out_filenames[filenames[0]])
             # Copy unscaled files (skip if same path = overwrite mode)
             for fp in filenames:
                 fp_abs = os.path.abspath(fp)
@@ -723,7 +784,14 @@ class MassScaleTool(ctk.CTkFrame):
             return
 
         main_out = out_filenames[filenames[0]]
-        model.write_bdf(main_out)
+        header, found = _read_header(self._bdf_path)
+        if found:
+            with open(main_out, 'w') as f:
+                f.writelines(header)
+                model.write_bulk_data(f, size=8, enddata=True,
+                                      close=False)
+        else:
+            model.write_bdf(main_out)
         messagebox.showwarning(
             "Note",
             "Could not preserve include file structure.\n"
