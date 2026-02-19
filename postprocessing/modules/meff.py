@@ -693,3 +693,18 @@ class MeffModule:
             messagebox.showinfo("Exported", f"Saved to:\n{path}")
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
+
+
+def main():
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    root.title("MEFF Viewer")
+    root.geometry("1400x600")
+    meff = MeffModule(root)
+    meff.frame.pack(fill=tk.BOTH, expand=True)
+    root.mainloop()
+
+
+if __name__ == '__main__':
+    main()

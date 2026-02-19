@@ -32,6 +32,9 @@ python preprocessing/mass_scale.py
 # Include file renumbering GUI
 python preprocessing/renumber_includes.py
 
+# MEFF Viewer GUI (standalone)
+python postprocessing/modules/meff.py
+
 # Modal effective mass report (CLI)
 python postprocessing/modal_effective_mass.py model.op2
 python postprocessing/modal_effective_mass.py model.op2 --xlsx output.xlsx
