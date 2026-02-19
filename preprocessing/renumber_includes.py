@@ -17,6 +17,9 @@ from collections import defaultdict
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+import numpy as np
+if not hasattr(np, 'in1d'):
+    np.in1d = np.isin
 import tksheet
 
 from pyNastran.bdf.bdf import BDF

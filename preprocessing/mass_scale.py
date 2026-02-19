@@ -17,6 +17,9 @@ from tkinter import filedialog, messagebox
 from collections import namedtuple, defaultdict
 
 import customtkinter as ctk
+import numpy as np
+if not hasattr(np, 'in1d'):
+    np.in1d = np.isin
 from tksheet import Sheet
 
 try:

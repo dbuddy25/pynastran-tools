@@ -14,6 +14,9 @@ import sys
 import tkinter as tk
 
 import customtkinter as ctk
+import numpy as np
+if not hasattr(np, 'in1d'):
+    np.in1d = np.isin
 
 # Ensure sub-packages are importable
 _root = os.path.dirname(os.path.abspath(__file__))

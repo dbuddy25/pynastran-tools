@@ -11,6 +11,8 @@ import customtkinter as ctk
 from tksheet import Sheet
 
 import numpy as np
+if not hasattr(np, 'in1d'):
+    np.in1d = np.isin
 import scipy.sparse
 
 
