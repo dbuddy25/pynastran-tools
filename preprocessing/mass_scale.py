@@ -49,53 +49,151 @@ _CARDS_TO_SKIP = [
 ]
 
 
-def _read_header(filepath):
-    """Read original file up to and including the BEGIN BULK line.
+def _extract_card_info(line):
+    """Extract card name and primary ID from a raw BDF line.
 
-    Returns (header_lines, found_begin_bulk).
+    Handles fixed-field (8-char or 16-char) and free-field (comma-delimited).
+    Returns (name, id) or (None, None) for comments, continuations, blanks.
     """
-    header = []
-    found = False
-    with open(filepath, 'r', errors='replace') as f:
-        for line in f:
-            header.append(line)
-            if line.strip().upper().startswith('BEGIN') and \
-                    'BULK' in line.strip().upper():
-                found = True
-                break
-    return header, found
+    stripped = line.strip()
+    if not stripped or stripped.startswith('$'):
+        return None, None
+
+    first_char = stripped[0]
+    if first_char in ('+', '*') or not first_char.isalpha():
+        return None, None
+
+    if ',' in stripped:
+        fields = stripped.split(',')
+        card_name = fields[0].strip().upper()
+        id_str = fields[1].strip() if len(fields) > 1 else ''
+    else:
+        card_name = stripped[:8].strip().upper()
+        if card_name.endswith('*'):
+            id_str = stripped[8:24].strip() if len(stripped) > 8 else ''
+        else:
+            id_str = stripped[8:16].strip() if len(stripped) > 8 else ''
+
+    card_name = card_name.rstrip('*')
+
+    try:
+        card_id = int(id_str)
+    except (ValueError, TypeError):
+        return card_name, None
+
+    return card_name, card_id
 
 
-def _replace_header(original_path, output_path):
-    """Replace the exec/case control in output_path with the original header.
+def _build_scaled_lookup(model, group):
+    """Build {(card_type, card_id): card_object} for scaled cards in a group.
 
-    Preserves everything from BEGIN BULK onward in the output (INCLUDE
-    statements and bulk data written by write_bdfs), but restores the
-    original exec/case control above it.
+    Collects cards from material_ids, property_ids, mass_elem_ids, conrod_ids
+    and maps them to their model objects.
     """
-    orig_header, orig_found = _read_header(original_path)
-    if not orig_found:
-        return  # nothing to fix — punch file or similar
+    lookup = {}
 
-    # Read entire output
-    with open(output_path, 'r', errors='replace') as f:
-        out_lines = f.readlines()
+    for mid in group.material_ids:
+        mat = model.materials.get(mid)
+        if mat is not None:
+            lookup[(mat.type, mid)] = mat
 
-    # Find BEGIN BULK in the output
-    bulk_idx = None
-    for i, line in enumerate(out_lines):
+    for pid in group.property_ids:
+        prop = model.properties.get(pid)
+        if prop is not None:
+            lookup[(prop.type, pid)] = prop
+
+    for eid in group.mass_elem_ids:
+        mass_elem = model.masses.get(eid)
+        if mass_elem is not None:
+            lookup[(mass_elem.type, eid)] = mass_elem
+
+    for eid in group.conrod_ids:
+        elem = model.elements.get(eid)
+        if elem is not None:
+            lookup[('CONROD', eid)] = elem
+
+    return lookup
+
+
+def _rewrite_file_with_scaled_cards(input_path, output_path, scaled_card_lookup,
+                                     is_main_file):
+    """Rewrite a BDF file, replacing only scaled cards and preserving everything else.
+
+    State machine reads the original file line by line:
+    - Before BEGIN BULK (main file only): pass through verbatim
+    - In bulk data: when a new card line matches a lookup key, output the
+      scaled card via write_card() and skip the original card's lines
+    - Comments, blanks, INCLUDE, ENDDATA: pass through verbatim
+    """
+    # Read entire input (allows overwrite mode where input_path == output_path)
+    with open(input_path, 'r', errors='replace') as f:
+        lines = f.readlines()
+
+    out = []
+    in_bulk = not is_main_file  # include files start in bulk data
+    replacing = False  # True while swallowing lines of a replaced card
+
+    for line in lines:
         upper = line.strip().upper()
-        if upper.startswith('BEGIN') and 'BULK' in upper:
-            bulk_idx = i
-            break
 
-    if bulk_idx is None:
-        return  # no BEGIN BULK in output — leave as-is
+        # Before BEGIN BULK: pass through verbatim (main file only)
+        if not in_bulk:
+            out.append(line)
+            if upper.startswith('BEGIN') and 'BULK' in upper:
+                in_bulk = True
+            continue
 
-    # Replace: original header (includes BEGIN BULK) + output bulk data
+        # ENDDATA: stop replacing, pass through
+        if upper.startswith('ENDDATA'):
+            replacing = False
+            out.append(line)
+            continue
+
+        # INCLUDE: pass through
+        if upper.startswith('INCLUDE'):
+            replacing = False
+            out.append(line)
+            continue
+
+        # Comment or blank line
+        if not line.strip() or line.strip().startswith('$'):
+            if not replacing:
+                out.append(line)
+            continue
+
+        # Check if this is a new card (first char is alphabetic)
+        first_char = line.strip()[0]
+        if first_char.isalpha():
+            replacing = False  # end any previous replacement
+            card_name, card_id = _extract_card_info(line)
+            if card_name and card_id is not None:
+                key = (card_name, card_id)
+                if key in scaled_card_lookup:
+                    card = scaled_card_lookup[key]
+                    text = card.write_card(size=8)
+                    # Strip leading comment line if present (avoids duplication)
+                    card_lines = text.split('\n')
+                    filtered = []
+                    for cl in card_lines:
+                        if cl.strip().startswith('$') and not filtered:
+                            continue  # skip leading comment
+                        filtered.append(cl)
+                    text = '\n'.join(filtered)
+                    if text and not text.endswith('\n'):
+                        text += '\n'
+                    out.append(text)
+                    replacing = True
+                    continue
+            # Not a replaced card — pass through
+            out.append(line)
+        else:
+            # Continuation line (starts with +, *, digit, space-then-nonalpha)
+            if not replacing:
+                out.append(line)
+            # else: swallow continuation of a replaced card
+
     with open(output_path, 'w') as f:
-        f.writelines(orig_header)
-        f.writelines(out_lines[bulk_idx + 1:])
+        f.writelines(out)
 
 
 def _read_wtmass(model):
@@ -215,7 +313,6 @@ class MassScaleTool(ctk.CTkFrame):
 
         self.model = None
         self._bdf_path = None
-        self._file_structure_saved = False
         self._groups = []
         self._wtmass = 1.0
         self._divide_386 = ctk.BooleanVar(master=self, value=False)
@@ -309,34 +406,21 @@ class MassScaleTool(ctk.CTkFrame):
             text_color=("gray10", "gray90"))
         self.update_idletasks()
 
-        model = None
-
-        # Try with file-structure tracking first; fall back without it
-        file_structure_saved = False
-        for save_structure in (True, False):
-            try:
-                model = make_model(_CARDS_TO_SKIP)
-                if save_structure:
-                    model.read_bdf(path, save_file_structure=True)
-                else:
-                    model.read_bdf(path)
-                model.cross_reference()
-                file_structure_saved = save_structure
-                break
-            except Exception:
-                model = None
-                if not save_structure:
-                    import traceback
-                    messagebox.showerror(
-                        "Error",
-                        f"Could not read BDF:\n{traceback.format_exc()}")
-                    self._path_label.configure(
-                        text="Load failed", text_color="red")
-                    return
+        try:
+            model = make_model(_CARDS_TO_SKIP)
+            model.read_bdf(path)
+            model.cross_reference()
+        except Exception:
+            import traceback
+            messagebox.showerror(
+                "Error",
+                f"Could not read BDF:\n{traceback.format_exc()}")
+            self._path_label.configure(
+                text="Load failed", text_color="red")
+            return
 
         self.model = model
         self._bdf_path = path
-        self._file_structure_saved = file_structure_saved
         self._wtmass = _read_wtmass(model)
 
         self._wtmass_label.configure(
@@ -712,18 +796,20 @@ class MassScaleTool(ctk.CTkFrame):
             self._apply_scale_factors_inplace(scales)
             model.uncross_reference()
 
-            if len(filenames) > 1:
-                self._write_multi_file(model, filenames, out_filenames,
-                                       scales)
-            else:
-                header, found = _read_header(self._bdf_path)
-                if found:
-                    with open(main_out, 'w') as f:
-                        f.writelines(header)
-                        model.write_bulk_data(f, size=8, enddata=True,
-                                              close=False)
+            for i, group in enumerate(self._groups):
+                fp = group.filepath
+                dst = out_filenames.get(fp)
+                if dst is None:
+                    continue
+
+                if scales.get(group.ifile, 1.0) == 1.0:
+                    # Unscaled — copy verbatim (skip if same path)
+                    if os.path.abspath(fp) != os.path.abspath(dst):
+                        shutil.copy2(fp, dst)
                 else:
-                    model.write_bdf(main_out)  # punch file fallback
+                    lookup = _build_scaled_lookup(model, group)
+                    is_main = (i == 0)
+                    _rewrite_file_with_scaled_cards(fp, dst, lookup, is_main)
 
         except Exception as exc:
             messagebox.showerror("Write failed", str(exc))
@@ -737,65 +823,6 @@ class MassScaleTool(ctk.CTkFrame):
 
         messagebox.showinfo(
             "Success", f"Scaled BDF written to:\n{main_out}")
-
-    def _write_multi_file(self, model, filenames, out_filenames,
-                          scales=None):
-        if scales is None:
-            scales = {}
-
-        # Identify unscaled files (scale == 1.0)
-        unscaled_abs = set()
-        for i, fp in enumerate(filenames):
-            if scales.get(i, 1.0) == 1.0:
-                unscaled_abs.add(os.path.abspath(fp))
-
-        # If ALL files are unscaled, just copy everything
-        if len(unscaled_abs) == len(filenames):
-            for fp in filenames:
-                dst = out_filenames[fp]
-                if os.path.abspath(fp) != os.path.abspath(dst):
-                    shutil.copy2(fp, dst)
-            return
-
-        active = getattr(model, 'active_filenames', None)
-        if active and hasattr(model, 'write_bdfs') and self._file_structure_saved:
-            parser_abs = [os.path.abspath(fp) for fp in filenames]
-            mapping = {}
-            for af in active:
-                af_abs = os.path.abspath(af)
-                # ONLY include scaled files in the write mapping
-                if af_abs in parser_abs and af_abs not in unscaled_abs:
-                    idx = parser_abs.index(af_abs)
-                    mapping[af] = out_filenames[filenames[idx]]
-            if mapping:
-                model.write_bdfs(mapping)
-            # Fix up the main file's header (write_bdfs regenerates it)
-            main_abs = os.path.abspath(filenames[0])
-            if main_abs not in unscaled_abs:
-                _replace_header(filenames[0],
-                                out_filenames[filenames[0]])
-            # Copy unscaled files (skip if same path = overwrite mode)
-            for fp in filenames:
-                fp_abs = os.path.abspath(fp)
-                if fp_abs in unscaled_abs:
-                    dst = out_filenames[fp]
-                    if fp_abs != os.path.abspath(dst):
-                        shutil.copy2(fp, dst)
-            return
-
-        main_out = out_filenames[filenames[0]]
-        header, found = _read_header(self._bdf_path)
-        if found:
-            with open(main_out, 'w') as f:
-                f.writelines(header)
-                model.write_bulk_data(f, size=8, enddata=True,
-                                      close=False)
-        else:
-            model.write_bdf(main_out)
-        messagebox.showwarning(
-            "Note",
-            "Could not preserve include file structure.\n"
-            "Wrote single consolidated BDF file instead.")
 
 
 def main():
