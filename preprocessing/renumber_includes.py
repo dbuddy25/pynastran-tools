@@ -1285,10 +1285,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._parser = None
         self._summary = None        # {filepath: {etype: (count, min, max)}}
         self._include_set_ids = tk.BooleanVar(value=True)
-        self._mode = 'Advanced'     # 'Simple' or 'Advanced'
 
-        # Row data for sheets: list of tuples linking rows to (filepath, etype)
-        self._adv_row_map = []   # [(filepath, etype), ...]
+        # Row data for sheet: list of tuples linking rows to (filepath, [etypes])
         self._simple_row_map = []  # [(filepath, [etypes...]), ...]
 
         self._build_ui()
@@ -1316,16 +1314,17 @@ class RenumberIncludesTool(ctk.CTkFrame):
             opt, text="Include set IDs (SPC/MPC/Load)",
             variable=self._include_set_ids).pack(side=tk.LEFT)
 
-        # ── Mode toggle ──
-        mode_frame = ctk.CTkFrame(self, fg_color="transparent")
-        mode_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
+        # ── Start ID + Suggest Ranges ──
+        suggest_frame = ctk.CTkFrame(self, fg_color="transparent")
+        suggest_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
 
-        ctk.CTkLabel(mode_frame, text="Mode:").pack(side=tk.LEFT, padx=(0, 8))
-        self._mode_toggle = ctk.CTkSegmentedButton(
-            mode_frame, values=["Simple", "Advanced"],
-            command=self._on_mode_change)
-        self._mode_toggle.set("Advanced")
-        self._mode_toggle.pack(side=tk.LEFT)
+        ctk.CTkLabel(suggest_frame, text="Start ID:").pack(
+            side=tk.LEFT, padx=(0, 4))
+        self._start_id_var = tk.StringVar(value="1")
+        ctk.CTkEntry(suggest_frame, textvariable=self._start_id_var,
+                      width=100).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(suggest_frame, text="Suggest Ranges", width=120,
+                       command=self._suggest_ranges).pack(side=tk.LEFT)
 
         # ── Table container ──
         ctk.CTkLabel(self, text="Entity Summary & Range Editor:",
@@ -1335,22 +1334,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._table_container = ctk.CTkFrame(self)
         self._table_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
 
-        # Advanced sheet
-        self._adv_sheet = tksheet.Sheet(
-            self._table_container,
-            headers=['File', 'Type', 'Count', 'Cur Min', 'Cur Max',
-                     'New Start', 'New End'],
-            show_x_scrollbar=True, show_y_scrollbar=True,
-            height=300)
-        self._adv_sheet.enable_bindings(
-            "single_select", "column_select", "row_select",
-            "arrowkeys", "edit_cell", "copy", "paste",
-            "column_width_resize")
-        # Only allow editing New Start / New End columns (5, 6)
-        self._adv_sheet.readonly_columns(columns=[0, 1, 2, 3, 4])
-        self._adv_sheet.pack(fill=tk.BOTH, expand=True)
-
-        # Simple sheet (hidden initially)
+        # Simple sheet (the only sheet)
         self._simple_sheet = tksheet.Sheet(
             self._table_container,
             headers=['File', 'Entity Types', 'Total Count',
@@ -1362,6 +1346,9 @@ class RenumberIncludesTool(ctk.CTkFrame):
             "arrowkeys", "edit_cell", "copy", "paste",
             "column_width_resize")
         self._simple_sheet.readonly_columns(columns=[0, 1, 2])
+        self._simple_sheet.pack(fill=tk.BOTH, expand=True)
+        self._simple_sheet.bind("<<SheetModified>>",
+                                 self._on_simple_sheet_modified)
 
         # ── Output dir ──
         out_bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -1405,95 +1392,64 @@ class RenumberIncludesTool(ctk.CTkFrame):
             self, textvariable=self._status_var, anchor=tk.W)
         self._status_label.pack(fill=tk.X, padx=10, pady=(0, 6))
 
-    # ── Mode switching ───────────────────────────────────────────────────────
+    # ── Suggest ranges / cascading ───────────────────────────────────────────
 
-    def _on_mode_change(self, value):
-        """Handle Simple/Advanced mode toggle."""
-        old_mode = self._mode
-        self._mode = value
+    def _suggest_ranges(self):
+        """Auto-suggest round-number ranges starting from the Start ID."""
+        import math
 
-        if value == 'Simple':
-            self._adv_sheet.pack_forget()
-            self._simple_sheet.pack(fill=tk.BOTH, expand=True)
-            if old_mode == 'Advanced' and self._summary:
-                self._sync_advanced_to_simple()
-        else:
-            self._simple_sheet.pack_forget()
-            self._adv_sheet.pack(fill=tk.BOTH, expand=True)
-            if old_mode == 'Simple' and self._summary:
-                self._sync_simple_to_advanced()
-
-    def _sync_advanced_to_simple(self):
-        """Collapse advanced per-entity ranges to simple per-file ranges."""
-        if not self._adv_row_map:
-            return
-
-        # Read current advanced data
-        adv_data = self._adv_sheet.get_sheet_data()
-
-        # Group by filepath
-        file_ranges = {}
-        for i, (filepath, etype) in enumerate(self._adv_row_map):
-            if i >= len(adv_data):
-                break
-            row = adv_data[i]
-            try:
-                start = int(row[5])
-                end = int(row[6])
-            except (ValueError, IndexError):
-                continue
-            if filepath not in file_ranges:
-                file_ranges[filepath] = (start, end)
-            else:
-                cur_s, cur_e = file_ranges[filepath]
-                file_ranges[filepath] = (min(cur_s, start), max(cur_e, end))
-
-        # Update simple sheet
-        simple_data = self._simple_sheet.get_sheet_data()
-        for i, (filepath, etypes) in enumerate(self._simple_row_map):
-            if i >= len(simple_data):
-                break
-            if filepath in file_ranges:
-                s, e = file_ranges[filepath]
-                simple_data[i][3] = str(s)
-                simple_data[i][4] = str(e)
-
-        self._simple_sheet.set_sheet_data(simple_data)
-
-    def _sync_simple_to_advanced(self):
-        """Expand simple per-file ranges to advanced per-entity ranges."""
         if not self._simple_row_map:
             return
 
-        simple_data = self._simple_sheet.get_sheet_data()
+        try:
+            cursor = int(self._start_id_var.get().strip())
+        except (ValueError, TypeError):
+            messagebox.showerror("Invalid Start ID",
+                                 "Please enter a valid integer for Start ID.")
+            return
 
-        # Read simple ranges
-        file_ranges = {}
+        data = self._simple_sheet.get_sheet_data()
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
-            if i >= len(simple_data):
+            if i >= len(data):
                 break
-            row = simple_data[i]
             try:
-                start = int(row[3])
-                end = int(row[4])
-            except (ValueError, IndexError):
+                total_count = int(str(data[i][2]).strip())
+            except (ValueError, TypeError):
+                total_count = 0
+            if total_count == 0:
+                data[i][3] = str(cursor)
+                data[i][4] = str(cursor)
+                cursor += 1
                 continue
-            file_ranges[filepath] = (start, end)
 
-        # Auto-allocate into advanced
-        allocated = self._auto_allocate(file_ranges)
+            raw_end = cursor + total_count - 1
+            if raw_end <= 0:
+                mag = 1
+            else:
+                mag = 10 ** int(math.floor(math.log10(raw_end)))
+            rounded_end = int(math.ceil(raw_end / mag) * mag)
+            data[i][3] = str(cursor)
+            data[i][4] = str(rounded_end)
+            cursor = rounded_end + 1
 
-        # Update advanced sheet
-        adv_data = self._adv_sheet.get_sheet_data()
-        for i, (filepath, etype) in enumerate(self._adv_row_map):
-            if i >= len(adv_data):
-                break
-            alloc = allocated.get(filepath, {}).get(etype)
-            if alloc:
-                adv_data[i][5] = str(alloc[0])
-                adv_data[i][6] = str(alloc[1])
+        self._simple_sheet.set_sheet_data(data)
 
-        self._adv_sheet.set_sheet_data(adv_data)
+    def _on_simple_sheet_modified(self, event=None):
+        """Cascade New Start values when a New End cell is edited."""
+        data = self._simple_sheet.get_sheet_data()
+        if not data or not self._simple_row_map:
+            return
+
+        # Find which cells were edited — cascade from first changed New End
+        # We just re-cascade all rows: each New Start = prev New End + 1
+        for i in range(1, len(data)):
+            try:
+                prev_end = int(str(data[i - 1][4]).strip())
+                data[i][3] = str(prev_end + 1)
+            except (ValueError, TypeError):
+                pass
+
+        self._simple_sheet.set_sheet_data(data)
 
     def _auto_allocate(self, file_ranges):
         """Auto-allocate sub-ranges per entity type within a file's range.
@@ -1587,48 +1543,12 @@ class RenumberIncludesTool(ctk.CTkFrame):
                  for et in ENTITY_TYPES if totals.get(et, 0) > 0]
         self._log_msg(f"Total: {', '.join(parts)}")
 
-        self._populate_advanced_sheet()
         self._populate_simple_sheet()
 
         self._validate_btn.configure(state=tk.NORMAL)
         self._apply_btn.configure(state=tk.NORMAL)
         self._save_cfg_btn.configure(state=tk.NORMAL)
         self._status_var.set("Scan complete -- fill in new ranges")
-
-    def _populate_advanced_sheet(self):
-        """Build advanced sheet data from scan results."""
-        self._adv_row_map = []
-        rows = []
-
-        for filepath in self._parser.all_files:
-            fname = os.path.basename(filepath)
-            parent = os.path.basename(os.path.dirname(filepath))
-            display = f"{parent}/{fname}" if parent else fname
-
-            etypes = self._summary.get(filepath, {})
-            if not etypes:
-                continue
-
-            first = True
-            for etype in ENTITY_TYPES:
-                if etype not in etypes:
-                    continue
-                count, cur_min, cur_max = etypes[etype]
-                file_col = display if first else ""
-                first = False
-                rows.append([
-                    file_col,
-                    ENTITY_LABELS.get(etype, etype),
-                    str(count),
-                    str(cur_min),
-                    str(cur_max),
-                    str(cur_min),  # default New Start = Cur Min
-                    str(cur_max),  # default New End = Cur Max
-                ])
-                self._adv_row_map.append((filepath, etype))
-
-        self._adv_sheet.set_sheet_data(rows)
-        self._adv_sheet.set_all_cell_sizes_to_text()
 
     def _populate_simple_sheet(self):
         """Build simple sheet data from scan results."""
@@ -1669,34 +1589,11 @@ class RenumberIncludesTool(ctk.CTkFrame):
     # ── Get ranges from current sheet ────────────────────────────────────────
 
     def _get_ranges(self):
-        """Read ranges from the active sheet.
+        """Read ranges from the sheet.
 
         Returns dict[filepath, dict[etype, (start, end)]] or None on error.
         """
-        if self._mode == 'Simple':
-            return self._get_ranges_simple()
-        return self._get_ranges_advanced()
-
-    def _get_ranges_advanced(self):
-        """Read ranges from advanced sheet."""
-        ranges = {}
-        data = self._adv_sheet.get_sheet_data()
-        for i, (filepath, etype) in enumerate(self._adv_row_map):
-            if i >= len(data):
-                break
-            row = data[i]
-            try:
-                start = int(str(row[5]).strip())
-                end = int(str(row[6]).strip())
-            except (ValueError, TypeError):
-                messagebox.showerror(
-                    "Invalid Range",
-                    f"Invalid number in range for "
-                    f"{os.path.basename(filepath)} / "
-                    f"{ENTITY_LABELS.get(etype, etype)}")
-                return None
-            ranges.setdefault(filepath, {})[etype] = (start, end)
-        return ranges
+        return self._get_ranges_simple()
 
     def _get_ranges_simple(self):
         """Read ranges from simple sheet, auto-allocate to per-entity."""
@@ -1854,32 +1751,21 @@ class RenumberIncludesTool(ctk.CTkFrame):
             'input_bdf': self._bdf_path,
             'include_set_ids': self._include_set_ids.get(),
             'output_dir': self._outdir_var.get(),
-            'mode': self._mode,
-            'ranges': {},
         }
 
-        # Always save advanced (per-entity) ranges
-        for filepath, etypes in ranges.items():
-            fname = os.path.basename(filepath)
-            config['ranges'][fname] = {
-                etype: list(r) for etype, r in etypes.items()
-            }
-
-        # Also save simple ranges if in simple mode
-        if self._mode == 'Simple':
-            simple_data = self._simple_sheet.get_sheet_data()
-            simple_ranges = {}
-            for i, (filepath, etypes) in enumerate(self._simple_row_map):
-                if i >= len(simple_data):
-                    break
-                row = simple_data[i]
-                try:
-                    s = int(str(row[3]).strip())
-                    e = int(str(row[4]).strip())
-                    simple_ranges[os.path.basename(filepath)] = [s, e]
-                except (ValueError, TypeError):
-                    pass
-            config['simple_ranges'] = simple_ranges
+        simple_data = self._simple_sheet.get_sheet_data()
+        simple_ranges = {}
+        for i, (filepath, etypes) in enumerate(self._simple_row_map):
+            if i >= len(simple_data):
+                break
+            row = simple_data[i]
+            try:
+                s = int(str(row[3]).strip())
+                e = int(str(row[4]).strip())
+                simple_ranges[os.path.basename(filepath)] = [s, e]
+            except (ValueError, TypeError):
+                pass
+        config['simple_ranges'] = simple_ranges
 
         with open(path, 'w') as f:
             json.dump(config, f, indent=2)
@@ -1902,28 +1788,9 @@ class RenumberIncludesTool(ctk.CTkFrame):
         if 'output_dir' in config:
             self._outdir_var.set(config['output_dir'])
 
-        # Load mode (default to Advanced for old configs)
-        saved_mode = config.get('mode', 'Advanced')
-        self._mode_toggle.set(saved_mode)
-        self._on_mode_change(saved_mode)
-
-        # Apply advanced ranges
-        ranges_cfg = config.get('ranges', {})
-        applied = 0
-        adv_data = self._adv_sheet.get_sheet_data()
-        for i, (filepath, etype) in enumerate(self._adv_row_map):
-            if i >= len(adv_data):
-                break
-            fname = os.path.basename(filepath)
-            if fname in ranges_cfg and etype in ranges_cfg[fname]:
-                start, end = ranges_cfg[fname][etype]
-                adv_data[i][5] = str(start)
-                adv_data[i][6] = str(end)
-                applied += 1
-        self._adv_sheet.set_sheet_data(adv_data)
-
-        # Apply simple ranges if present
+        # Apply simple ranges
         simple_cfg = config.get('simple_ranges', {})
+        applied = 0
         if simple_cfg:
             simple_data = self._simple_sheet.get_sheet_data()
             for i, (filepath, etypes) in enumerate(self._simple_row_map):
@@ -1934,6 +1801,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
                     s, e = simple_cfg[fname]
                     simple_data[i][3] = str(s)
                     simple_data[i][4] = str(e)
+                    applied += 1
             self._simple_sheet.set_sheet_data(simple_data)
 
         self._log_msg(f"Config loaded from {path} ({applied} ranges applied)")

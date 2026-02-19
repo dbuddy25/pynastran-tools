@@ -232,6 +232,8 @@ class MassScaleTool(ctk.CTkFrame):
         )
         # Only column 2 (Scale Factor) is editable
         self._sheet.readonly_columns(columns=[0, 1, 3, 4])
+        self._sheet.align_columns(columns=[1, 2, 3, 4], align="center",
+                                  align_header=True)
         self._sheet.bind("<<SheetModified>>", self._on_sheet_modified)
 
         # Summary bar
@@ -289,7 +291,7 @@ class MassScaleTool(ctk.CTkFrame):
         self._populate_sheet()
 
         self._path_label.configure(
-            text=path,
+            text=os.path.basename(path),
             text_color=("gray10", "gray90"))
         self._write_btn.configure(state=tk.NORMAL)
         self._reset_btn.configure(state=tk.NORMAL)
@@ -401,6 +403,7 @@ class MassScaleTool(ctk.CTkFrame):
 
     def _populate_sheet(self):
         """Fill the tksheet with group data."""
+        self._sheet.dehighlight_all(redraw=False)
         multiplier = 386.1 if self._divide_386.get() else 1.0
         hide_zero = self._hide_zero.get()
 

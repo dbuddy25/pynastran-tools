@@ -45,9 +45,17 @@ def make_meff_styles():
     }
 
 
-def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1):
-    """Write a single-file MEFFMASS fraction sheet (row-1 title,
-    row-2 merged direction headers, row-3 sub-headers, data from row 4)."""
+def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1,
+                            title=None):
+    """Write a single-file MEFFMASS fraction sheet.
+
+    When title is provided:
+      Row 1 = custom title, Row 2 = OP2 filename, Row 3 = direction headers,
+      Row 4 = sub-headers, Row 5+ = data.
+    When title is None:
+      Row 1 = OP2 filename, Row 2 = direction headers, Row 3 = sub-headers,
+      Row 4+ = data.
+    """
     from openpyxl.utils import get_column_letter
 
     s = styles
@@ -59,38 +67,57 @@ def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1):
         sub.extend(['Frac', 'Sum'])
     total_cols = len(sub)
 
-    # Row 1: title with OP2 filename
-    title = op2_name if op2_name else ""
-    cell = ws.cell(row=1, column=1, value=title)
-    cell.font = s['white_bold']
-    cell.fill = s['dark_fill']
-    cell.alignment = s['center']
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
-    for ci in range(2, total_cols + 1):
-        ws.cell(row=1, column=ci).fill = s['dark_fill']
+    row_offset = 1 if title else 0
 
-    # Row 2: direction group headers
-    ws.cell(row=2, column=1, value="").fill = s['dark_fill']
-    ws.cell(row=2, column=2, value="").fill = s['dark_fill']
-    for idx, d in enumerate(DIRECTIONS):
-        c1, c2 = 3 + idx * 2, 4 + idx * 2
-        cell = ws.cell(row=2, column=c1, value=d)
+    # Row 1: custom title (only when title provided)
+    if title:
+        cell = ws.cell(row=1, column=1, value=title)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
         cell.alignment = s['center']
-        ws.merge_cells(start_row=2, start_column=c1, end_row=2, end_column=c2)
-        ws.cell(row=2, column=c2).fill = s['dark_fill']
+        ws.merge_cells(start_row=1, start_column=1,
+                       end_row=1, end_column=total_cols)
+        for ci in range(2, total_cols + 1):
+            ws.cell(row=1, column=ci).fill = s['dark_fill']
 
-    # Row 3: sub-headers
+    # OP2 filename row
+    name_row = 1 + row_offset
+    name_text = op2_name if op2_name else ""
+    cell = ws.cell(row=name_row, column=1, value=name_text)
+    cell.font = s['white_bold']
+    cell.fill = s['dark_fill']
+    cell.alignment = s['center']
+    ws.merge_cells(start_row=name_row, start_column=1,
+                   end_row=name_row, end_column=total_cols)
+    for ci in range(2, total_cols + 1):
+        ws.cell(row=name_row, column=ci).fill = s['dark_fill']
+
+    # Direction group headers row
+    dir_row = 2 + row_offset
+    ws.cell(row=dir_row, column=1, value="").fill = s['dark_fill']
+    ws.cell(row=dir_row, column=2, value="").fill = s['dark_fill']
+    for idx, d in enumerate(DIRECTIONS):
+        c1, c2 = 3 + idx * 2, 4 + idx * 2
+        cell = ws.cell(row=dir_row, column=c1, value=d)
+        cell.font = s['white_bold']
+        cell.fill = s['dark_fill']
+        cell.alignment = s['center']
+        ws.merge_cells(start_row=dir_row, start_column=c1,
+                       end_row=dir_row, end_column=c2)
+        ws.cell(row=dir_row, column=c2).fill = s['dark_fill']
+
+    # Sub-headers row
+    sub_row = 3 + row_offset
     for ci, h in enumerate(sub, 1):
-        cell = ws.cell(row=3, column=ci, value=h)
+        cell = ws.cell(row=sub_row, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
 
     # Data rows
+    data_start = 4 + row_offset
     for i in range(len(modes)):
-        row = i + 4
+        row = i + data_start
         ws.cell(row=row, column=1, value=int(modes[i])).alignment = s['center']
         c = ws.cell(row=row, column=2, value=float(freqs[i]))
         c.number_format = s['num1']
@@ -112,7 +139,8 @@ def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1):
     ws.column_dimensions['B'].width = 12
     for ci in range(3, total_cols + 1):
         ws.column_dimensions[get_column_letter(ci)].width = 9
-    ws.freeze_panes = 'A4'
+    freeze_row = data_start
+    ws.freeze_panes = f'A{freeze_row}'
 
 
 # ---------------------------------------------------------------- GUI module
@@ -125,6 +153,7 @@ class MeffModule:
         self.data = None
         self._op2_path = None
         self._threshold_var = tk.StringVar(value='0.1')
+        self._title_var = tk.StringVar(value='')
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -134,6 +163,11 @@ class MeffModule:
 
         ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
                        command=self._open_op2).pack(side=tk.LEFT)
+
+        # Title field
+        ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(10, 2))
+        ctk.CTkEntry(toolbar, textvariable=self._title_var, width=200).pack(
+            side=tk.LEFT, padx=(0, 4))
 
         ctk.CTkButton(toolbar, text="Export to Excel\u2026", width=130,
                        command=self._export_excel).pack(side=tk.RIGHT)
@@ -188,6 +222,7 @@ class MeffModule:
 
     def _apply_highlights(self):
         """Apply threshold-based cell highlighting to the current view."""
+        self._sheet.dehighlight_all(redraw=False)
         threshold = self._get_threshold()
 
         if self.data is not None:
@@ -221,7 +256,7 @@ class MeffModule:
 
         self._op2_path = path
         self._status_label.configure(
-            text=path, text_color=("gray10", "gray90"))
+            text=os.path.basename(path), text_color=("gray10", "gray90"))
 
         self.load(op2)
 
@@ -305,13 +340,15 @@ class MeffModule:
 
         name_a = os.path.basename(self._op2_path) if self._op2_path else None
         threshold = self._get_threshold()
+        title = self._title_var.get().strip() or None
 
         wb = Workbook()
         styles = make_meff_styles()
         ws = wb.active
         ws.title = "Effective Mass Fractions"
         write_meff_single_sheet(ws, self.data, styles,
-                                op2_name=name_a, threshold=threshold)
+                                op2_name=name_a, threshold=threshold,
+                                title=title)
 
         try:
             wb.save(path)
