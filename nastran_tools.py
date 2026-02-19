@@ -4,7 +4,7 @@
 Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Mass Scale (BDF mass scaling by include file)
   - Renumber (include file ID renumbering)
-  - MEFF Viewer (modal effective mass fractions from OP2)
+  - MEFFMASS (modal effective mass fractions from OP2)
 
 Usage:
     python nastran_tools.py
@@ -55,7 +55,7 @@ class Sidebar(ctk.CTkFrame):
 
         # Post-Processing section
         self._add_section("Post-Processing")
-        self._add_tool("meff", "MEFF Viewer")
+        self._add_tool("meff", "MEFFMASS")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -145,6 +145,8 @@ class NastranToolsApp(ctk.CTk):
 
 
 def main():
+    import logging
+    logging.getLogger("customtkinter").setLevel(logging.ERROR)
     app = NastranToolsApp()
     app.mainloop()
 

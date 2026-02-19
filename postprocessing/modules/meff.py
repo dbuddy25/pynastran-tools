@@ -5,6 +5,7 @@ cumulative sums for each direction (Tx-Rz).  Supports comparison
 between two OP2 files with mode matching by number and by MEFFMASS
 cosine similarity.
 """
+import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -148,68 +149,87 @@ def make_meff_styles():
         'right': Alignment(horizontal="right", vertical="center"),
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
         'weak_font': Font(color="FF0000"),
+        'bold_font': Font(bold=True),
+        'bold_weak_font': Font(bold=True, color="FF0000"),
         'num4': '0.0000',
         'num2': '0.00',
+        'num1': '0.0',
     }
 
 
-def write_meff_single_sheet(ws, data, styles):
-    """Write a single-file MEFFMASS fraction sheet (row-1 merged direction
-    headers, row-2 sub-headers, data from row 3)."""
+def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1):
+    """Write a single-file MEFFMASS fraction sheet (row-1 title,
+    row-2 merged direction headers, row-3 sub-headers, data from row 4)."""
     from openpyxl.utils import get_column_letter
 
     s = styles
     modes, freqs = data['modes'], data['freqs']
     frac, cumsum = data['frac'], data['cumsum']
 
-    # Row 1: direction group headers
-    ws.cell(row=1, column=1, value="").fill = s['dark_fill']
-    ws.cell(row=1, column=2, value="").fill = s['dark_fill']
-    for idx, d in enumerate(DIRECTIONS):
-        c1, c2 = 3 + idx * 2, 4 + idx * 2
-        cell = ws.cell(row=1, column=c1, value=d)
-        cell.font = s['white_bold']
-        cell.fill = s['dark_fill']
-        cell.alignment = s['center']
-        ws.merge_cells(start_row=1, start_column=c1, end_row=1, end_column=c2)
-        ws.cell(row=1, column=c2).fill = s['dark_fill']
-
-    # Row 2: sub-headers
     sub = ['Mode', 'Freq (Hz)']
     for _ in DIRECTIONS:
         sub.extend(['Frac', 'Sum'])
+    total_cols = len(sub)
+
+    # Row 1: title with OP2 filename
+    title = op2_name if op2_name else ""
+    cell = ws.cell(row=1, column=1, value=title)
+    cell.font = s['white_bold']
+    cell.fill = s['dark_fill']
+    cell.alignment = s['center']
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    for ci in range(2, total_cols + 1):
+        ws.cell(row=1, column=ci).fill = s['dark_fill']
+
+    # Row 2: direction group headers
+    ws.cell(row=2, column=1, value="").fill = s['dark_fill']
+    ws.cell(row=2, column=2, value="").fill = s['dark_fill']
+    for idx, d in enumerate(DIRECTIONS):
+        c1, c2 = 3 + idx * 2, 4 + idx * 2
+        cell = ws.cell(row=2, column=c1, value=d)
+        cell.font = s['white_bold']
+        cell.fill = s['dark_fill']
+        cell.alignment = s['center']
+        ws.merge_cells(start_row=2, start_column=c1, end_row=2, end_column=c2)
+        ws.cell(row=2, column=c2).fill = s['dark_fill']
+
+    # Row 3: sub-headers
     for ci, h in enumerate(sub, 1):
-        cell = ws.cell(row=2, column=ci, value=h)
+        cell = ws.cell(row=3, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
 
     # Data rows
     for i in range(len(modes)):
-        row = i + 3
-        ws.cell(row=row, column=1, value=int(modes[i])).alignment = s['right']
+        row = i + 4
+        ws.cell(row=row, column=1, value=int(modes[i])).alignment = s['center']
         c = ws.cell(row=row, column=2, value=float(freqs[i]))
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num1']
+        c.alignment = s['center']
         for j in range(6):
             fc = ws.cell(row=row, column=3 + j * 2, value=float(frac[i, j]))
-            fc.number_format = s['num4']
-            fc.alignment = s['right']
+            fc.number_format = s['num2']
+            fc.alignment = s['center']
+            if frac[i, j] >= threshold:
+                fc.font = s['bold_font']
             sc = ws.cell(row=row, column=4 + j * 2, value=float(cumsum[i, j]))
-            sc.number_format = s['num4']
-            sc.alignment = s['right']
-        for ci in range(1, len(sub) + 1):
+            sc.number_format = s['num2']
+            sc.alignment = s['center']
+        for ci in range(1, total_cols + 1):
             ws.cell(row=row, column=ci).border = s['cell_border']
 
     # Column widths
     ws.column_dimensions['A'].width = 7
     ws.column_dimensions['B'].width = 12
-    for ci in range(3, len(sub) + 1):
+    for ci in range(3, total_cols + 1):
         ws.column_dimensions[get_column_letter(ci)].width = 9
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'A4'
 
 
-def write_comparison_number_sheet(ws, comparison, styles):
+def write_comparison_number_sheet(ws, comparison, styles,
+                                  op2_name_a=None, op2_name_b=None,
+                                  threshold=0.1):
     """Write comparison-by-mode-number sheet."""
     from openpyxl.utils import get_column_letter
 
@@ -217,21 +237,33 @@ def write_comparison_number_sheet(ws, comparison, styles):
     bn = comparison['by_number']
     base = 5  # Mode, Freq A, Freq B, delta Hz, delta %
 
-    # Row 1: direction labels over delta columns
+    sub = ['Mode', 'Freq A', 'Freq B', '\u0394 Hz', '\u0394 %']
+    for d in DIRECTIONS:
+        sub.append(f'\u0394{d}')
+    total_cols = len(sub)
+
+    # Row 1: title with both OP2 filenames
+    title = f"A: {op2_name_a or ''}  |  B: {op2_name_b or ''}"
+    cell = ws.cell(row=1, column=1, value=title)
+    cell.font = s['white_bold']
+    cell.fill = s['dark_fill']
+    cell.alignment = s['center']
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    for ci in range(2, total_cols + 1):
+        ws.cell(row=1, column=ci).fill = s['dark_fill']
+
+    # Row 2: direction labels over delta columns
     for ci in range(1, base + 1):
-        ws.cell(row=1, column=ci, value="").fill = s['dark_fill']
+        ws.cell(row=2, column=ci, value="").fill = s['dark_fill']
     for idx, d in enumerate(DIRECTIONS):
-        cell = ws.cell(row=1, column=base + 1 + idx, value=d)
+        cell = ws.cell(row=2, column=base + 1 + idx, value=d)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
         cell.alignment = s['center']
 
-    # Row 2: sub-headers
-    sub = ['Mode', 'Freq A', 'Freq B', '\u0394 Hz', '\u0394 %']
-    for d in DIRECTIONS:
-        sub.append(f'\u0394{d}')
+    # Row 3: sub-headers
     for ci, h in enumerate(sub, 1):
-        cell = ws.cell(row=2, column=ci, value=h)
+        cell = ws.cell(row=3, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
@@ -239,36 +271,40 @@ def write_comparison_number_sheet(ws, comparison, styles):
     # Data
     n = len(bn['mode'])
     for i in range(n):
-        row = i + 3
-        ws.cell(row=row, column=1, value=bn['mode'][i]).alignment = s['right']
+        row = i + 4
+        ws.cell(row=row, column=1, value=bn['mode'][i]).alignment = s['center']
         c = ws.cell(row=row, column=2, value=bn['freq_a'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num1']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=3, value=bn['freq_b'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num1']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=4, value=bn['delta_hz'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num2']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=5, value=bn['delta_pct'][i])
         c.number_format = s['num2']
-        c.alignment = s['right']
+        c.alignment = s['center']
         for j in range(6):
-            c = ws.cell(row=row, column=base + 1 + j,
-                        value=float(bn['delta_frac'][i, j]))
-            c.number_format = s['num4']
-            c.alignment = s['right']
-        for ci in range(1, len(sub) + 1):
+            val = float(bn['delta_frac'][i, j])
+            c = ws.cell(row=row, column=base + 1 + j, value=val)
+            c.number_format = s['num2']
+            c.alignment = s['center']
+            if abs(val) >= threshold:
+                c.font = s['bold_font']
+        for ci in range(1, total_cols + 1):
             ws.cell(row=row, column=ci).border = s['cell_border']
 
     # Widths
     ws.column_dimensions['A'].width = 7
-    for ci in range(2, len(sub) + 1):
+    for ci in range(2, total_cols + 1):
         ws.column_dimensions[get_column_letter(ci)].width = 10
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'A4'
 
 
-def write_comparison_meff_sheet(ws, comparison, styles):
+def write_comparison_meff_sheet(ws, comparison, styles,
+                                op2_name_a=None, op2_name_b=None,
+                                threshold=0.1):
     """Write comparison-by-MEFF-similarity sheet."""
     from openpyxl.utils import get_column_letter
 
@@ -276,22 +312,34 @@ def write_comparison_meff_sheet(ws, comparison, styles):
     bm = comparison['by_meff']
     base = 7  # Mode A, Match B, Similarity, Freq A, Freq B, delta Hz, delta %
 
-    # Row 1: direction labels over delta columns
-    for ci in range(1, base + 1):
-        ws.cell(row=1, column=ci, value="").fill = s['dark_fill']
-    for idx, d in enumerate(DIRECTIONS):
-        cell = ws.cell(row=1, column=base + 1 + idx, value=d)
-        cell.font = s['white_bold']
-        cell.fill = s['dark_fill']
-        cell.alignment = s['center']
-
-    # Row 2: sub-headers
     sub = ['Mode A', 'Match B', 'Similarity', 'Freq A', 'Freq B',
            '\u0394 Hz', '\u0394 %']
     for d in DIRECTIONS:
         sub.append(f'\u0394{d}')
+    total_cols = len(sub)
+
+    # Row 1: title with both OP2 filenames
+    title = f"A: {op2_name_a or ''}  |  B: {op2_name_b or ''}"
+    cell = ws.cell(row=1, column=1, value=title)
+    cell.font = s['white_bold']
+    cell.fill = s['dark_fill']
+    cell.alignment = s['center']
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    for ci in range(2, total_cols + 1):
+        ws.cell(row=1, column=ci).fill = s['dark_fill']
+
+    # Row 2: direction labels over delta columns
+    for ci in range(1, base + 1):
+        ws.cell(row=2, column=ci, value="").fill = s['dark_fill']
+    for idx, d in enumerate(DIRECTIONS):
+        cell = ws.cell(row=2, column=base + 1 + idx, value=d)
+        cell.font = s['white_bold']
+        cell.fill = s['dark_fill']
+        cell.alignment = s['center']
+
+    # Row 3: sub-headers
     for ci, h in enumerate(sub, 1):
-        cell = ws.cell(row=2, column=ci, value=h)
+        cell = ws.cell(row=3, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
@@ -299,48 +347,56 @@ def write_comparison_meff_sheet(ws, comparison, styles):
     # Data
     n = len(bm['mode_a'])
     for i in range(n):
-        row = i + 3
+        row = i + 4
         sim = bm['similarity'][i]
         weak = sim < 0.5
 
-        ws.cell(row=row, column=1, value=bm['mode_a'][i]).alignment = s['right']
-        ws.cell(row=row, column=2, value=bm['match_b'][i]).alignment = s['right']
+        ws.cell(row=row, column=1, value=bm['mode_a'][i]).alignment = s['center']
+        ws.cell(row=row, column=2, value=bm['match_b'][i]).alignment = s['center']
         c = ws.cell(row=row, column=3, value=sim)
         c.number_format = s['num4']
-        c.alignment = s['right']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=4, value=bm['freq_a'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num1']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=5, value=bm['freq_b'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num1']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=6, value=bm['delta_hz'][i])
-        c.number_format = s['num4']
-        c.alignment = s['right']
+        c.number_format = s['num2']
+        c.alignment = s['center']
         c = ws.cell(row=row, column=7, value=bm['delta_pct'][i])
         c.number_format = s['num2']
-        c.alignment = s['right']
+        c.alignment = s['center']
+        # Delta frac columns with threshold + weak interaction
         for j in range(6):
-            c = ws.cell(row=row, column=base + 1 + j,
-                        value=float(bm['delta_frac'][i, j]))
-            c.number_format = s['num4']
-            c.alignment = s['right']
-        for ci in range(1, len(sub) + 1):
+            val = float(bm['delta_frac'][i, j])
+            c = ws.cell(row=row, column=base + 1 + j, value=val)
+            c.number_format = s['num2']
+            c.alignment = s['center']
+            if weak and abs(val) >= threshold:
+                c.font = s['bold_weak_font']
+            elif weak:
+                c.font = s['weak_font']
+            elif abs(val) >= threshold:
+                c.font = s['bold_font']
+        # Borders and weak font for non-delta-frac columns
+        for ci in range(1, total_cols + 1):
             cell = ws.cell(row=row, column=ci)
             cell.border = s['cell_border']
-            if weak:
+            if weak and ci <= base:
                 cell.font = s['weak_font']
 
     # Widths
-    for ci in range(1, len(sub) + 1):
+    for ci in range(1, total_cols + 1):
         ws.column_dimensions[get_column_letter(ci)].width = 10
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'A4'
 
 
 # ---------------------------------------------------------------- GUI module
 
 class MeffModule:
-    name = "MEFF Viewer"
+    name = "MEFFMASS"
 
     def __init__(self, parent):
         self.frame = ctk.CTkFrame(parent)
@@ -350,6 +406,7 @@ class MeffModule:
         self._op2_path = None
         self._op2_b_path = None
         self._view_mode = 'single'
+        self._threshold_var = tk.StringVar(value='0.1')
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -372,6 +429,15 @@ class MeffModule:
 
         ctk.CTkButton(toolbar, text="Export to Excel\u2026", width=130,
                        command=self._export_excel).pack(side=tk.RIGHT)
+
+        # Threshold entry (packed RIGHT so it sits left of Export button)
+        ctk.CTkEntry(toolbar, width=50,
+                      textvariable=self._threshold_var).pack(
+            side=tk.RIGHT, padx=(0, 4))
+        ctk.CTkLabel(toolbar, text="Threshold:").pack(
+            side=tk.RIGHT, padx=(10, 2))
+
+        self._threshold_var.trace_add('write', self._on_threshold_change)
 
         # Status label
         self._status_label = ctk.CTkLabel(
@@ -412,6 +478,57 @@ class MeffModule:
         self._sheet.set_sheet_data([])
         self._sheet.readonly_columns(columns=list(range(len(headers))))
 
+    # ---------------------------------------------------------- threshold helpers
+    def _get_threshold(self):
+        """Parse threshold from entry, default 0.1 on invalid input."""
+        try:
+            return float(self._threshold_var.get())
+        except (ValueError, tk.TclError):
+            return 0.1
+
+    def _on_threshold_change(self, *args):
+        """Re-display current view when threshold changes."""
+        if self._view_mode == 'single':
+            self._show_single_view()
+        elif self._view_mode == 'number':
+            self._show_by_number_view()
+        elif self._view_mode == 'meff':
+            self._show_by_meff_view()
+
+    def _apply_highlights(self):
+        """Apply threshold-based cell highlighting to the current view."""
+        threshold = self._get_threshold()
+
+        if self._view_mode == 'single' and self.data is not None:
+            frac = self.data['frac']
+            for i in range(len(self.data['modes'])):
+                for j in range(6):
+                    col = 2 + j * 2  # Frac columns: indices 2, 4, 6, 8, 10, 12
+                    if frac[i, j] >= threshold:
+                        self._sheet.highlight_cells(row=i, column=col, fg="blue")
+
+        elif self._view_mode == 'number' and self.comparison is not None:
+            bn = self.comparison['by_number']
+            for i in range(len(bn['mode'])):
+                for j in range(6):
+                    col = 5 + j  # Delta frac columns: indices 5–10
+                    if abs(bn['delta_frac'][i, j]) >= threshold:
+                        self._sheet.highlight_cells(row=i, column=col, fg="blue")
+
+        elif self._view_mode == 'meff' and self.comparison is not None:
+            bm = self.comparison['by_meff']
+            # First highlight weak rows (red)
+            weak_rows = [i for i in range(len(bm['mode_a']))
+                         if bm['similarity'][i] < 0.5]
+            if weak_rows:
+                self._sheet.highlight_rows(rows=weak_rows, fg="red")
+            # Then highlight delta frac cells >= threshold (per-cell overrides per-row)
+            for i in range(len(bm['mode_a'])):
+                for j in range(6):
+                    col = 7 + j  # Delta frac columns: indices 7–12
+                    if abs(bm['delta_frac'][i, j]) >= threshold:
+                        self._sheet.highlight_cells(row=i, column=col, fg="blue")
+
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
         """Open a primary OP2 file."""
@@ -426,7 +543,7 @@ class MeffModule:
 
         try:
             from pyNastran.op2.op2 import OP2
-            op2 = OP2()
+            op2 = OP2(mode='nx')
             op2.read_op2(path)
         except Exception as exc:
             messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
@@ -461,7 +578,7 @@ class MeffModule:
 
         try:
             from pyNastran.op2.op2 import OP2
-            op2_b = OP2()
+            op2_b = OP2(mode='nx')
             op2_b.read_op2(path)
         except Exception as exc:
             messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
@@ -597,11 +714,12 @@ class MeffModule:
         frac, cumsum = self.data['frac'], self.data['cumsum']
         data = []
         for i in range(len(modes)):
-            row = [int(modes[i]), f"{freqs[i]:.4f}"]
+            row = [int(modes[i]), f"{freqs[i]:.1f}"]
             for j in range(6):
-                row.extend([f"{frac[i, j]:.4f}", f"{cumsum[i, j]:.4f}"])
+                row.extend([f"{frac[i, j]:.2f}", f"{cumsum[i, j]:.2f}"])
             data.append(row)
         self._sheet.set_sheet_data(data)
+        self._apply_highlights()
 
     def _show_by_number_view(self):
         self._view_mode = 'number'
@@ -613,13 +731,14 @@ class MeffModule:
         for i in range(len(bn['mode'])):
             row = [
                 bn['mode'][i],
-                f"{bn['freq_a'][i]:.4f}", f"{bn['freq_b'][i]:.4f}",
-                f"{bn['delta_hz'][i]:.4f}", f"{bn['delta_pct'][i]:.2f}",
+                f"{bn['freq_a'][i]:.1f}", f"{bn['freq_b'][i]:.1f}",
+                f"{bn['delta_hz'][i]:.2f}", f"{bn['delta_pct'][i]:.2f}",
             ]
             for j in range(6):
-                row.append(f"{bn['delta_frac'][i, j]:.4f}")
+                row.append(f"{bn['delta_frac'][i, j]:.2f}")
             data.append(row)
         self._sheet.set_sheet_data(data)
+        self._apply_highlights()
 
     def _show_by_meff_view(self):
         self._view_mode = 'meff'
@@ -628,23 +747,19 @@ class MeffModule:
             return
         bm = self.comparison['by_meff']
         data = []
-        weak_rows = []
         for i in range(len(bm['mode_a'])):
             sim = bm['similarity'][i]
             row = [
                 bm['mode_a'][i], bm['match_b'][i],
                 f"{sim:.4f}",
-                f"{bm['freq_a'][i]:.4f}", f"{bm['freq_b'][i]:.4f}",
-                f"{bm['delta_hz'][i]:.4f}", f"{bm['delta_pct'][i]:.2f}",
+                f"{bm['freq_a'][i]:.1f}", f"{bm['freq_b'][i]:.1f}",
+                f"{bm['delta_hz'][i]:.2f}", f"{bm['delta_pct'][i]:.2f}",
             ]
             for j in range(6):
-                row.append(f"{bm['delta_frac'][i, j]:.4f}")
+                row.append(f"{bm['delta_frac'][i, j]:.2f}")
             data.append(row)
-            if sim < 0.5:
-                weak_rows.append(i)
         self._sheet.set_sheet_data(data)
-        if weak_rows:
-            self._sheet.highlight_rows(rows=weak_rows, fg="red")
+        self._apply_highlights()
 
     # ------------------------------------------------------------ export
     def _export_excel(self):
@@ -668,25 +783,38 @@ class MeffModule:
                 "pip install openpyxl")
             return
 
+        name_a = os.path.basename(self._op2_path) if self._op2_path else None
+        name_b = os.path.basename(self._op2_b_path) if self._op2_b_path else None
+        threshold = self._get_threshold()
+
         wb = Workbook()
         styles = make_meff_styles()
         ws = wb.active
 
         if self.comparison is not None and self.data_b is not None:
             ws.title = "File A - MEFFMASS"
-            write_meff_single_sheet(ws, self.data, styles)
+            write_meff_single_sheet(ws, self.data, styles,
+                                    op2_name=name_a, threshold=threshold)
 
             ws_b = wb.create_sheet("File B - MEFFMASS")
-            write_meff_single_sheet(ws_b, self.data_b, styles)
+            write_meff_single_sheet(ws_b, self.data_b, styles,
+                                    op2_name=name_b, threshold=threshold)
 
             ws_num = wb.create_sheet("Compare - Mode Number")
-            write_comparison_number_sheet(ws_num, self.comparison, styles)
+            write_comparison_number_sheet(ws_num, self.comparison, styles,
+                                          op2_name_a=name_a,
+                                          op2_name_b=name_b,
+                                          threshold=threshold)
 
             ws_meff = wb.create_sheet("Compare - MEFF Match")
-            write_comparison_meff_sheet(ws_meff, self.comparison, styles)
+            write_comparison_meff_sheet(ws_meff, self.comparison, styles,
+                                        op2_name_a=name_a,
+                                        op2_name_b=name_b,
+                                        threshold=threshold)
         else:
             ws.title = "Effective Mass Fractions"
-            write_meff_single_sheet(ws, self.data, styles)
+            write_meff_single_sheet(ws, self.data, styles,
+                                    op2_name=name_a, threshold=threshold)
 
         try:
             wb.save(path)
@@ -696,10 +824,12 @@ class MeffModule:
 
 
 def main():
+    import logging
+    logging.getLogger("customtkinter").setLevel(logging.ERROR)
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
-    root.title("MEFF Viewer")
+    root.title("MEFFMASS")
     root.geometry("1400x600")
     meff = MeffModule(root)
     meff.frame.pack(fill=tk.BOTH, expand=True)

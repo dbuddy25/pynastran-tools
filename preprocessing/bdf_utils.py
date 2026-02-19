@@ -91,7 +91,7 @@ def make_model(cards_to_skip=None):
             cards). Disabled cards are stored as rejected text and written
             back out unchanged.
     """
-    model = BDF()
+    model = BDF(mode='nx')
     if cards_to_skip:
         if hasattr(model, 'disable_cards'):
             model.disable_cards(cards_to_skip)

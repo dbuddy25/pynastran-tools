@@ -48,7 +48,7 @@ DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 def read_op2_file(filename: str) -> OP2:
     """Read an OP2 file, exiting on failure."""
     try:
-        op2 = OP2()
+        op2 = OP2(mode='nx')
         op2.read_op2(filename)
     except FileNotFoundError:
         print(f"ERROR: File not found: {filename}")

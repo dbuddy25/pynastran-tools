@@ -11,6 +11,7 @@ Usage:
 """
 import copy
 import os
+import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from collections import namedtuple, defaultdict
@@ -682,7 +683,8 @@ class MassScaleTool(ctk.CTkFrame):
             model.uncross_reference()
 
             if len(filenames) > 1:
-                self._write_multi_file(model, filenames, out_filenames)
+                self._write_multi_file(model, filenames, out_filenames,
+                                       scales)
             else:
                 model.write_bdf(main_out)
 
@@ -699,32 +701,62 @@ class MassScaleTool(ctk.CTkFrame):
         messagebox.showinfo(
             "Success", f"Scaled BDF written to:\n{main_out}")
 
-    def _write_multi_file(self, model, filenames, out_filenames):
-        out_list = [out_filenames[fp] for fp in filenames]
+    def _write_multi_file(self, model, filenames, out_filenames,
+                          scales=None):
+        if scales is None:
+            scales = {}
 
-        if hasattr(model, 'write_bdfs'):
-            try:
-                model.write_bdfs(out_list)
+        # Identify unscaled files (scale == 1.0)
+        unscaled_abs = set()
+        for i, fp in enumerate(filenames):
+            if scales.get(i, 1.0) == 1.0:
+                unscaled_abs.add(os.path.abspath(fp))
+
+        # If ALL files are unscaled, just copy everything
+        if len(unscaled_abs) == len(filenames):
+            for fp in filenames:
+                dst = out_filenames[fp]
+                if os.path.abspath(fp) != os.path.abspath(dst):
+                    shutil.copy2(fp, dst)
+            return
+
+        active = getattr(model, 'active_filenames', None)
+        if active and hasattr(model, 'write_bdfs'):
+            parser_abs = [os.path.abspath(fp) for fp in filenames]
+            mapping = {}
+            for af in active:
+                af_abs = os.path.abspath(af)
+                if af_abs in parser_abs:
+                    idx = parser_abs.index(af_abs)
+                    src_fp = filenames[idx]
+                    dst = out_filenames[src_fp]
+                    # Skip unscaled files in overwrite mode (leave untouched)
+                    if (af_abs in unscaled_abs
+                            and af_abs == os.path.abspath(dst)):
+                        continue
+                    mapping[af] = dst
+            if mapping:
+                model.write_bdfs(mapping)
+                # Overwrite unscaled outputs with copies of originals
+                for fp in filenames:
+                    fp_abs = os.path.abspath(fp)
+                    if fp_abs in unscaled_abs:
+                        dst = out_filenames[fp]
+                        if fp_abs != os.path.abspath(dst):
+                            shutil.copy2(fp, dst)
                 return
-            except TypeError:
-                try:
-                    mapping = dict(zip(filenames, out_list))
-                    model.write_bdfs(mapping)
-                    return
-                except Exception:
-                    pass
-            except Exception:
-                pass
 
-        main_out = out_list[0]
+        main_out = out_filenames[filenames[0]]
         model.write_bdf(main_out)
-        messagebox.showinfo(
+        messagebox.showwarning(
             "Note",
-            "write_bdfs not available in this pyNastran version.\n"
+            "Could not preserve include file structure.\n"
             "Wrote single consolidated BDF file instead.")
 
 
 def main():
+    import logging
+    logging.getLogger("customtkinter").setLevel(logging.ERROR)
     root = ctk.CTk()
     root.title("BDF Mass Scaling Tool")
     root.geometry("1050x500")

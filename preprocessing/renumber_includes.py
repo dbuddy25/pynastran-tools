@@ -168,14 +168,14 @@ class Validator:
         errors = []
 
         try:
-            model = BDF()
+            model = BDF(mode='nx')
             model.read_bdf(output_path)
         except Exception as exc:
             errors.append(f"Could not re-read output file: {exc}")
             return warnings, errors
 
         try:
-            orig = BDF()
+            orig = BDF(mode='nx')
             orig.read_bdf(original_path)
         except Exception as exc:
             warnings.append(f"Could not re-read original for comparison: {exc}")
@@ -1344,7 +1344,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
             height=300)
         self._adv_sheet.enable_bindings(
             "single_select", "column_select", "row_select",
-            "arrowkeys", "edit_cell", "copy", "paste")
+            "arrowkeys", "edit_cell", "copy", "paste",
+            "column_width_resize")
         # Only allow editing New Start / New End columns (5, 6)
         self._adv_sheet.readonly_columns(columns=[0, 1, 2, 3, 4])
         self._adv_sheet.pack(fill=tk.BOTH, expand=True)
@@ -1358,7 +1359,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
             height=300)
         self._simple_sheet.enable_bindings(
             "single_select", "column_select", "row_select",
-            "arrowkeys", "edit_cell", "copy", "paste")
+            "arrowkeys", "edit_cell", "copy", "paste",
+            "column_width_resize")
         self._simple_sheet.readonly_columns(columns=[0, 1, 2])
 
         # ── Output dir ──
@@ -1938,6 +1940,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
 
 
 def main():
+    import logging
+    logging.getLogger("customtkinter").setLevel(logging.ERROR)
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
