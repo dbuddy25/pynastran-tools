@@ -5,17 +5,12 @@ Reads MEFFMASS fraction data (EFMFACS) written by Nastran when
 MEFFMASS(PLOT) is present in case control and prints a single table
 with per-mode fractions and cumulative sums for each direction.
 
-Optionally compares two OP2 files, showing delta tables matched by
-mode number and by MEFFMASS cosine similarity.
-
 Requires: pip install pyNastran numpy
 Optional: pip install openpyxl  (for --xlsx export)
 
 Usage:
     python modal_effective_mass.py model.op2
     python modal_effective_mass.py model.op2 --xlsx output.xlsx
-    python modal_effective_mass.py model.op2 --compare model_v2.op2
-    python modal_effective_mass.py model.op2 -c model_v2.op2 -x compare.xlsx
 """
 import argparse
 import os
@@ -31,15 +26,10 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 try:
-    from modules.meff import (compare_meff_data, make_meff_styles,
-                               write_meff_single_sheet,
-                               write_comparison_number_sheet,
-                               write_comparison_meff_sheet)
+    from modules.meff import (make_meff_styles, write_meff_single_sheet)
 except ImportError:
-    from postprocessing.modules.meff import (compare_meff_data, make_meff_styles,
-                                              write_meff_single_sheet,
-                                              write_comparison_number_sheet,
-                                              write_comparison_meff_sheet)
+    from postprocessing.modules.meff import (make_meff_styles,
+                                              write_meff_single_sheet)
 
 
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
@@ -70,7 +60,7 @@ def _matrix_to_dense(matrix_obj) -> np.ndarray:
 def _read_data(op2):
     """Extract modes, freqs, fractions, and cumulative sums from OP2.
 
-    Returns a dict compatible with compare_meff_data().
+    Returns a dict with keys *modes*, *freqs*, *frac*, *cumsum*.
     """
     if not op2.eigenvalues:
         print("ERROR: No eigenvalue tables found \u2014 is this a SOL 103 run?")
@@ -117,56 +107,8 @@ def print_table(data):
         print(line)
 
 
-def print_comparison_by_number(comparison):
-    """Print the mode-number-matched comparison table."""
-    bn = comparison['by_number']
-
-    _D = '\u0394'
-    hdr = f"{'Mode':>6s} {'Freq A':>8s} {'Freq B':>8s} {_D + ' Hz':>8s} {_D + ' %':>7s}"
-    for d in DIRECTIONS:
-        hdr += f" {_D + d:>7s}"
-    print(hdr)
-    print("-" * len(hdr))
-
-    for i in range(len(bn['mode'])):
-        line = f"{bn['mode'][i]:6d} {bn['freq_a'][i]:8.1f} {bn['freq_b'][i]:8.1f}"
-        line += f" {bn['delta_hz'][i]:8.1f} {bn['delta_pct'][i]:7.2f}"
-        for j in range(6):
-            line += f" {bn['delta_frac'][i, j]:7.2f}"
-        print(line)
-
-
-def print_comparison_by_meff(comparison):
-    """Print the MEFF-matched comparison table.  Weak matches (sim < 0.5)
-    are flagged with ``*``."""
-    bm = comparison['by_meff']
-
-    _D = '\u0394'
-    hdr = (f"{'Mode A':>6s} {'Match B':>7s} {'Sim':>6s}"
-           f" {'Freq A':>8s} {'Freq B':>8s} {_D + ' Hz':>8s} {_D + ' %':>7s}")
-    for d in DIRECTIONS:
-        hdr += f" {_D + d:>7s}"
-    print(hdr)
-    print("-" * len(hdr))
-
-    for i in range(len(bm['mode_a'])):
-        sim = bm['similarity'][i]
-        weak = '*' if sim < 0.5 else ' '
-        line = f"{bm['mode_a'][i]:6d} {bm['match_b'][i]:7d} {sim:5.3f}{weak}"
-        line += f" {bm['freq_a'][i]:8.1f} {bm['freq_b'][i]:8.1f}"
-        line += f" {bm['delta_hz'][i]:8.1f} {bm['delta_pct'][i]:7.2f}"
-        for j in range(6):
-            line += f" {bm['delta_frac'][i, j]:7.2f}"
-        print(line)
-
-
-def export_to_excel(data_a, xlsx_path, data_b=None, comparison=None):
-    """Export to a formatted Excel workbook.
-
-    When *comparison* is provided, produces a 4-sheet workbook (File A,
-    File B, Compare by Mode Number, Compare by MEFF Match).  Otherwise
-    produces a single-sheet workbook matching the original format.
-    """
+def export_to_excel(data, xlsx_path):
+    """Export to a formatted single-sheet Excel workbook."""
     try:
         from openpyxl import Workbook
     except ImportError:
@@ -177,22 +119,8 @@ def export_to_excel(data_a, xlsx_path, data_b=None, comparison=None):
     wb = Workbook()
     styles = make_meff_styles()
     ws = wb.active
-
-    if comparison is not None and data_b is not None:
-        ws.title = "File A - MEFFMASS"
-        write_meff_single_sheet(ws, data_a, styles)
-
-        ws_b = wb.create_sheet("File B - MEFFMASS")
-        write_meff_single_sheet(ws_b, data_b, styles)
-
-        ws_num = wb.create_sheet("Compare - Mode Number")
-        write_comparison_number_sheet(ws_num, comparison, styles)
-
-        ws_meff = wb.create_sheet("Compare - MEFF Match")
-        write_comparison_meff_sheet(ws_meff, comparison, styles)
-    else:
-        ws.title = "Effective Mass Fractions"
-        write_meff_single_sheet(ws, data_a, styles)
+    ws.title = "Effective Mass Fractions"
+    write_meff_single_sheet(ws, data, styles)
 
     try:
         wb.save(xlsx_path)
@@ -206,39 +134,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Modal effective mass fraction report from Nastran OP2.')
     parser.add_argument('op2', help='Path to the OP2 file')
-    parser.add_argument('--compare', '-c', type=str, default=None,
-                        help='Path to a second OP2 file for comparison')
     parser.add_argument('--xlsx', '-x', type=str, default=None,
                         help='Export to Excel (.xlsx) file')
     args = parser.parse_args()
 
-    op2_a = read_op2_file(args.op2)
-    data_a = _read_data(op2_a)
+    op2 = read_op2_file(args.op2)
+    data = _read_data(op2)
 
-    data_b = None
-    comparison = None
-
-    if args.compare:
-        print("=== File A ===")
-    print_table(data_a)
-
-    if args.compare:
-        op2_b = read_op2_file(args.compare)
-        data_b = _read_data(op2_b)
-
-        print("\n=== File B ===")
-        print_table(data_b)
-
-        comparison = compare_meff_data(data_a, data_b)
-
-        print("\n=== Comparison by Mode Number ===")
-        print_comparison_by_number(comparison)
-
-        print("\n=== Comparison by MEFF Match ===")
-        print_comparison_by_meff(comparison)
+    print_table(data)
 
     if args.xlsx:
-        export_to_excel(data_a, args.xlsx, data_b, comparison)
+        export_to_excel(data, args.xlsx)
 
 
 if __name__ == '__main__':

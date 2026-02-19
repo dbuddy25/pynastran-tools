@@ -19,7 +19,7 @@ Single-window application with sidebar navigation grouping all tools:
   - **Mass Scale** — per-include-file mass scaling (material density, NSM, CONM2 mass/inertia)
   - **Renumber** — per-include-file ID renumbering with validation
 - **Post-Processing**
-  - **MEFF Viewer** — modal effective mass fractions from OP2, with comparison and Excel export
+  - **MEFF Viewer** — modal effective mass fractions from OP2 with Excel export
 
 ### Standalone tools
 
@@ -38,7 +38,6 @@ python postprocessing/modules/meff.py
 # Modal effective mass report (CLI)
 python postprocessing/modal_effective_mass.py model.op2
 python postprocessing/modal_effective_mass.py model.op2 --xlsx output.xlsx
-python postprocessing/modal_effective_mass.py baseline.op2 --compare updated.op2
 ```
 
 ## Installation
