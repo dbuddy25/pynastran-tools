@@ -1318,6 +1318,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._summary = None        # {filepath: {etype: (count, min, max)}}
         self._include_set_ids = tk.BooleanVar(value=True)
         self._small_first = tk.BooleanVar(value=False)
+        self._small_start_var = tk.StringVar(value="1")
+        self._large_start_var = tk.StringVar(value="1")
         self._skip_set = set()      # indices of files to skip
 
         # Row data for sheet: list of tuples linking rows to (filepath, [etypes])
@@ -1366,7 +1368,9 @@ VALIDATION RULES
 OPTIONS
   - Include set IDs: also renumber SPC, MPC, and Load set IDs.
   - Small files first: pack files with count < 100 at the start with
-    flat 100-ID blocks, then allocate larger files after.
+    flat 100-ID blocks, then allocate larger files after. When enabled,
+    separate "Small Start" and "Large Start" fields appear so each
+    group can begin at a different ID.
   - Toggle Skip: exclude selected files from renumbering entirely.
     Skipped files are grayed out and omitted from the ranges.
   - Save/Load Config: persist block assignments to JSON for reuse.\
@@ -1402,11 +1406,35 @@ OPTIONS
         suggest_frame = ctk.CTkFrame(self, fg_color="transparent")
         suggest_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
 
-        ctk.CTkLabel(suggest_frame, text="Start ID:").pack(
+        # Wrapper that holds either the single or dual start ID fields
+        self._start_wrapper = ctk.CTkFrame(suggest_frame, fg_color="transparent")
+        self._start_wrapper.pack(side=tk.LEFT, padx=(0, 8))
+
+        # Single start ID frame (shown when small-first is OFF)
+        self._single_start_frame = ctk.CTkFrame(
+            self._start_wrapper, fg_color="transparent")
+        ctk.CTkLabel(self._single_start_frame, text="Start ID:").pack(
             side=tk.LEFT, padx=(0, 4))
         self._start_id_var = tk.StringVar(value="1")
-        ctk.CTkEntry(suggest_frame, textvariable=self._start_id_var,
-                      width=100).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkEntry(self._single_start_frame, textvariable=self._start_id_var,
+                      width=100).pack(side=tk.LEFT)
+
+        # Dual start ID frame (shown when small-first is ON)
+        self._dual_start_frame = ctk.CTkFrame(
+            self._start_wrapper, fg_color="transparent")
+        ctk.CTkLabel(self._dual_start_frame, text="Small Start:").pack(
+            side=tk.LEFT, padx=(0, 4))
+        ctk.CTkEntry(self._dual_start_frame,
+                      textvariable=self._small_start_var,
+                      width=80).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(self._dual_start_frame, text="Large Start:").pack(
+            side=tk.LEFT, padx=(0, 4))
+        ctk.CTkEntry(self._dual_start_frame,
+                      textvariable=self._large_start_var,
+                      width=80).pack(side=tk.LEFT)
+
+        # Show single-start initially
+        self._single_start_frame.pack(fill=tk.BOTH)
 
         ctk.CTkLabel(suggest_frame, text="Growth:").pack(
             side=tk.LEFT, padx=(0, 4))
@@ -1420,7 +1448,9 @@ OPTIONS
 
         ctk.CTkCheckBox(
             suggest_frame, text="Small files first (count < 100)",
-            variable=self._small_first).pack(side=tk.LEFT, padx=(12, 0))
+            variable=self._small_first,
+            command=self._toggle_start_fields).pack(
+            side=tk.LEFT, padx=(12, 0))
 
         # ── Table container ──
         ctk.CTkLabel(self, text="Block Allocation:",
@@ -1498,6 +1528,15 @@ OPTIONS
             self, textvariable=self._status_var, anchor=tk.W)
         self._status_label.pack(fill=tk.X, padx=10, pady=(0, 6))
 
+    def _toggle_start_fields(self):
+        """Show single or dual start ID fields based on small-first toggle."""
+        if self._small_first.get():
+            self._single_start_frame.pack_forget()
+            self._dual_start_frame.pack(fill=tk.BOTH)
+        else:
+            self._dual_start_frame.pack_forget()
+            self._single_start_frame.pack(fill=tk.BOTH)
+
     # ── Suggest ranges / cascading ───────────────────────────────────────────
 
     def _suggest_ranges(self):
@@ -1507,18 +1546,38 @@ OPTIONS
         - count < 100  → flat 100-ID block, no start rounding
         - count >= 100 → round SIZE to 1-sig-fig (min 100), align start
 
-        When "Small files first" is on, count<100 files are packed at the
-        start before larger files.
+        When "Small files first" is on, count<100 files use a separate
+        cursor (Small Start) from count>=100 files (Large Start).
         """
         if not self._simple_row_map:
             return
 
-        try:
-            cursor = int(self._start_id_var.get().strip())
-        except (ValueError, TypeError):
-            messagebox.showerror("Invalid Start ID",
-                                 "Please enter a valid integer for Start ID.")
-            return
+        small_first = self._small_first.get()
+
+        # Parse start ID(s)
+        if small_first:
+            try:
+                small_cursor = int(self._small_start_var.get().strip())
+            except (ValueError, TypeError):
+                messagebox.showerror("Invalid Start ID",
+                                     "Please enter a valid integer for "
+                                     "Small Start.")
+                return
+            try:
+                large_cursor = int(self._large_start_var.get().strip())
+            except (ValueError, TypeError):
+                messagebox.showerror("Invalid Start ID",
+                                     "Please enter a valid integer for "
+                                     "Large Start.")
+                return
+        else:
+            try:
+                cursor = int(self._start_id_var.get().strip())
+            except (ValueError, TypeError):
+                messagebox.showerror("Invalid Start ID",
+                                     "Please enter a valid integer for "
+                                     "Start ID.")
+                return
 
         # Parse growth factor from dropdown (e.g. "1.5x" → 1.5)
         try:
@@ -1538,7 +1597,6 @@ OPTIONS
                 counts.append(0)
 
         # Build iteration order (skip set excluded, small-first optional)
-        small_first = self._small_first.get()
         if small_first:
             indices = ([i for i in range(n)
                         if i not in self._skip_set and counts[i] < 100] +
@@ -1556,16 +1614,22 @@ OPTIONS
 
         for i in indices:
             count = counts[i]
+            # Pick the correct cursor for this row
+            if small_first:
+                cur = small_cursor if count < 100 else large_cursor
+            else:
+                cur = cursor
+
             if count < 100:
                 # Flat 100-ID block, no start rounding
                 block_size = 100
-                block_start = cursor
+                block_start = cur
             else:
                 # Proportional: round SIZE (not end position)
                 block_size = max(_round_1sf_up(count * growth), 100)
                 mag = 10 ** math.floor(math.log10(block_size))
-                block_start = (cursor if cursor <= mag
-                               else math.ceil(cursor / mag) * mag)
+                block_start = (cur if cur - 1 < mag
+                               else math.ceil((cur - 1) / mag) * mag + 1)
 
             block_end = block_start + block_size - 1
             headroom = block_size - count
@@ -1573,44 +1637,64 @@ OPTIONS
             data[i][self._COL_START] = str(block_start)
             data[i][self._COL_END] = str(block_end)
             data[i][self._COL_HEADROOM] = str(headroom)
-            cursor = block_end + 1
+
+            # Advance the correct cursor
+            if small_first:
+                if count < 100:
+                    small_cursor = block_end + 1
+                else:
+                    large_cursor = block_end + 1
+            else:
+                cursor = block_end + 1
 
         self._simple_sheet.set_sheet_data(data)
         self._apply_skip_styling()
 
     def _on_simple_sheet_modified(self, event=None):
-        """Cascade block ranges and update headroom after any edit."""
+        """Cascade block ranges and update headroom after any edit.
+
+        Only rows from the edited row downward are cascaded; rows above
+        the edit are left untouched so manual adjustments are preserved.
+        """
         data = self._simple_sheet.get_sheet_data()
         if not data or not self._simple_row_map:
             return
 
-        if self._small_first.get():
-            # Small-first mode: starts aren't monotonic in sheet order,
-            # so skip the cascade — only recompute headroom
-            pass
-        else:
-            # Cascade: each Block Start = prev Block End + 1, preserving
-            # block size.  Find the previous non-skipped row for chaining.
-            prev_end = None
-            for i in range(len(data)):
-                if i in self._skip_set:
-                    continue
-                if prev_end is not None:
-                    try:
-                        cur_start = int(
-                            str(data[i][self._COL_START]).strip() or '0')
-                        cur_end = int(
-                            str(data[i][self._COL_END]).strip() or '0')
-                        block_size = max(cur_end - cur_start + 1, 1)
-                        new_start = prev_end + 1
-                        data[i][self._COL_START] = str(new_start)
-                        data[i][self._COL_END] = str(new_start + block_size - 1)
-                    except (ValueError, TypeError):
-                        pass
+        # Find the topmost edited row
+        start_row = 0
+        if event and hasattr(event, 'cells') and hasattr(event.cells, 'table'):
+            edited_rows = [r for r, c in event.cells.table]
+            if edited_rows:
+                start_row = min(edited_rows)
+
+        # Cascade from edited row downward, preserving block sizes
+        prev_end = None
+        for i in range(len(data)):
+            if i in self._skip_set:
+                continue
+            if i < start_row:
+                # Track prev_end but don't modify rows above the edit
                 try:
                     prev_end = int(str(data[i][self._COL_END]).strip())
                 except (ValueError, TypeError):
                     pass
+                continue
+            if prev_end is not None and i > start_row:
+                try:
+                    cur_start = int(
+                        str(data[i][self._COL_START]).strip() or '0')
+                    cur_end = int(
+                        str(data[i][self._COL_END]).strip() or '0')
+                    block_size = max(cur_end - cur_start + 1, 1)
+                    new_start = prev_end + 1
+                    data[i][self._COL_START] = str(new_start)
+                    data[i][self._COL_END] = str(new_start + block_size - 1)
+                except (ValueError, TypeError):
+                    pass
+            try:
+                prev_end = int(str(data[i][self._COL_END]).strip())
+            except (ValueError, TypeError):
+                pass
 
         # Update headroom for non-skipped rows
         for i in range(len(data)):
@@ -2010,6 +2094,8 @@ OPTIONS
             'input_bdf': self._bdf_path,
             'include_set_ids': self._include_set_ids.get(),
             'small_first': self._small_first.get(),
+            'small_start_id': self._small_start_var.get(),
+            'large_start_id': self._large_start_var.get(),
             'output_dir': self._outdir_var.get(),
         }
 
@@ -2052,6 +2138,11 @@ OPTIONS
             self._include_set_ids.set(config['include_set_ids'])
         if 'small_first' in config:
             self._small_first.set(config['small_first'])
+            self._toggle_start_fields()
+        if 'small_start_id' in config:
+            self._small_start_var.set(config['small_start_id'])
+        if 'large_start_id' in config:
+            self._large_start_var.set(config['large_start_id'])
         if 'output_dir' in config:
             self._outdir_var.set(config['output_dir'])
 
