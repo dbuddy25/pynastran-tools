@@ -15,17 +15,6 @@ if not hasattr(np, 'in1d'):
     np.in1d = np.isin
 import scipy.sparse
 
-try:
-    from nastran_tools import show_guide
-except ImportError:
-    try:
-        import importlib
-        _nt = importlib.import_module('nastran_tools')
-        show_guide = _nt.show_guide
-    except Exception:
-        show_guide = None
-
-
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 
 # Header definitions for tksheet
@@ -220,13 +209,10 @@ REQUIREMENTS
         ctk.CTkEntry(toolbar, textvariable=self._title_var, width=200).pack(
             side=tk.LEFT, padx=(0, 4))
 
-        if show_guide is not None:
-            ctk.CTkButton(
-                toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
-                command=lambda: show_guide(
-                    self.frame.winfo_toplevel(), "MEFFMASS Guide",
-                    self._GUIDE_TEXT),
-            ).pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(
+            toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+            command=self._show_guide,
+        ).pack(side=tk.RIGHT, padx=(5, 0))
 
         ctk.CTkButton(toolbar, text="Export to Excel\u2026", width=130,
                        command=self._export_excel).pack(side=tk.RIGHT)
@@ -291,6 +277,16 @@ REQUIREMENTS
                     col = 2 + j * 2  # Frac columns: indices 2, 4, 6, 8, 10, 12
                     if frac[i, j] >= threshold:
                         self._sheet.highlight_cells(row=i, column=col, fg="blue")
+
+    # ---------------------------------------------------------- Guide
+    def _show_guide(self):
+        """Open the guide dialog (lazy import to avoid circular dependency)."""
+        try:
+            from nastran_tools import show_guide
+        except ImportError:
+            return
+        show_guide(self.frame.winfo_toplevel(), "MEFFMASS Guide",
+                   self._GUIDE_TEXT)
 
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):

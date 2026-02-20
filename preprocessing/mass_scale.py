@@ -27,17 +27,6 @@ try:
 except ImportError:
     from preprocessing.bdf_utils import IncludeFileParser, make_model
 
-try:
-    from nastran_tools import show_guide
-except ImportError:
-    try:
-        import importlib, sys, os as _os
-        _nt = importlib.import_module('nastran_tools')
-        show_guide = _nt.show_guide
-    except Exception:
-        show_guide = None
-
-
 GroupInfo = namedtuple('GroupInfo', [
     'ifile', 'filename', 'filepath', 'original_mass',
     'material_ids', 'property_ids', 'mass_elem_ids', 'conrod_ids',
@@ -383,13 +372,10 @@ with a table of all files, scales, and entity counts.\
             toolbar, text="No BDF loaded", text_color="gray")
         self._path_label.pack(side=tk.LEFT, padx=(10, 0))
 
-        if show_guide is not None:
-            ctk.CTkButton(
-                toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
-                command=lambda: show_guide(
-                    self.winfo_toplevel(), "Mass Scale Guide",
-                    self._GUIDE_TEXT),
-            ).pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(
+            toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+            command=self._show_guide,
+        ).pack(side=tk.RIGHT, padx=(5, 0))
 
         self._write_btn = ctk.CTkButton(
             toolbar, text="Write Scaled BDF\u2026", width=140,
@@ -451,6 +437,16 @@ with a table of all files, scales, and entity counts.\
         self._summary_label = ctk.CTkLabel(
             self, text="", font=ctk.CTkFont(weight="bold"))
         self._summary_label.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+    # ---------------------------------------------------------- Guide
+
+    def _show_guide(self):
+        """Open the guide dialog (lazy import to avoid circular dependency)."""
+        try:
+            from nastran_tools import show_guide
+        except ImportError:
+            return
+        show_guide(self.winfo_toplevel(), "Mass Scale Guide", self._GUIDE_TEXT)
 
     # ---------------------------------------------------------- BDF loading
 

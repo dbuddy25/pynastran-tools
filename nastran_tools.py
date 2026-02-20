@@ -140,6 +140,10 @@ class NastranToolsApp(ctk.CTk):
         self._content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Create tool modules
+        # NOTE: Every tool should include a "?" guide button in its toolbar
+        # that calls show_guide() with tool-specific help text. See existing
+        # tools for the pattern (_GUIDE_TEXT class var + _show_guide method
+        # with lazy import to avoid circular dependency).
         self._tools = {}
 
         self._tools['mass_scale'] = MassScaleTool(self._content)

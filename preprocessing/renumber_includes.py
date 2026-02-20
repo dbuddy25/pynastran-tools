@@ -37,16 +37,6 @@ except ImportError:
         make_model,
     )
 
-try:
-    from nastran_tools import show_guide
-except ImportError:
-    try:
-        import importlib
-        _nt = importlib.import_module('nastran_tools')
-        show_guide = _nt.show_guide
-    except Exception:
-        show_guide = None
-
 # Cards that pyNastran may not support — disable to avoid parse errors.
 # Shorter list than mass_scale because the renumber tool needs most contact cards.
 _CARDS_TO_SKIP = [
@@ -1390,13 +1380,10 @@ OPTIONS
         ctk.CTkButton(top, text="Scan", width=70,
                       command=self._scan).pack(side=tk.LEFT, padx=6)
 
-        if show_guide is not None:
-            ctk.CTkButton(
-                top, text="?", width=30, font=ctk.CTkFont(weight="bold"),
-                command=lambda: show_guide(
-                    self.winfo_toplevel(), "Renumber Includes Guide",
-                    self._GUIDE_TEXT),
-            ).pack(side=tk.RIGHT)
+        ctk.CTkButton(
+            top, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+            command=self._show_guide,
+        ).pack(side=tk.RIGHT)
 
         # ── Options row ──
         opt = ctk.CTkFrame(self, fg_color="transparent")
@@ -1609,6 +1596,17 @@ OPTIONS
 
         self._detail_var.set(f"{fname} \u2014 {', '.join(parts)}" if parts
                              else fname)
+
+    # ── Guide ─────────────────────────────────────────────────────────────────
+
+    def _show_guide(self):
+        """Open the guide dialog (lazy import to avoid circular dependency)."""
+        try:
+            from nastran_tools import show_guide
+        except ImportError:
+            return
+        show_guide(self.winfo_toplevel(), "Renumber Includes Guide",
+                   self._GUIDE_TEXT)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
