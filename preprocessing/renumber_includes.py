@@ -1926,8 +1926,8 @@ OPTIONS
         self._simple_sheet.set_sheet_data(rows)
 
         # Register column 0 as checkboxes
-        self._simple_sheet.checkbox(
-            column=self._COL_INCLUDE, checked=True,
+        self._simple_sheet.checkbox_column(
+            self._COL_INCLUDE, checked=True,
             check_function=self._on_include_toggled)
 
         # File and Count are readonly; Headroom is computed (readonly)
