@@ -955,7 +955,10 @@ with a table of all files, scales, and entity counts.\
             for fp in filenames:
                 out_filenames[fp] = fp
 
-        existing = [p for p in out_filenames.values() if os.path.exists(p)]
+        scaled_fps = {g.filepath for g in self._groups
+                      if scales.get(g.ifile, 1.0) != 1.0}
+        existing = [p for fp, p in out_filenames.items()
+                    if fp in scaled_fps and os.path.exists(p)]
         if existing:
             msg = (f"{len(existing)} output file(s) already exist "
                    "and will be overwritten:\n\n")
