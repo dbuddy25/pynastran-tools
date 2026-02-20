@@ -10,10 +10,12 @@ Usage:
     python renumber_includes.py
 """
 import json
+import math
 import os
 import re
 import tkinter as tk
 from collections import defaultdict
+from datetime import datetime
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -47,6 +49,19 @@ _SHORT_LABELS = {
     'load_id': 'Loads', 'contact_id': 'Contact', 'set_id': 'Sets',
     'method_id': 'Methods', 'table_id': 'Tables',
 }
+
+_GROWTH_OPTIONS = ['1.5x', '2.0x', '3.0x', '5.0x']
+
+
+def _round_1sf_up(n):
+    """Round up to 1 significant figure.
+
+    Examples: 67.5 → 70, 1234.5 → 2000, 618 → 700, 7500 → 8000
+    """
+    if n <= 0:
+        return 1
+    mag = 10 ** math.floor(math.log10(n))
+    return int(math.ceil(n / mag)) * mag
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1288,6 +1303,13 @@ class OutputWriter:
 class RenumberIncludesTool(ctk.CTkFrame):
     """Main GUI application for include file renumbering."""
 
+    # Fixed column indices for the 5-column sheet layout
+    _COL_FILE = 0
+    _COL_COUNT = 1
+    _COL_START = 2
+    _COL_END = 3
+    _COL_HEADROOM = 4
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -1298,14 +1320,6 @@ class RenumberIncludesTool(ctk.CTkFrame):
 
         # Row data for sheet: list of tuples linking rows to (filepath, [etypes])
         self._simple_row_map = []  # [(filepath, [etypes...]), ...]
-
-        # Dynamic column layout (set in _populate_simple_sheet)
-        self._etype_columns = []   # entity types with nonzero count
-        self._col_max_count = 1
-        self._col_cur_min = 2
-        self._col_cur_max = 3
-        self._col_new_start = 4
-        self._col_new_end = 5
 
         self._build_ui()
 
@@ -1332,7 +1346,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
             opt, text="Include set IDs (SPC/MPC/Load)",
             variable=self._include_set_ids).pack(side=tk.LEFT)
 
-        # ── Start ID + Suggest Ranges ──
+        # ── Start ID + Growth Factor + Suggest Ranges ──
         suggest_frame = ctk.CTkFrame(self, fg_color="transparent")
         suggest_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
 
@@ -1341,18 +1355,26 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._start_id_var = tk.StringVar(value="1")
         ctk.CTkEntry(suggest_frame, textvariable=self._start_id_var,
                       width=100).pack(side=tk.LEFT, padx=(0, 8))
+
+        ctk.CTkLabel(suggest_frame, text="Growth:").pack(
+            side=tk.LEFT, padx=(0, 4))
+        self._growth_var = tk.StringVar(value=_GROWTH_OPTIONS[0])
+        ctk.CTkOptionMenu(suggest_frame, variable=self._growth_var,
+                          values=_GROWTH_OPTIONS, width=80).pack(
+            side=tk.LEFT, padx=(0, 8))
+
         ctk.CTkButton(suggest_frame, text="Suggest Ranges", width=120,
                        command=self._suggest_ranges).pack(side=tk.LEFT)
 
         # ── Table container ──
-        ctk.CTkLabel(self, text="Entity Summary & Range Editor:",
+        ctk.CTkLabel(self, text="Block Allocation:",
                      font=ctk.CTkFont(weight="bold")).pack(
             anchor=tk.W, padx=10, pady=(6, 2))
 
         self._table_container = ctk.CTkFrame(self)
         self._table_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
 
-        # Simple sheet (the only sheet) — headers set dynamically in _populate_simple_sheet
+        # Simple sheet — 5 fixed columns
         self._simple_sheet = tksheet.Sheet(
             self._table_container,
             show_x_scrollbar=True, show_y_scrollbar=True,
@@ -1364,6 +1386,15 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._simple_sheet.pack(fill=tk.BOTH, expand=True)
         self._simple_sheet.bind("<<SheetModified>>",
                                  self._on_simple_sheet_modified)
+        self._simple_sheet.extra_bindings("cell_select",
+                                          self._on_row_select)
+
+        # ── Detail label for selected row ──
+        self._detail_var = tk.StringVar(value="")
+        self._detail_label = ctk.CTkLabel(
+            self, textvariable=self._detail_var, anchor=tk.W,
+            font=ctk.CTkFont(size=12))
+        self._detail_label.pack(fill=tk.X, padx=10, pady=(2, 2))
 
         # ── Output dir ──
         out_bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -1410,9 +1441,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
     # ── Suggest ranges / cascading ───────────────────────────────────────────
 
     def _suggest_ranges(self):
-        """Auto-suggest round-number ranges starting from the Start ID."""
-        import math
-
+        """Auto-suggest block ranges using growth factor and round-1-sig-fig."""
         if not self._simple_row_map:
             return
 
@@ -1423,51 +1452,94 @@ class RenumberIncludesTool(ctk.CTkFrame):
                                  "Please enter a valid integer for Start ID.")
             return
 
-        col_mc = self._col_max_count
-        col_ns = self._col_new_start
-        col_ne = self._col_new_end
+        # Parse growth factor from dropdown (e.g. "1.5x" → 1.5)
+        try:
+            growth = float(self._growth_var.get().rstrip('x'))
+        except (ValueError, TypeError):
+            growth = 1.5
 
         data = self._simple_sheet.get_sheet_data()
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(data):
                 break
             try:
-                max_count = int(str(data[i][col_mc]).strip())
+                max_count = int(str(data[i][self._COL_COUNT]).strip())
             except (ValueError, TypeError):
                 max_count = 0
             if max_count == 0:
-                data[i][col_ns] = str(cursor)
-                data[i][col_ne] = str(cursor)
+                data[i][self._COL_START] = str(cursor)
+                data[i][self._COL_END] = str(cursor)
+                data[i][self._COL_HEADROOM] = '1'
                 cursor += 1
                 continue
 
-            count_mag = 10 ** max(1, int(math.floor(math.log10(max(max_count, 1)))))
-            rounded_count = int(math.ceil(max_count / count_mag) * count_mag)
-            rounded_end = cursor + rounded_count - 1
-            data[i][col_ns] = str(cursor)
-            data[i][col_ne] = str(rounded_end)
-            cursor = rounded_end + 1
+            block_size = _round_1sf_up(max_count * growth)
+            block_end = cursor + block_size - 1
+            headroom = block_size - max_count
+
+            data[i][self._COL_START] = str(cursor)
+            data[i][self._COL_END] = str(block_end)
+            data[i][self._COL_HEADROOM] = str(headroom)
+            cursor = block_end + 1
 
         self._simple_sheet.set_sheet_data(data)
 
     def _on_simple_sheet_modified(self, event=None):
-        """Cascade New Start values when a New End cell is edited."""
+        """Cascade block ranges and update headroom after any edit."""
         data = self._simple_sheet.get_sheet_data()
         if not data or not self._simple_row_map:
             return
 
-        col_ns = self._col_new_start
-        col_ne = self._col_new_end
-
-        # Re-cascade all rows: each New Start = prev New End + 1
+        # Cascade: each Block Start = prev Block End + 1, preserving block size
         for i in range(1, len(data)):
             try:
-                prev_end = int(str(data[i - 1][col_ne]).strip())
-                data[i][col_ns] = str(prev_end + 1)
+                prev_end = int(str(data[i - 1][self._COL_END]).strip())
+                cur_start = int(str(data[i][self._COL_START]).strip() or '0')
+                cur_end = int(str(data[i][self._COL_END]).strip() or '0')
+                block_size = max(cur_end - cur_start + 1, 1)
+                new_start = prev_end + 1
+                data[i][self._COL_START] = str(new_start)
+                data[i][self._COL_END] = str(new_start + block_size - 1)
+            except (ValueError, TypeError):
+                pass
+
+        # Update headroom for all rows
+        for i in range(len(data)):
+            try:
+                count = int(str(data[i][self._COL_COUNT]).strip() or '0')
+                start = int(str(data[i][self._COL_START]).strip() or '0')
+                end = int(str(data[i][self._COL_END]).strip() or '0')
+                headroom = (end - start + 1) - count
+                data[i][self._COL_HEADROOM] = str(headroom)
             except (ValueError, TypeError):
                 pass
 
         self._simple_sheet.set_sheet_data(data)
+
+    def _on_row_select(self, event=None):
+        """Update detail label with per-type breakdown for selected row."""
+        if not self._summary or not self._simple_row_map:
+            return
+        try:
+            row_idx = self._simple_sheet.get_currently_selected().row
+        except Exception:
+            return
+        if row_idx is None or row_idx < 0 or row_idx >= len(self._simple_row_map):
+            return
+
+        filepath, _ = self._simple_row_map[row_idx]
+        etypes = self._summary.get(filepath, {})
+        fname = os.path.basename(filepath)
+
+        parts = []
+        for et in ENTITY_TYPES:
+            info = etypes.get(et)
+            if info and info[0] > 0:
+                label = _SHORT_LABELS.get(et, et)
+                parts.append(f"{info[0]} {label}")
+
+        self._detail_var.set(f"{fname} \u2014 {', '.join(parts)}" if parts
+                             else fname)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1535,36 +1607,13 @@ class RenumberIncludesTool(ctk.CTkFrame):
     def _populate_simple_sheet(self):
         """Build simple sheet data from scan results.
 
-        Column layout:
-            File | [per-type count columns...] | Max Count | Cur Min | Cur Max | New Start | New End
+        Column layout (5 fixed columns):
+            File | Count | Block Start | Block End | Headroom
         """
         self._simple_row_map = []
 
-        # Determine which entity types have nonzero counts in any file
-        etype_has_data = set()
-        for filepath in self._parser.all_files:
-            etypes = self._summary.get(filepath, {})
-            for et, (count, _, _) in etypes.items():
-                if count > 0:
-                    etype_has_data.add(et)
+        headers = ['File', 'Count', 'Block Start', 'Block End', 'Headroom']
 
-        self._etype_columns = [et for et in ENTITY_TYPES if et in etype_has_data]
-        n_type_cols = len(self._etype_columns)
-
-        # Compute dynamic column indices
-        self._col_max_count = 1 + n_type_cols
-        self._col_cur_min = 2 + n_type_cols
-        self._col_cur_max = 3 + n_type_cols
-        self._col_new_start = 4 + n_type_cols
-        self._col_new_end = 5 + n_type_cols
-
-        # Build headers
-        headers = ['File']
-        for et in self._etype_columns:
-            headers.append(_SHORT_LABELS.get(et, et))
-        headers.extend(['Max Count', 'Cur Min', 'Cur Max', 'New Start', 'New End'])
-
-        # Build row data
         rows = []
         for filepath in self._parser.all_files:
             fname = os.path.basename(filepath)
@@ -1575,40 +1624,19 @@ class RenumberIncludesTool(ctk.CTkFrame):
             if not etypes:
                 continue
 
-            row = [display]
-
-            # Per-type counts
-            max_count = 0
-            for et in self._etype_columns:
-                count = etypes.get(et, (0, 0, 0))[0]
-                row.append(str(count) if count > 0 else '')
-                if count > max_count:
-                    max_count = count
-
-            # Max count, cur min, cur max
-            all_mins = [mn for _, mn, _ in etypes.values()]
-            all_maxs = [mx for _, _, mx in etypes.values()]
-            overall_min = min(all_mins) if all_mins else 1
-            overall_max = max(all_maxs) if all_maxs else 1
-
-            row.extend([
-                str(max_count),
-                str(overall_min),
-                str(overall_max),
-                str(overall_min),
-                str(overall_max),
-            ])
+            # Count = max across all entity types
+            max_count = max((c for c, _, _ in etypes.values()), default=0)
 
             etypes_present = [et for et in ENTITY_TYPES if et in etypes]
-            rows.append(row)
+            rows.append([display, str(max_count), '', '', ''])
             self._simple_row_map.append((filepath, etypes_present))
 
         self._simple_sheet.headers(headers)
         self._simple_sheet.set_sheet_data(rows)
 
-        # All columns readonly except New Start and New End
-        readonly = list(range(self._col_new_start))
-        self._simple_sheet.readonly_columns(columns=readonly)
+        # File and Count are readonly; Headroom is computed (readonly)
+        self._simple_sheet.readonly_columns(
+            columns=[self._COL_FILE, self._COL_COUNT, self._COL_HEADROOM])
 
         self._simple_sheet.set_all_cell_sizes_to_text()
 
@@ -1628,16 +1656,14 @@ class RenumberIncludesTool(ctk.CTkFrame):
         Nastran), so no sub-allocation is needed.
         """
         data = self._simple_sheet.get_sheet_data()
-        col_ns = self._col_new_start
-        col_ne = self._col_new_end
         ranges = {}
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(data):
                 break
             row = data[i]
             try:
-                start = int(str(row[col_ns]).strip())
-                end = int(str(row[col_ne]).strip())
+                start = int(str(row[self._COL_START]).strip())
+                end = int(str(row[self._COL_END]).strip())
             except (ValueError, TypeError):
                 messagebox.showerror(
                     "Invalid Range",
@@ -1743,6 +1769,9 @@ class RenumberIncludesTool(ctk.CTkFrame):
             for e in post_errors:
                 self._log_msg(f"  POST-ERROR: {e}")
 
+            # 8. Write markdown summary
+            self._write_summary(outdir, written)
+
             if not post_errors:
                 self._log_msg("--- Renumbering complete (no errors) ---")
                 self._status_var.set("Done -- renumbering applied successfully")
@@ -1757,6 +1786,42 @@ class RenumberIncludesTool(ctk.CTkFrame):
             self._log_msg(f"FATAL: {exc}")
             self._status_var.set("Apply failed")
             messagebox.showerror("Error", str(exc))
+
+    def _write_summary(self, outdir, written_files):
+        """Write renumber_summary.md to the output directory."""
+        data = self._simple_sheet.get_sheet_data()
+        summary_path = os.path.join(outdir, 'renumber_summary.md')
+
+        lines = [
+            '# Renumber Summary\n',
+            '\n',
+            f'**Date:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n',
+            f'**Original BDF:** {self._bdf_path}\n',
+            '\n',
+            '## Block Assignments\n',
+            '\n',
+            '| File | Count | Block Start | Block End | Headroom |\n',
+            '|------|-------|-------------|-----------|----------|\n',
+        ]
+
+        for i, (filepath, _) in enumerate(self._simple_row_map):
+            if i >= len(data):
+                break
+            row = data[i]
+            fname = os.path.basename(filepath)
+            lines.append(
+                f'| {fname} | {row[self._COL_COUNT]} '
+                f'| {row[self._COL_START]} | {row[self._COL_END]} '
+                f'| {row[self._COL_HEADROOM]} |\n')
+
+        lines.append('\n## Output Files\n\n')
+        for f in written_files:
+            lines.append(f'- `{f}`\n')
+
+        with open(summary_path, 'w') as f:
+            f.writelines(lines)
+
+        self._log_msg(f"Summary written to {summary_path}")
 
     # ── Config save/load ─────────────────────────────────────────────────────
 
@@ -1780,16 +1845,14 @@ class RenumberIncludesTool(ctk.CTkFrame):
         }
 
         simple_data = self._simple_sheet.get_sheet_data()
-        col_ns = self._col_new_start
-        col_ne = self._col_new_end
         simple_ranges = {}
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(simple_data):
                 break
             row = simple_data[i]
             try:
-                s = int(str(row[col_ns]).strip())
-                e = int(str(row[col_ne]).strip())
+                s = int(str(row[self._COL_START]).strip())
+                e = int(str(row[self._COL_END]).strip())
                 simple_ranges[os.path.basename(filepath)] = [s, e]
             except (ValueError, TypeError):
                 pass
@@ -1816,10 +1879,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
         if 'output_dir' in config:
             self._outdir_var.set(config['output_dir'])
 
-        # Apply simple ranges
+        # Apply simple ranges and recompute headroom
         simple_cfg = config.get('simple_ranges', {})
-        col_ns = self._col_new_start
-        col_ne = self._col_new_end
         applied = 0
         if simple_cfg:
             simple_data = self._simple_sheet.get_sheet_data()
@@ -1829,8 +1890,15 @@ class RenumberIncludesTool(ctk.CTkFrame):
                 fname = os.path.basename(filepath)
                 if fname in simple_cfg:
                     s, e = simple_cfg[fname]
-                    simple_data[i][col_ns] = str(s)
-                    simple_data[i][col_ne] = str(e)
+                    simple_data[i][self._COL_START] = str(s)
+                    simple_data[i][self._COL_END] = str(e)
+                    try:
+                        count = int(str(simple_data[i][self._COL_COUNT]).strip()
+                                    or '0')
+                        simple_data[i][self._COL_HEADROOM] = str(
+                            (e - s + 1) - count)
+                    except (ValueError, TypeError):
+                        pass
                     applied += 1
             self._simple_sheet.set_sheet_data(simple_data)
 
