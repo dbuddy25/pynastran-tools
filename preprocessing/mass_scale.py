@@ -385,6 +385,14 @@ class MassScaleTool(ctk.CTkFrame):
         self._sheet.align_columns(columns=[1, 2, 3, 4], align="center",
                                   align_header=True)
         self._sheet.bind("<<SheetModified>>", self._on_sheet_modified)
+        self._sheet.extra_bindings("cell_select", self._on_row_select)
+
+        # Detail bar (entity breakdown for selected row)
+        self._detail_var = tk.StringVar(value="")
+        self._detail_label = ctk.CTkLabel(
+            self, textvariable=self._detail_var, text_color="gray",
+            anchor="w")
+        self._detail_label.pack(fill=tk.X, padx=10, pady=(0, 0))
 
         # Summary bar
         self._summary_label = ctk.CTkLabel(
@@ -544,6 +552,8 @@ class MassScaleTool(ctk.CTkFrame):
     def _populate_sheet(self):
         """Fill the tksheet with group data."""
         self._sheet.dehighlight_all(redraw=False)
+        # Clear stale cell-level readonly state from previous populate calls
+        self._sheet.readonly_columns(columns=[], readonly=False)
         multiplier = 386.1 if self._divide_386.get() else 1.0
         hide_zero = self._hide_zero.get()
 
@@ -633,6 +643,33 @@ class MassScaleTool(ctk.CTkFrame):
         self._summary_label.configure(
             text=f"Total: {disp_scaled:.4e}  "
                  f"(original: {disp_orig:.4e})")
+
+    # ------------------------------------------------ Row select detail
+
+    def _on_row_select(self, event=None):
+        """Show entity breakdown for the selected row."""
+        try:
+            row = self._sheet.get_currently_selected().row
+        except Exception:
+            return
+        if row is None or row >= len(self._visible_indices):
+            self._detail_var.set("")
+            return
+        gi = self._visible_indices[row]
+        group = self._groups[gi]
+        parts = []
+        if group.material_ids:
+            parts.append(f"{len(group.material_ids)} MATs (rho)")
+        if group.property_ids:
+            parts.append(f"{len(group.property_ids)} PROPs (nsm)")
+        if group.mass_elem_ids:
+            parts.append(f"{len(group.mass_elem_ids)} Mass Elems")
+        if group.conrod_ids:
+            parts.append(f"{len(group.conrod_ids)} CONRODs")
+        if parts:
+            self._detail_var.set(f"{group.filename} — " + ", ".join(parts))
+        else:
+            self._detail_var.set(f"{group.filename} — no scalable entities")
 
     # ------------------------------------------------ Reset
 
@@ -785,6 +822,31 @@ class MassScaleTool(ctk.CTkFrame):
         lines.append(f'**Total Scaled Mass:** {total_scaled:.4e}')
         lines.append('')
 
+        # Entity types breakdown (only for scaled files)
+        entity_lines = []
+        for group, out_path in written_files:
+            scale = scales.get(group.ifile, 1.0)
+            if scale == 1.0:
+                continue
+            parts = []
+            if group.material_ids:
+                parts.append(f"{len(group.material_ids)} MATs (rho)")
+            if group.property_ids:
+                parts.append(f"{len(group.property_ids)} PROPs (nsm)")
+            if group.mass_elem_ids:
+                parts.append(f"{len(group.mass_elem_ids)} Mass Elems")
+            if group.conrod_ids:
+                parts.append(f"{len(group.conrod_ids)} CONRODs")
+            if parts:
+                entity_lines.append(
+                    f'- **{group.filename}** — ' + ', '.join(parts))
+
+        if entity_lines:
+            lines.append('## Scaled Entity Types')
+            lines.append('')
+            lines.extend(entity_lines)
+            lines.append('')
+
         # Output files list
         lines.append('## Output Files')
         lines.append('')
@@ -844,12 +906,27 @@ class MassScaleTool(ctk.CTkFrame):
             for fp in filenames:
                 out_filenames[fp] = fp
 
+        existing = [p for p in out_filenames.values() if os.path.exists(p)]
+        if existing:
+            msg = (f"{len(existing)} output file(s) already exist "
+                   "and will be overwritten:\n\n")
+            msg += "\n".join(os.path.basename(p) for p in existing[:10])
+            if len(existing) > 10:
+                msg += f"\n... and {len(existing) - 10} more"
+            if not messagebox.askyesno("Confirm overwrite", msg):
+                return
+
         originals = self._capture_originals()
         written_files = []
+        total_to_write = sum(
+            1 for g in self._groups
+            if out_filenames.get(g.filepath) is not None
+            and scales.get(g.ifile, 1.0) != 1.0)
         try:
             self._apply_scale_factors_inplace(scales)
             model.uncross_reference()
 
+            file_num = 0
             for i, group in enumerate(self._groups):
                 fp = group.filepath
                 dst = out_filenames.get(fp)
@@ -858,6 +935,12 @@ class MassScaleTool(ctk.CTkFrame):
 
                 if scales.get(group.ifile, 1.0) == 1.0:
                     continue  # skip unscaled files entirely
+
+                file_num += 1
+                self._summary_label.configure(
+                    text=f"Writing {group.filename}... "
+                         f"({file_num}/{total_to_write})")
+                self.update_idletasks()
 
                 out_dir = os.path.dirname(dst)
                 if out_dir:
@@ -878,8 +961,10 @@ class MassScaleTool(ctk.CTkFrame):
             except Exception:
                 pass
 
+        self._update_summary()
+
         if written_files:
-            summary_dir = os.path.dirname(written_files[0][1])
+            summary_dir = os.path.dirname(self._bdf_path)
             summary_path = os.path.join(summary_dir, 'scale_summary.md')
             self._write_summary(summary_path, written_files, scales)
             messagebox.showinfo(
