@@ -50,7 +50,6 @@ _SHORT_LABELS = {
     'method_id': 'Methods', 'table_id': 'Tables',
 }
 
-_GROWTH_OPTIONS = ['1.5x', '2.0x', '3.0x', '5.0x']
 
 
 def _round_1sf_up(n):
@@ -1453,9 +1452,9 @@ OPTIONS
 
         ctk.CTkLabel(suggest_frame, text="Growth:").pack(
             side=tk.LEFT, padx=(0, 4))
-        self._growth_var = tk.StringVar(value=_GROWTH_OPTIONS[0])
-        ctk.CTkOptionMenu(suggest_frame, variable=self._growth_var,
-                          values=_GROWTH_OPTIONS, width=80).pack(
+        self._growth_var = tk.StringVar(value="1.5")
+        ctk.CTkEntry(suggest_frame, textvariable=self._growth_var,
+                     width=60).pack(
             side=tk.LEFT, padx=(0, 8))
 
         ctk.CTkButton(suggest_frame, text="Auto Allocate", width=120,
@@ -1594,11 +1593,17 @@ OPTIONS
                                      "Start ID.")
                 return
 
-        # Parse growth factor from dropdown (e.g. "1.5x" → 1.5)
+        # Parse growth factor
         try:
             growth = float(self._growth_var.get().rstrip('x'))
         except (ValueError, TypeError):
-            growth = 1.5
+            messagebox.showerror("Invalid Growth",
+                                 "Growth must be a number >= 1.0")
+            return
+        if growth < 1.0:
+            messagebox.showerror("Invalid Growth",
+                                 "Growth must be >= 1.0")
+            return
 
         data = self._simple_sheet.get_sheet_data()
         n = min(len(self._simple_row_map), len(data))
@@ -2009,8 +2014,11 @@ OPTIONS
         frozen_ranges = self._get_frozen_ranges()
         merged = {**ranges, **frozen_ranges}
         frozen_files = set(frozen_ranges.keys())
+        # Only validate files that have ranges (renumbered or frozen)
+        relevant_ids = {fp: ids for fp, ids in self._parser.file_ids.items()
+                        if fp in merged}
         errors = Validator.validate_ranges(
-            self._parser.file_ids, merged, include_sets,
+            relevant_ids, merged, include_sets,
             frozen_files=frozen_files)
 
         if errors:
@@ -2038,8 +2046,11 @@ OPTIONS
         frozen_ranges = self._get_frozen_ranges()
         merged = {**ranges, **frozen_ranges}
         frozen_files = set(frozen_ranges.keys())
+        # Only validate files that have ranges (renumbered or frozen)
+        relevant_ids = {fp: ids for fp, ids in self._parser.file_ids.items()
+                        if fp in merged}
         errors = Validator.validate_ranges(
-            self._parser.file_ids, merged, include_sets,
+            relevant_ids, merged, include_sets,
             frozen_files=frozen_files)
         if errors:
             self._log_msg("--- Pre-apply validation FAILED ---")
