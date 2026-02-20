@@ -113,8 +113,16 @@ class Validator:
     """Pre-apply and post-apply validation checks."""
 
     @staticmethod
-    def validate_ranges(file_ids, ranges, include_set_ids=True):
-        """Pre-apply validation. Returns list of error strings (empty = OK)."""
+    def validate_ranges(file_ids, ranges, include_set_ids=True,
+                        frozen_files=None):
+        """Pre-apply validation. Returns list of error strings (empty = OK).
+
+        frozen_files: set of filepaths whose ranges are existing (not
+            renumbered).  These are included in overlap checks but skip
+            capacity and positive-ID checks.
+        """
+        if frozen_files is None:
+            frozen_files = set()
         errors = []
 
         for etype in ENTITY_TYPES:
@@ -134,36 +142,38 @@ class Validator:
                 range_info = ranges.get(filepath, {}).get(etype)
 
                 if range_info is None:
-                    errors.append(
-                        f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
-                        f"no range specified for {len(ids)} entities")
+                    # Only error for files that are being renumbered
+                    if filepath not in frozen_files:
+                        errors.append(
+                            f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
+                            f"no range specified for {len(ids)} entities")
                     continue
 
                 start_id, end_id = range_info
-                count = len(ids)
 
-                # Positive IDs
-                if start_id < 1:
-                    errors.append(
-                        f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
-                        f"start_id must be >= 1 (got {start_id})")
-                if end_id < start_id:
-                    errors.append(
-                        f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
-                        f"end_id ({end_id}) < start_id ({start_id})")
-                    continue
-
-                # Capacity check
-                capacity = end_id - start_id + 1
-                if capacity < count:
-                    errors.append(
-                        f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
-                        f"range [{start_id}-{end_id}] has capacity {capacity} "
-                        f"but {count} entities need renumbering")
+                # Capacity and positive-ID checks only for renumbered files
+                if filepath not in frozen_files:
+                    count = len(ids)
+                    if start_id < 1:
+                        errors.append(
+                            f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
+                            f"start_id must be >= 1 (got {start_id})")
+                    if end_id < start_id:
+                        errors.append(
+                            f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
+                            f"end_id ({end_id}) < start_id ({start_id})")
+                        continue
+                    capacity = end_id - start_id + 1
+                    if capacity < count:
+                        errors.append(
+                            f"{fname}/{ENTITY_LABELS.get(etype, etype)}: "
+                            f"range [{start_id}-{end_id}] has capacity "
+                            f"{capacity} but {count} entities need "
+                            f"renumbering")
 
                 etype_ranges.append((start_id, end_id, fname))
 
-            # Overlap check
+            # Overlap check (includes both frozen and non-frozen)
             etype_ranges.sort()
             for i in range(len(etype_ranges) - 1):
                 s1, e1, f1 = etype_ranges[i]
@@ -174,8 +184,10 @@ class Validator:
                         f"ranges overlap between {f1} [{s1}-{e1}] "
                         f"and {f2} [{s2}-{e2}]")
 
-        # CID 0 check
+        # CID 0 check — only for files being renumbered
         for filepath in file_ids:
+            if filepath in frozen_files:
+                continue
             cids = file_ids[filepath].get('cid', set())
             if 0 in cids:
                 range_info = ranges.get(filepath, {}).get('cid')
@@ -1303,12 +1315,13 @@ class OutputWriter:
 class RenumberIncludesTool(ctk.CTkFrame):
     """Main GUI application for include file renumbering."""
 
-    # Fixed column indices for the 5-column sheet layout
-    _COL_FILE = 0
-    _COL_COUNT = 1
-    _COL_START = 2
-    _COL_END = 3
-    _COL_HEADROOM = 4
+    # Fixed column indices for the 6-column sheet layout
+    _COL_INCLUDE = 0
+    _COL_FILE = 1
+    _COL_COUNT = 2
+    _COL_START = 3
+    _COL_END = 4
+    _COL_HEADROOM = 5
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1371,8 +1384,10 @@ OPTIONS
     flat 100-ID blocks, then allocate larger files after. When enabled,
     separate "Small Start" and "Large Start" fields appear so each
     group can begin at a different ID.
-  - Toggle Skip: exclude selected files from renumbering entirely.
-    Skipped files are grayed out and omitted from the ranges.
+  - Include checkbox: uncheck a file to exclude it from renumbering.
+    Skipped files show their existing ID ranges (grayed out) and
+    validation ensures new ranges don't overlap with them. The
+    "Toggle Skip" button toggles the selected row's checkbox.
   - Save/Load Config: persist block assignments to JSON for reuse.\
 """
 
@@ -1460,7 +1475,7 @@ OPTIONS
         self._table_container = ctk.CTkFrame(self)
         self._table_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=2)
 
-        # Simple sheet — 5 fixed columns
+        # Simple sheet — 6 fixed columns (Include checkbox + 5 data)
         self._simple_sheet = tksheet.Sheet(
             self._table_container,
             show_x_scrollbar=True, show_y_scrollbar=True,
@@ -1647,7 +1662,7 @@ OPTIONS
             else:
                 cursor = block_end + 1
 
-        self._simple_sheet.set_sheet_data(data)
+        self._simple_sheet.set_sheet_data(data, reset_col_positions=False)
         self._apply_skip_styling()
 
     def _on_simple_sheet_modified(self, event=None):
@@ -1660,12 +1675,14 @@ OPTIONS
         if not data or not self._simple_row_map:
             return
 
-        # Find the topmost edited row
+        # Find the topmost edited row; ignore checkbox column edits
         start_row = 0
         if event and hasattr(event, 'cells') and hasattr(event.cells, 'table'):
-            edited_rows = [r for r, c in event.cells.table]
-            if edited_rows:
-                start_row = min(edited_rows)
+            edited = [(r, c) for r, c in event.cells.table
+                      if c != self._COL_INCLUDE]
+            if not edited:
+                return  # only checkbox column changed
+            start_row = min(r for r, c in edited)
 
         # Cascade from edited row downward, preserving block sizes
         prev_end = None
@@ -1709,7 +1726,7 @@ OPTIONS
             except (ValueError, TypeError):
                 pass
 
-        self._simple_sheet.set_sheet_data(data)
+        self._simple_sheet.set_sheet_data(data, reset_col_positions=False)
 
     def _on_row_select(self, event=None):
         """Update detail label with per-type breakdown for selected row."""
@@ -1737,8 +1754,16 @@ OPTIONS
         self._detail_var.set(f"{fname} \u2014 {', '.join(parts)}" if parts
                              else fname)
 
+    def _on_include_toggled(self, event=None):
+        """Handle checkbox toggle — rebuild skip set and restyle."""
+        data = self._simple_sheet.get_sheet_data()
+        n = min(len(data), len(self._simple_row_map))
+        self._skip_set = {i for i in range(n)
+                          if not data[i][self._COL_INCLUDE]}
+        self._apply_skip_styling()
+
     def _toggle_skip(self):
-        """Toggle the selected row's skip status."""
+        """Toggle the selected row's include checkbox."""
         if not self._simple_row_map:
             return
         try:
@@ -1748,26 +1773,46 @@ OPTIONS
         if row_idx is None or row_idx < 0 or row_idx >= len(self._simple_row_map):
             return
 
-        if row_idx in self._skip_set:
-            self._skip_set.discard(row_idx)
-        else:
-            self._skip_set.add(row_idx)
+        data = self._simple_sheet.get_sheet_data()
+        data[row_idx][self._COL_INCLUDE] = not data[row_idx][self._COL_INCLUDE]
+        self._simple_sheet.set_sheet_data(data, reset_col_positions=False)
 
+        n = min(len(data), len(self._simple_row_map))
+        self._skip_set = {i for i in range(n)
+                          if not data[i][self._COL_INCLUDE]}
         self._apply_skip_styling()
 
     def _apply_skip_styling(self):
-        """Gray out skipped rows and blank their Start/End/Headroom."""
+        """Style rows: skipped files show existing ranges (grayed out)."""
         data = self._simple_sheet.get_sheet_data()
         for i in range(len(data)):
+            if i >= len(self._simple_row_map):
+                break
+            filepath, etypes_present = self._simple_row_map[i]
             if i in self._skip_set:
-                data[i][self._COL_START] = ''
-                data[i][self._COL_END] = ''
+                # Show existing ID range from scan summary
+                etypes = self._summary.get(filepath, {}) if self._summary else {}
+                all_mins = []
+                all_maxs = []
+                for et in etypes_present:
+                    info = etypes.get(et)
+                    if info and info[0] > 0:
+                        all_mins.append(info[1])
+                        all_maxs.append(info[2])
+                if all_mins:
+                    data[i][self._COL_START] = str(min(all_mins))
+                    data[i][self._COL_END] = str(max(all_maxs))
+                else:
+                    data[i][self._COL_START] = ''
+                    data[i][self._COL_END] = ''
                 data[i][self._COL_HEADROOM] = ''
+                data[i][self._COL_INCLUDE] = False
                 self._simple_sheet.highlight_rows(
                     rows=[i], bg='gray70', fg='gray40')
             else:
+                data[i][self._COL_INCLUDE] = True
                 self._simple_sheet.dehighlight_rows(rows=[i])
-        self._simple_sheet.set_sheet_data(data)
+        self._simple_sheet.set_sheet_data(data, reset_col_positions=False)
 
     # ── Guide ─────────────────────────────────────────────────────────────────
 
@@ -1848,12 +1893,12 @@ OPTIONS
     def _populate_simple_sheet(self):
         """Build simple sheet data from scan results.
 
-        Column layout (5 fixed columns):
-            File | Count | Block Start | Block End | Headroom
+        Column layout (6 fixed columns):
+            Include | File | Count | Block Start | Block End | Headroom
         """
         self._simple_row_map = []
 
-        headers = ['File', 'Count', 'Block Start', 'Block End', 'Headroom']
+        headers = ['', 'File', 'Count', 'Block Start', 'Block End', 'Headroom']
 
         rows = []
         for filepath in self._parser.all_files:
@@ -1869,11 +1914,16 @@ OPTIONS
             max_count = max((c for c, _, _ in etypes.values()), default=0)
 
             etypes_present = [et for et in ENTITY_TYPES if et in etypes]
-            rows.append([display, str(max_count), '', '', ''])
+            rows.append([True, display, str(max_count), '', '', ''])
             self._simple_row_map.append((filepath, etypes_present))
 
         self._simple_sheet.headers(headers)
         self._simple_sheet.set_sheet_data(rows)
+
+        # Register column 0 as checkboxes
+        self._simple_sheet.checkbox(
+            column=self._COL_INCLUDE, checked=True,
+            check_function=self._on_include_toggled)
 
         # File and Count are readonly; Headroom is computed (readonly)
         self._simple_sheet.readonly_columns(
@@ -1926,6 +1976,27 @@ OPTIONS
             ranges[filepath] = {etype: (start, end) for etype in etypes}
         return ranges
 
+    def _get_frozen_ranges(self):
+        """Return existing per-etype ranges for skipped (frozen) files.
+
+        These are used in validation to check overlap with renumbered
+        files.  Returns dict[filepath, dict[etype, (min_id, max_id)]].
+        """
+        frozen = {}
+        for i in self._skip_set:
+            if i >= len(self._simple_row_map):
+                continue
+            filepath, etypes_present = self._simple_row_map[i]
+            etypes = self._summary.get(filepath, {}) if self._summary else {}
+            file_ranges = {}
+            for et in etypes_present:
+                info = etypes.get(et)
+                if info and info[0] > 0:
+                    file_ranges[et] = (info[1], info[2])
+            if file_ranges:
+                frozen[filepath] = file_ranges
+        return frozen
+
     # ── Validate / Apply ─────────────────────────────────────────────────────
 
     def _validate(self):
@@ -1935,8 +2006,12 @@ OPTIONS
             return
 
         include_sets = self._include_set_ids.get()
+        frozen_ranges = self._get_frozen_ranges()
+        merged = {**ranges, **frozen_ranges}
+        frozen_files = set(frozen_ranges.keys())
         errors = Validator.validate_ranges(
-            self._parser.file_ids, ranges, include_sets)
+            self._parser.file_ids, merged, include_sets,
+            frozen_files=frozen_files)
 
         if errors:
             self._log_msg("--- Validation FAILED ---")
@@ -1960,8 +2035,12 @@ OPTIONS
 
         include_sets = self._include_set_ids.get()
 
+        frozen_ranges = self._get_frozen_ranges()
+        merged = {**ranges, **frozen_ranges}
+        frozen_files = set(frozen_ranges.keys())
         errors = Validator.validate_ranges(
-            self._parser.file_ids, ranges, include_sets)
+            self._parser.file_ids, merged, include_sets,
+            frozen_files=frozen_files)
         if errors:
             self._log_msg("--- Pre-apply validation FAILED ---")
             for err in errors:
@@ -1973,7 +2052,7 @@ OPTIONS
         self.update_idletasks()
 
         try:
-            # 1. Build maps
+            # 1. Build maps (only non-frozen ranges)
             self._log_msg("Building ID maps\u2026")
             builder = MappingBuilder(self._parser.file_ids, ranges)
             maps = builder.build()
@@ -2179,7 +2258,8 @@ OPTIONS
                     except (ValueError, TypeError):
                         pass
                     applied += 1
-            self._simple_sheet.set_sheet_data(simple_data)
+            self._simple_sheet.set_sheet_data(simple_data,
+                                              reset_col_positions=False)
 
         self._apply_skip_styling()
         self._log_msg(f"Config loaded from {path} ({applied} ranges applied)")
