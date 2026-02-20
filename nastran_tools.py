@@ -34,6 +34,26 @@ except Exception:
     _meff_available = False
 
 
+__version__ = "0.1.0"
+
+
+def show_guide(parent, title, text):
+    """Open a non-modal guide dialog with read-only text."""
+    win = ctk.CTkToplevel(parent)
+    win.title(title)
+    win.geometry("550x420")
+    win.resizable(True, True)
+    win.transient(parent)
+
+    tb = ctk.CTkTextbox(win, wrap="word")
+    tb.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+    tb.insert("1.0", text)
+    tb.configure(state="disabled")
+
+    ctk.CTkButton(win, text="Close", width=80,
+                  command=win.destroy).pack(pady=(0, 10))
+
+
 class Sidebar(ctk.CTkFrame):
     """Fixed-width sidebar with section headers and tool buttons."""
 
@@ -105,7 +125,7 @@ class NastranToolsApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("Nastran Tools")
+        self.title(f"Nastran Tools v{__version__}")
         self.geometry("1400x800")
         self.minsize(1000, 600)
 

@@ -15,6 +15,16 @@ if not hasattr(np, 'in1d'):
     np.in1d = np.isin
 import scipy.sparse
 
+try:
+    from nastran_tools import show_guide
+except ImportError:
+    try:
+        import importlib
+        _nt = importlib.import_module('nastran_tools')
+        show_guide = _nt.show_guide
+    except Exception:
+        show_guide = None
+
 
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 
@@ -159,6 +169,45 @@ class MeffModule:
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
+    _GUIDE_TEXT = """\
+MEFFMASS Tool — Quick Guide
+
+PURPOSE
+Display modal effective mass fractions from a Nastran OP2 file. Shows
+per-mode participation in each translational (Tx, Ty, Tz) and rotational
+(Rx, Ry, Rz) direction along with cumulative sums.
+
+WORKFLOW
+1. Open OP2 — select a Nastran OP2 file containing MEFFMASS data.
+   (Requires MEFFMASS(PLOT) = ALL in your case control deck.)
+2. Review — the table shows Mode, Frequency, and Frac/Sum columns for
+   each direction. Modes with fraction >= threshold are highlighted.
+3. Adjust Threshold — change the highlight threshold (default 0.1) to
+   focus on significant modes.
+4. Export to Excel — save the table as a formatted .xlsx workbook.
+
+THRESHOLD FILTER
+Fraction values >= threshold are displayed in bold/blue. Changing the
+threshold updates highlights in real time. This helps identify which
+modes carry significant mass participation.
+
+TITLE FIELD
+Optional title text that appears as a header row in the Excel export.
+Leave blank to omit.
+
+EXCEL EXPORT
+Produces a styled workbook with:
+  - Merged direction group headers (Tx, Ty, ... Rz)
+  - Bold formatting for values above threshold
+  - Frozen header rows for easy scrolling
+  - Color-coded header bands
+
+REQUIREMENTS
+  - pyNastran (for OP2 reading)
+  - numpy, scipy
+  - openpyxl (for Excel export only)\
+"""
+
     def _build_ui(self):
         toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=5, pady=(5, 0))
@@ -170,6 +219,14 @@ class MeffModule:
         ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(10, 2))
         ctk.CTkEntry(toolbar, textvariable=self._title_var, width=200).pack(
             side=tk.LEFT, padx=(0, 4))
+
+        if show_guide is not None:
+            ctk.CTkButton(
+                toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+                command=lambda: show_guide(
+                    self.frame.winfo_toplevel(), "MEFFMASS Guide",
+                    self._GUIDE_TEXT),
+            ).pack(side=tk.RIGHT, padx=(5, 0))
 
         ctk.CTkButton(toolbar, text="Export to Excel\u2026", width=130,
                        command=self._export_excel).pack(side=tk.RIGHT)

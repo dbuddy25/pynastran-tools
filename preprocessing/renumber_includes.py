@@ -37,6 +37,16 @@ except ImportError:
         make_model,
     )
 
+try:
+    from nastran_tools import show_guide
+except ImportError:
+    try:
+        import importlib
+        _nt = importlib.import_module('nastran_tools')
+        show_guide = _nt.show_guide
+    except Exception:
+        show_guide = None
+
 # Cards that pyNastran may not support — disable to avoid parse errors.
 # Shorter list than mass_scale because the renumber tool needs most contact cards.
 _CARDS_TO_SKIP = [
@@ -1325,6 +1335,47 @@ class RenumberIncludesTool(ctk.CTkFrame):
 
     # ── UI construction ──────────────────────────────────────────────────────
 
+    _GUIDE_TEXT = """\
+Renumber Includes Tool — Quick Guide
+
+PURPOSE
+Renumber all entity IDs (nodes, elements, properties, materials, etc.)
+across a multi-file Nastran BDF so each include file owns a clean,
+non-overlapping ID block.
+
+WORKFLOW
+1. Browse — select the main BDF file.
+2. Scan — parses the file and all INCLUDEs, catalogs entity counts and
+   current ID ranges per file.
+3. Auto Allocate — assigns contiguous ID blocks using the Start ID and
+   Growth Factor. Blocks are rounded to clean boundaries (e.g. 1000,
+   5000) for readability.
+4. Edit — manually adjust Block Start / Block End if needed. Downstream
+   blocks cascade automatically.
+5. Validate — checks for overlaps, capacity, and CID 0 conflicts.
+6. Apply Renumbering — reads with pyNastran, renumbers all cards
+   (elements, loads, contact, case control, etc.), and writes per-file
+   output to the chosen directory.
+
+ENTITY TYPES
+Nodes, Elements, Properties, Materials, Coords, SPCs, MPCs, Loads,
+Contact, Sets, Methods, Tables. All share the same block range (separate
+Nastran namespaces).
+
+GROWTH FACTOR
+Multiplier on the current count to leave headroom for future additions.
+E.g. 1.5x with 100 elements allocates a block of ~150.
+
+VALIDATION RULES
+  - Block ranges must not overlap for the same entity type.
+  - Each block must have enough capacity for its entity count.
+  - CID 0 (basic coordinate system) must not be remapped.
+
+OPTIONS
+  - Include set IDs: also renumber SPC, MPC, and Load set IDs.
+  - Save/Load Config: persist block assignments to JSON for reuse.\
+"""
+
     def _build_ui(self):
         # ── Top bar: input file ──
         top = ctk.CTkFrame(self, fg_color="transparent")
@@ -1338,6 +1389,14 @@ class RenumberIncludesTool(ctk.CTkFrame):
                       command=self._browse_input).pack(side=tk.LEFT)
         ctk.CTkButton(top, text="Scan", width=70,
                       command=self._scan).pack(side=tk.LEFT, padx=6)
+
+        if show_guide is not None:
+            ctk.CTkButton(
+                top, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+                command=lambda: show_guide(
+                    self.winfo_toplevel(), "Renumber Includes Guide",
+                    self._GUIDE_TEXT),
+            ).pack(side=tk.RIGHT)
 
         # ── Options row ──
         opt = ctk.CTkFrame(self, fg_color="transparent")

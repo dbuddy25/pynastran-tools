@@ -27,6 +27,16 @@ try:
 except ImportError:
     from preprocessing.bdf_utils import IncludeFileParser, make_model
 
+try:
+    from nastran_tools import show_guide
+except ImportError:
+    try:
+        import importlib, sys, os as _os
+        _nt = importlib.import_module('nastran_tools')
+        show_guide = _nt.show_guide
+    except Exception:
+        show_guide = None
+
 
 GroupInfo = namedtuple('GroupInfo', [
     'ifile', 'filename', 'filepath', 'original_mass',
@@ -325,6 +335,41 @@ class MassScaleTool(ctk.CTkFrame):
 
     # ------------------------------------------------------------------ UI
 
+    _GUIDE_TEXT = """\
+Mass Scale Tool — Quick Guide
+
+PURPOSE
+Scale material densities, NSM values, CONM2 masses and inertias per
+include file so the total model mass matches target values.
+
+WORKFLOW
+1. Open BDF — loads the main BDF and all INCLUDE files.
+2. Review the table — each row is an include file with its original mass.
+3. Edit Scale Factor (column 3) for any file. The Scaled Mass and Delta
+   columns update live.
+4. Write Scaled BDF — choose suffix, output directory, or overwrite mode.
+
+OUTPUT MODES
+  - Add suffix: appends e.g. "_scaled" to each filename.
+  - Output directory: writes the full include tree to a new folder.
+  - Overwrite: replaces the original files in place (confirm first).
+
+Only files with scale != 1.0 are rewritten. Unscaled files are skipped.
+
+OPTIONS
+  - WTMASS: displayed from the model's PARAM,WTMASS card.
+  - Multiply by 386.1: converts mass units (slug -> lbm) for display.
+  - Hide zero-mass files: filters out include files with no mass.
+
+DETAIL LABEL
+Click a row to see which entity types (MATs, PROPs, Mass Elems, CONRODs)
+are present in that file.
+
+SUMMARY FILE
+After writing, a scale_summary.md file is saved next to the original BDF
+with a table of all files, scales, and entity counts.\
+"""
+
     def _build_ui(self):
         # Toolbar
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
@@ -337,6 +382,14 @@ class MassScaleTool(ctk.CTkFrame):
         self._path_label = ctk.CTkLabel(
             toolbar, text="No BDF loaded", text_color="gray")
         self._path_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        if show_guide is not None:
+            ctk.CTkButton(
+                toolbar, text="?", width=30, font=ctk.CTkFont(weight="bold"),
+                command=lambda: show_guide(
+                    self.winfo_toplevel(), "Mass Scale Guide",
+                    self._GUIDE_TEXT),
+            ).pack(side=tk.RIGHT, padx=(5, 0))
 
         self._write_btn = ctk.CTkButton(
             toolbar, text="Write Scaled BDF\u2026", width=140,
