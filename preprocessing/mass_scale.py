@@ -122,7 +122,9 @@ def _rewrite_file_with_scaled_cards(input_path, output_path, scaled_card_lookup,
     - Before BEGIN BULK (main file only): pass through verbatim
     - In bulk data: when a new card line matches a lookup key, output the
       scaled card via write_card() and skip the original card's lines
-    - Comments, blanks, INCLUDE, ENDDATA: pass through verbatim
+    - Comments/blanks are buffered; flushed before both replaced and
+      non-replaced cards (write_card's leading comment is stripped to
+      avoid duplication with the original file's comments)
     """
     # Read entire input (allows overwrite mode where input_path == output_path)
     with open(input_path, 'r', errors='replace') as f:
@@ -131,6 +133,7 @@ def _rewrite_file_with_scaled_cards(input_path, output_path, scaled_card_lookup,
     out = []
     in_bulk = not is_main_file  # include files start in bulk data
     replacing = False  # True while swallowing lines of a replaced card
+    comment_buf = []  # buffered comment/blank lines awaiting next card
 
     for line in lines:
         upper = line.strip().upper()
@@ -142,48 +145,53 @@ def _rewrite_file_with_scaled_cards(input_path, output_path, scaled_card_lookup,
                 in_bulk = True
             continue
 
-        # ENDDATA: stop replacing, pass through
+        # ENDDATA: stop replacing, flush buffer, pass through
         if upper.startswith('ENDDATA'):
             replacing = False
+            out.extend(comment_buf)
+            comment_buf.clear()
             out.append(line)
             continue
 
-        # INCLUDE: pass through
+        # INCLUDE: flush buffer, pass through
         if upper.startswith('INCLUDE'):
             replacing = False
+            out.extend(comment_buf)
+            comment_buf.clear()
             out.append(line)
             continue
 
-        # Comment or blank line
+        # Comment or blank line — buffer until we know if next card is replaced
         if not line.strip() or line.strip().startswith('$'):
-            if not replacing:
-                out.append(line)
+            comment_buf.append(line)
             continue
 
         # Check if this is a new card (first char is alphabetic)
         first_char = line.strip()[0]
         if first_char.isalpha():
-            replacing = False  # end any previous replacement
+            replacing = False
             card_name, card_id = _extract_card_info(line)
             if card_name and card_id is not None:
                 key = (card_name, card_id)
                 if key in scaled_card_lookup:
                     card = scaled_card_lookup[key]
                     text = card.write_card(size=8)
-                    # Strip leading comment line if present (avoids duplication)
-                    card_lines = text.split('\n')
-                    filtered = []
-                    for cl in card_lines:
-                        if cl.strip().startswith('$') and not filtered:
-                            continue  # skip leading comment
-                        filtered.append(cl)
-                    text = '\n'.join(filtered)
+                    # Strip leading comment from write_card — we preserve
+                    # the original file's comments from the buffer instead
+                    text_lines = text.split('\n')
+                    while text_lines and text_lines[0].strip().startswith('$'):
+                        text_lines.pop(0)
+                    text = '\n'.join(text_lines)
                     if text and not text.endswith('\n'):
                         text += '\n'
+                    out.extend(comment_buf)  # flush original comments
+                    comment_buf.clear()
                     out.append(text)
                     replacing = True
                     continue
-            # Not a replaced card — pass through
+            # Not a replaced card — flush buffered comments, then pass through
+            out.extend(comment_buf)
+            comment_buf.clear()
             out.append(line)
         else:
             # Continuation line (starts with +, *, digit, space-then-nonalpha)
