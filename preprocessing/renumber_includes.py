@@ -1317,6 +1317,8 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._parser = None
         self._summary = None        # {filepath: {etype: (count, min, max)}}
         self._include_set_ids = tk.BooleanVar(value=True)
+        self._small_first = tk.BooleanVar(value=False)
+        self._skip_set = set()      # indices of files to skip
 
         # Row data for sheet: list of tuples linking rows to (filepath, [etypes])
         self._simple_row_map = []  # [(filepath, [etypes...]), ...]
@@ -1363,6 +1365,10 @@ VALIDATION RULES
 
 OPTIONS
   - Include set IDs: also renumber SPC, MPC, and Load set IDs.
+  - Small files first: pack files with count < 100 at the start with
+    flat 100-ID blocks, then allocate larger files after.
+  - Toggle Skip: exclude selected files from renumbering entirely.
+    Skipped files are grayed out and omitted from the ranges.
   - Save/Load Config: persist block assignments to JSON for reuse.\
 """
 
@@ -1412,6 +1418,10 @@ OPTIONS
         ctk.CTkButton(suggest_frame, text="Auto Allocate", width=120,
                        command=self._suggest_ranges).pack(side=tk.LEFT)
 
+        ctk.CTkCheckBox(
+            suggest_frame, text="Small files first (count < 100)",
+            variable=self._small_first).pack(side=tk.LEFT, padx=(12, 0))
+
         # ── Table container ──
         ctk.CTkLabel(self, text="Block Allocation:",
                      font=ctk.CTkFont(weight="bold")).pack(
@@ -1455,6 +1465,10 @@ OPTIONS
         # ── Action buttons ──
         btn_bar = ctk.CTkFrame(self, fg_color="transparent")
         btn_bar.pack(fill=tk.X, padx=10, pady=4)
+        self._skip_btn = ctk.CTkButton(
+            btn_bar, text="Toggle Skip", command=self._toggle_skip,
+            state=tk.DISABLED, width=100)
+        self._skip_btn.pack(side=tk.LEFT, padx=4)
         self._validate_btn = ctk.CTkButton(
             btn_bar, text="Validate", command=self._validate,
             state=tk.DISABLED, width=100)
@@ -1487,10 +1501,14 @@ OPTIONS
     # ── Suggest ranges / cascading ───────────────────────────────────────────
 
     def _suggest_ranges(self):
-        """Auto-allocate block ranges using growth factor.
+        """Auto-allocate block ranges using proportional sizing.
 
-        Block ends are always clean 1-sig-fig numbers (100, 1000, 3000, …)
-        so that block starts naturally land on X001-style boundaries.
+        Block sizes are based on entity count (not cursor position):
+        - count < 100  → flat 100-ID block, no start rounding
+        - count >= 100 → round SIZE to 1-sig-fig (min 100), align start
+
+        When "Small files first" is on, count<100 files are packed at the
+        start before larger files.
         """
         if not self._simple_row_map:
             return
@@ -1509,35 +1527,56 @@ OPTIONS
             growth = 1.5
 
         data = self._simple_sheet.get_sheet_data()
-        for i, (filepath, etypes) in enumerate(self._simple_row_map):
-            if i >= len(data):
-                break
+        n = min(len(self._simple_row_map), len(data))
+
+        # Read counts per row
+        counts = []
+        for i in range(n):
             try:
-                max_count = int(str(data[i][self._COL_COUNT]).strip())
+                counts.append(int(str(data[i][self._COL_COUNT]).strip()))
             except (ValueError, TypeError):
-                max_count = 0
-            if max_count == 0:
-                block_end = max(_round_1sf_up(cursor), 100)
-                data[i][self._COL_START] = str(cursor)
-                data[i][self._COL_END] = str(block_end)
-                data[i][self._COL_HEADROOM] = str(block_end - cursor + 1)
-                cursor = block_end + 1
-                continue
+                counts.append(0)
 
-            # Round the block END to a clean 1-sig-fig number (min 100)
-            raw_end = cursor + max_count * growth - 1
-            block_end = max(_round_1sf_up(raw_end), 100)
-            # Ensure enough room for actual IDs
-            if block_end < cursor + max_count - 1:
-                block_end = _round_1sf_up(cursor + max_count - 1)
-            headroom = (block_end - cursor + 1) - max_count
+        # Build iteration order (skip set excluded, small-first optional)
+        small_first = self._small_first.get()
+        if small_first:
+            indices = ([i for i in range(n)
+                        if i not in self._skip_set and counts[i] < 100] +
+                       [i for i in range(n)
+                        if i not in self._skip_set and counts[i] >= 100])
+        else:
+            indices = [i for i in range(n) if i not in self._skip_set]
 
-            data[i][self._COL_START] = str(cursor)
+        # Blank out skipped rows
+        for i in self._skip_set:
+            if i < n:
+                data[i][self._COL_START] = ''
+                data[i][self._COL_END] = ''
+                data[i][self._COL_HEADROOM] = ''
+
+        for i in indices:
+            count = counts[i]
+            if count < 100:
+                # Flat 100-ID block, no start rounding
+                block_size = 100
+                block_start = cursor
+            else:
+                # Proportional: round SIZE (not end position)
+                block_size = max(_round_1sf_up(count * growth), 100)
+                mag = 10 ** math.floor(math.log10(block_size))
+                block_start = (cursor if cursor <= mag
+                               else math.ceil(cursor / mag) * mag)
+
+            block_end = block_start + block_size - 1
+            headroom = block_size - count
+
+            data[i][self._COL_START] = str(block_start)
             data[i][self._COL_END] = str(block_end)
             data[i][self._COL_HEADROOM] = str(headroom)
             cursor = block_end + 1
 
         self._simple_sheet.set_sheet_data(data)
+        self._apply_skip_styling()
 
     def _on_simple_sheet_modified(self, event=None):
         """Cascade block ranges and update headroom after any edit."""
@@ -1545,21 +1584,38 @@ OPTIONS
         if not data or not self._simple_row_map:
             return
 
-        # Cascade: each Block Start = prev Block End + 1, preserving block size
-        for i in range(1, len(data)):
-            try:
-                prev_end = int(str(data[i - 1][self._COL_END]).strip())
-                cur_start = int(str(data[i][self._COL_START]).strip() or '0')
-                cur_end = int(str(data[i][self._COL_END]).strip() or '0')
-                block_size = max(cur_end - cur_start + 1, 1)
-                new_start = prev_end + 1
-                data[i][self._COL_START] = str(new_start)
-                data[i][self._COL_END] = str(new_start + block_size - 1)
-            except (ValueError, TypeError):
-                pass
+        if self._small_first.get():
+            # Small-first mode: starts aren't monotonic in sheet order,
+            # so skip the cascade — only recompute headroom
+            pass
+        else:
+            # Cascade: each Block Start = prev Block End + 1, preserving
+            # block size.  Find the previous non-skipped row for chaining.
+            prev_end = None
+            for i in range(len(data)):
+                if i in self._skip_set:
+                    continue
+                if prev_end is not None:
+                    try:
+                        cur_start = int(
+                            str(data[i][self._COL_START]).strip() or '0')
+                        cur_end = int(
+                            str(data[i][self._COL_END]).strip() or '0')
+                        block_size = max(cur_end - cur_start + 1, 1)
+                        new_start = prev_end + 1
+                        data[i][self._COL_START] = str(new_start)
+                        data[i][self._COL_END] = str(new_start + block_size - 1)
+                    except (ValueError, TypeError):
+                        pass
+                try:
+                    prev_end = int(str(data[i][self._COL_END]).strip())
+                except (ValueError, TypeError):
+                    pass
 
-        # Update headroom for all rows
+        # Update headroom for non-skipped rows
         for i in range(len(data)):
+            if i in self._skip_set:
+                continue
             try:
                 count = int(str(data[i][self._COL_COUNT]).strip() or '0')
                 start = int(str(data[i][self._COL_START]).strip() or '0')
@@ -1596,6 +1652,38 @@ OPTIONS
 
         self._detail_var.set(f"{fname} \u2014 {', '.join(parts)}" if parts
                              else fname)
+
+    def _toggle_skip(self):
+        """Toggle the selected row's skip status."""
+        if not self._simple_row_map:
+            return
+        try:
+            row_idx = self._simple_sheet.get_currently_selected().row
+        except Exception:
+            return
+        if row_idx is None or row_idx < 0 or row_idx >= len(self._simple_row_map):
+            return
+
+        if row_idx in self._skip_set:
+            self._skip_set.discard(row_idx)
+        else:
+            self._skip_set.add(row_idx)
+
+        self._apply_skip_styling()
+
+    def _apply_skip_styling(self):
+        """Gray out skipped rows and blank their Start/End/Headroom."""
+        data = self._simple_sheet.get_sheet_data()
+        for i in range(len(data)):
+            if i in self._skip_set:
+                data[i][self._COL_START] = ''
+                data[i][self._COL_END] = ''
+                data[i][self._COL_HEADROOM] = ''
+                self._simple_sheet.highlight_rows(
+                    rows=[i], bg='gray70', fg='gray40')
+            else:
+                self._simple_sheet.dehighlight_rows(rows=[i])
+        self._simple_sheet.set_sheet_data(data)
 
     # ── Guide ─────────────────────────────────────────────────────────────────
 
@@ -1666,9 +1754,11 @@ OPTIONS
 
         self._populate_simple_sheet()
 
+        self._skip_btn.configure(state=tk.NORMAL)
         self._validate_btn.configure(state=tk.NORMAL)
         self._apply_btn.configure(state=tk.NORMAL)
         self._save_cfg_btn.configure(state=tk.NORMAL)
+        self._skip_set.clear()
         self._status_var.set("Scan complete -- fill in new ranges")
 
     def _populate_simple_sheet(self):
@@ -1707,6 +1797,10 @@ OPTIONS
 
         self._simple_sheet.set_all_cell_sizes_to_text()
 
+        # Re-apply skip styling if any rows are skipped
+        if self._skip_set:
+            self._apply_skip_styling()
+
     # ── Get ranges from current sheet ────────────────────────────────────────
 
     def _get_ranges(self):
@@ -1720,17 +1814,24 @@ OPTIONS
         """Read ranges from simple sheet.
 
         All entity types share the same range (separate namespaces in
-        Nastran), so no sub-allocation is needed.
+        Nastran), so no sub-allocation is needed.  Skipped files (blank
+        Start/End) are omitted from the result.
         """
         data = self._simple_sheet.get_sheet_data()
         ranges = {}
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(data):
                 break
+            if i in self._skip_set:
+                continue
             row = data[i]
+            start_s = str(row[self._COL_START]).strip()
+            end_s = str(row[self._COL_END]).strip()
+            if not start_s or not end_s:
+                continue  # blank = skipped
             try:
-                start = int(str(row[self._COL_START]).strip())
-                end = int(str(row[self._COL_END]).strip())
+                start = int(start_s)
+                end = int(end_s)
             except (ValueError, TypeError):
                 messagebox.showerror(
                     "Invalid Range",
@@ -1908,14 +2009,19 @@ OPTIONS
         config = {
             'input_bdf': self._bdf_path,
             'include_set_ids': self._include_set_ids.get(),
+            'small_first': self._small_first.get(),
             'output_dir': self._outdir_var.get(),
         }
 
         simple_data = self._simple_sheet.get_sheet_data()
         simple_ranges = {}
+        skip_files = []
         for i, (filepath, etypes) in enumerate(self._simple_row_map):
             if i >= len(simple_data):
                 break
+            if i in self._skip_set:
+                skip_files.append(os.path.basename(filepath))
+                continue
             row = simple_data[i]
             try:
                 s = int(str(row[self._COL_START]).strip())
@@ -1924,6 +2030,7 @@ OPTIONS
             except (ValueError, TypeError):
                 pass
         config['simple_ranges'] = simple_ranges
+        config['skip_files'] = skip_files
 
         with open(path, 'w') as f:
             json.dump(config, f, indent=2)
@@ -1943,8 +2050,17 @@ OPTIONS
 
         if 'include_set_ids' in config:
             self._include_set_ids.set(config['include_set_ids'])
+        if 'small_first' in config:
+            self._small_first.set(config['small_first'])
         if 'output_dir' in config:
             self._outdir_var.set(config['output_dir'])
+
+        # Restore skip set from filenames
+        skip_names = set(config.get('skip_files', []))
+        self._skip_set.clear()
+        for i, (filepath, _) in enumerate(self._simple_row_map):
+            if os.path.basename(filepath) in skip_names:
+                self._skip_set.add(i)
 
         # Apply simple ranges and recompute headroom
         simple_cfg = config.get('simple_ranges', {})
@@ -1954,6 +2070,11 @@ OPTIONS
             for i, (filepath, etypes) in enumerate(self._simple_row_map):
                 if i >= len(simple_data):
                     break
+                if i in self._skip_set:
+                    simple_data[i][self._COL_START] = ''
+                    simple_data[i][self._COL_END] = ''
+                    simple_data[i][self._COL_HEADROOM] = ''
+                    continue
                 fname = os.path.basename(filepath)
                 if fname in simple_cfg:
                     s, e = simple_cfg[fname]
@@ -1969,6 +2090,7 @@ OPTIONS
                     applied += 1
             self._simple_sheet.set_sheet_data(simple_data)
 
+        self._apply_skip_styling()
         self._log_msg(f"Config loaded from {path} ({applied} ranges applied)")
 
 
