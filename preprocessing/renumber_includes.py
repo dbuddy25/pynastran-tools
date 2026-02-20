@@ -1346,7 +1346,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
             opt, text="Include set IDs (SPC/MPC/Load)",
             variable=self._include_set_ids).pack(side=tk.LEFT)
 
-        # ── Start ID + Growth Factor + Suggest Ranges ──
+        # ── Start ID + Growth Factor + Auto Allocate ──
         suggest_frame = ctk.CTkFrame(self, fg_color="transparent")
         suggest_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
 
@@ -1363,7 +1363,7 @@ class RenumberIncludesTool(ctk.CTkFrame):
                           values=_GROWTH_OPTIONS, width=80).pack(
             side=tk.LEFT, padx=(0, 8))
 
-        ctk.CTkButton(suggest_frame, text="Suggest Ranges", width=120,
+        ctk.CTkButton(suggest_frame, text="Auto Allocate", width=120,
                        command=self._suggest_ranges).pack(side=tk.LEFT)
 
         # ── Table container ──
@@ -1441,7 +1441,11 @@ class RenumberIncludesTool(ctk.CTkFrame):
     # ── Suggest ranges / cascading ───────────────────────────────────────────
 
     def _suggest_ranges(self):
-        """Auto-suggest block ranges using growth factor and round-1-sig-fig."""
+        """Auto-allocate block ranges using growth factor.
+
+        Block ends are always clean 1-sig-fig numbers (100, 1000, 3000, …)
+        so that block starts naturally land on X001-style boundaries.
+        """
         if not self._simple_row_map:
             return
 
@@ -1467,15 +1471,20 @@ class RenumberIncludesTool(ctk.CTkFrame):
             except (ValueError, TypeError):
                 max_count = 0
             if max_count == 0:
+                block_end = max(_round_1sf_up(cursor), 100)
                 data[i][self._COL_START] = str(cursor)
-                data[i][self._COL_END] = str(cursor)
-                data[i][self._COL_HEADROOM] = '1'
-                cursor += 1
+                data[i][self._COL_END] = str(block_end)
+                data[i][self._COL_HEADROOM] = str(block_end - cursor + 1)
+                cursor = block_end + 1
                 continue
 
-            block_size = _round_1sf_up(max_count * growth)
-            block_end = cursor + block_size - 1
-            headroom = block_size - max_count
+            # Round the block END to a clean 1-sig-fig number (min 100)
+            raw_end = cursor + max_count * growth - 1
+            block_end = max(_round_1sf_up(raw_end), 100)
+            # Ensure enough room for actual IDs
+            if block_end < cursor + max_count - 1:
+                block_end = _round_1sf_up(cursor + max_count - 1)
+            headroom = (block_end - cursor + 1) - max_count
 
             data[i][self._COL_START] = str(cursor)
             data[i][self._COL_END] = str(block_end)
@@ -1535,8 +1544,9 @@ class RenumberIncludesTool(ctk.CTkFrame):
         for et in ENTITY_TYPES:
             info = etypes.get(et)
             if info and info[0] > 0:
+                count, id_min, id_max = info
                 label = _SHORT_LABELS.get(et, et)
-                parts.append(f"{info[0]} {label}")
+                parts.append(f"{count} {label} ({id_min}-{id_max})")
 
         self._detail_var.set(f"{fname} \u2014 {', '.join(parts)}" if parts
                              else fname)
