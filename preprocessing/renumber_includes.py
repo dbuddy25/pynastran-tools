@@ -2145,6 +2145,25 @@ OPTIONS
             messagebox.showerror("Error", "Please select an output directory.")
             return
 
+        # Prevent overwriting original files
+        input_paths = {os.path.abspath(fp) for fp in self._parser.all_files}
+        main_path = self._parser.all_files[0]
+        main_dir = os.path.dirname(main_path)
+
+        output_paths = {os.path.abspath(
+            os.path.join(outdir, os.path.basename(main_path)))}
+        for fp in self._parser.all_files[1:]:
+            rel = os.path.relpath(fp, main_dir)
+            output_paths.add(os.path.abspath(os.path.join(outdir, rel)))
+
+        conflicts = input_paths & output_paths
+        if conflicts:
+            messagebox.showerror(
+                "Error",
+                "Output directory would overwrite original input files.\n"
+                "Please select a different directory.")
+            return
+
         frozen_ranges = self._get_frozen_ranges()
         merged = {**ranges, **frozen_ranges}
         frozen_files = set(frozen_ranges.keys())
