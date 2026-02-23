@@ -73,6 +73,11 @@ ENTITY_TYPES = [
     'set_id', 'method_id', 'table_id',
 ]
 
+# Only these geometric entity types get new ID assignments during renumbering.
+# Non-geometric types (spc_id, mpc_id, load_id, etc.) keep their primary IDs
+# but still have nid/eid/pid/mid/cid cross-references updated.
+RENUMBER_TYPES = ['nid', 'eid', 'pid', 'mid', 'cid']
+
 ENTITY_LABELS = {
     'nid': 'Node ID', 'eid': 'Element ID', 'pid': 'Property ID',
     'mid': 'Material ID', 'cid': 'Coord ID', 'spc_id': 'SPC ID',

@@ -29,12 +29,12 @@ from pyNastran.bdf.bdf import BDF
 try:
     from bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        make_model,
+        RENUMBER_TYPES, make_model,
     )
 except ImportError:
     from preprocessing.bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        make_model,
+        RENUMBER_TYPES, make_model,
     )
 
 # Cards that pyNastran may not support — disable to avoid parse errors.
@@ -86,7 +86,7 @@ class MappingBuilder:
         """Build all ID maps. Returns dict[entity_type, dict[int, int]]."""
         self.maps = {etype: {} for etype in ENTITY_TYPES}
 
-        for etype in ENTITY_TYPES:
+        for etype in RENUMBER_TYPES:
             for filepath, ids_by_type in self.file_ids.items():
                 ids = ids_by_type.get(etype, set())
                 if not ids:
@@ -114,8 +114,7 @@ class Validator:
     """Pre-apply and post-apply validation checks."""
 
     @staticmethod
-    def validate_ranges(file_ids, ranges, include_set_ids=True,
-                        frozen_files=None):
+    def validate_ranges(file_ids, ranges, frozen_files=None):
         """Pre-apply validation. Returns list of error strings (empty = OK).
 
         frozen_files: set of filepaths whose ranges are existing (not
@@ -126,11 +125,7 @@ class Validator:
             frozen_files = set()
         errors = []
 
-        for etype in ENTITY_TYPES:
-            # Skip set IDs if not included
-            if not include_set_ids and etype in ('spc_id', 'mpc_id', 'load_id'):
-                continue
-
+        for etype in RENUMBER_TYPES:
             # Collect all ranges for this entity type to check overlaps
             etype_ranges = []
 
@@ -256,12 +251,11 @@ class Validator:
 class CardRenumberer:
     """Apply ID mappings to every card in the pyNastran BDF model."""
 
-    def __init__(self, model, maps, include_set_ids=True):
+    def __init__(self, model, maps):
         """
         Args:
             model: pyNastran BDF model (not cross-referenced)
             maps: dict[entity_type, dict[old_id, new_id]]
-            include_set_ids: whether to renumber spc/mpc/load set IDs
         """
         self.model = model
         self.nid_map = maps.get('nid', {})
@@ -269,9 +263,9 @@ class CardRenumberer:
         self.pid_map = maps.get('pid', {})
         self.mid_map = maps.get('mid', {})
         self.cid_map = maps.get('cid', {})
-        self.spc_map = maps.get('spc_id', {}) if include_set_ids else {}
-        self.mpc_map = maps.get('mpc_id', {}) if include_set_ids else {}
-        self.load_map = maps.get('load_id', {}) if include_set_ids else {}
+        self.spc_map = maps.get('spc_id', {})
+        self.mpc_map = maps.get('mpc_id', {})
+        self.load_map = maps.get('load_id', {})
         self.contact_map = maps.get('contact_id', {})
         self.set_map = maps.get('set_id', {})
         self.method_map = maps.get('method_id', {})
@@ -860,9 +854,8 @@ class CaseControlRenumberer:
         r'(TEMPERATURE\s*\(\s*(?:LOAD|INITIAL)\s*\)\s*=\s*)(\d+)',
         re.IGNORECASE)
 
-    def __init__(self, maps, include_set_ids=True):
+    def __init__(self, maps):
         self.maps = maps
-        self.include_set_ids = include_set_ids
 
     def renumber_case_control(self, case_control_lines):
         """Renumber IDs in case control lines. Returns new list of lines."""
@@ -877,10 +870,6 @@ class CaseControlRenumberer:
         stripped = line.strip().upper()
 
         for keyword, map_key in self.ENTRIES:
-            if not self.include_set_ids and map_key in (
-                    'spc_id', 'mpc_id', 'load_id'):
-                continue
-
             id_map = self.maps.get(map_key, {})
             if not id_map:
                 continue
@@ -895,8 +884,6 @@ class CaseControlRenumberer:
 
         # TEMPERATURE entries
         for map_key in ('load_id',):
-            if not self.include_set_ids:
-                continue
             id_map = self.maps.get(map_key, {})
             if not id_map:
                 continue
@@ -962,22 +949,17 @@ class OutputWriter:
         ('TABLED1', 'TABLEM1'),
     ]
 
-    def __init__(self, model, parser, maps, case_renumberer, include_set_ids,
-                 log_func=None):
+    def __init__(self, model, parser, maps, log_func=None):
         """
         Args:
             model: renumbered pyNastran BDF model (uncross-referenced)
             parser: IncludeFileParser with file ownership info
             maps: dict[entity_type, dict[old_id, new_id]]
-            case_renumberer: CaseControlRenumberer instance
-            include_set_ids: bool
             log_func: optional callable for diagnostic messages
         """
         self.model = model
         self.parser = parser
         self.maps = maps
-        self.case_renumberer = case_renumberer
-        self.include_set_ids = include_set_ids
         self._log = log_func or (lambda msg: None)
 
     # All model dicts that may contain cards, keyed by entity type
@@ -1340,7 +1322,6 @@ class RenumberIncludesTool(ctk.CTkFrame):
         self._bdf_path = None
         self._parser = None
         self._summary = None        # {filepath: {etype: (count, min, max)}}
-        self._include_set_ids = tk.BooleanVar(value=True)
         self._small_first = tk.BooleanVar(value=False)
         self._small_start_var = tk.StringVar(value="1")
         self._large_start_var = tk.StringVar(value="1")
@@ -1376,9 +1357,10 @@ WORKFLOW
    output to the chosen directory.
 
 ENTITY TYPES
-Nodes, Elements, Properties, Materials, Coords, SPCs, MPCs, Loads,
-Contact, Sets, Methods, Tables. All share the same block range (separate
-Nastran namespaces).
+Nodes, Elements, Properties, Materials, Coords are renumbered with new
+ID blocks. Non-geometric types (SPCs, MPCs, Loads, Contact, Sets,
+Methods, Tables) keep their original IDs but have cross-references
+(node/element/property/material/coord IDs) updated automatically.
 
 GROWTH FACTOR
 Multiplier on the current count to leave headroom for future additions.
@@ -1390,7 +1372,6 @@ VALIDATION RULES
   - CID 0 (basic coordinate system) must not be remapped.
 
 OPTIONS
-  - Include set IDs: also renumber SPC, MPC, and Load set IDs.
   - Small files first: pack files with count < 100 at the start with
     flat 100-ID blocks, then allocate larger files after. When enabled,
     separate "Small Start" and "Large Start" fields appear so each
@@ -1420,13 +1401,6 @@ OPTIONS
             top, text="?", width=30, font=ctk.CTkFont(weight="bold"),
             command=self._show_guide,
         ).pack(side=tk.RIGHT)
-
-        # ── Options row ──
-        opt = ctk.CTkFrame(self, fg_color="transparent")
-        opt.pack(fill=tk.X, padx=10, pady=2)
-        ctk.CTkCheckBox(
-            opt, text="Include set IDs (SPC/MPC/Load)",
-            variable=self._include_set_ids).pack(side=tk.LEFT)
 
         # ── Start ID + Growth Factor + Auto Allocate ──
         suggest_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -1927,10 +1901,14 @@ OPTIONS
             if not etypes:
                 continue
 
-            # Count = max across all entity types
-            max_count = max((c for c, _, _ in etypes.values()), default=0)
+            # Only renumber geometric entity types
+            etypes_present = [et for et in RENUMBER_TYPES if et in etypes]
+            if not etypes_present:
+                continue
 
-            etypes_present = [et for et in ENTITY_TYPES if et in etypes]
+            # Count = max across renumbered entity types only
+            max_count = max((etypes[et][0] for et in etypes_present), default=0)
+
             rows.append([True, display, str(max_count), '', '', ''])
             self._simple_row_map.append((filepath, etypes_present))
 
@@ -2006,7 +1984,7 @@ OPTIONS
             filepath, etypes_present = self._simple_row_map[i]
             etypes = self._summary.get(filepath, {}) if self._summary else {}
             file_ranges = {}
-            for et in etypes_present:
+            for et in [e for e in etypes_present if e in RENUMBER_TYPES]:
                 info = etypes.get(et)
                 if info and info[0] > 0:
                     file_ranges[et] = (info[1], info[2])
@@ -2022,7 +2000,6 @@ OPTIONS
         if ranges is None:
             return
 
-        include_sets = self._include_set_ids.get()
         frozen_ranges = self._get_frozen_ranges()
         merged = {**ranges, **frozen_ranges}
         frozen_files = set(frozen_ranges.keys())
@@ -2030,8 +2007,7 @@ OPTIONS
         relevant_ids = {fp: ids for fp, ids in self._parser.file_ids.items()
                         if fp in merged}
         errors = Validator.validate_ranges(
-            relevant_ids, merged, include_sets,
-            frozen_files=frozen_files)
+            relevant_ids, merged, frozen_files=frozen_files)
 
         if errors:
             self._log_msg("--- Validation FAILED ---")
@@ -2053,8 +2029,6 @@ OPTIONS
             messagebox.showerror("Error", "Please select an output directory.")
             return
 
-        include_sets = self._include_set_ids.get()
-
         frozen_ranges = self._get_frozen_ranges()
         merged = {**ranges, **frozen_ranges}
         frozen_files = set(frozen_ranges.keys())
@@ -2062,8 +2036,7 @@ OPTIONS
         relevant_ids = {fp: ids for fp, ids in self._parser.file_ids.items()
                         if fp in merged}
         errors = Validator.validate_ranges(
-            relevant_ids, merged, include_sets,
-            frozen_files=frozen_files)
+            relevant_ids, merged, frozen_files=frozen_files)
         if errors:
             self._log_msg("--- Pre-apply validation FAILED ---")
             for err in errors:
@@ -2090,22 +2063,19 @@ OPTIONS
 
             # 3. Renumber cards
             self._log_msg("Renumbering cards\u2026")
-            renumberer = CardRenumberer(model, maps, include_sets)
+            renumberer = CardRenumberer(model, maps)
             renumberer.apply()
 
-            # 4. Prepare case control renumberer
-            case_renumberer = CaseControlRenumberer(maps, include_sets)
-
-            # 5. Uncross-reference before writing
+            # 4. Uncross-reference before writing
             try:
                 model.uncross_reference()
             except Exception:
                 pass
 
-            # 6. Write output
+            # 5. Write output
             self._log_msg(f"Writing to {outdir}\u2026")
             writer = OutputWriter(
-                model, self._parser, maps, case_renumberer, include_sets,
+                model, self._parser, maps,
                 log_func=self._log_msg)
             written = writer.write(outdir)
 
@@ -2113,7 +2083,7 @@ OPTIONS
             for f in written:
                 self._log_msg(f"    {f}")
 
-            # 7. Post-validation
+            # 6. Post-validation
             self._log_msg("Running post-validation\u2026")
             main_out = written[0]
             warnings, post_errors = Validator.post_validate(
@@ -2123,7 +2093,7 @@ OPTIONS
             for e in post_errors:
                 self._log_msg(f"  POST-ERROR: {e}")
 
-            # 8. Write markdown summary
+            # 7. Write markdown summary
             self._write_summary(outdir, written)
 
             if not post_errors:
@@ -2194,7 +2164,6 @@ OPTIONS
 
         config = {
             'input_bdf': self._bdf_path,
-            'include_set_ids': self._include_set_ids.get(),
             'small_first': self._small_first.get(),
             'small_start_id': self._small_start_var.get(),
             'large_start_id': self._large_start_var.get(),
@@ -2236,8 +2205,6 @@ OPTIONS
         with open(path, 'r') as f:
             config = json.load(f)
 
-        if 'include_set_ids' in config:
-            self._include_set_ids.set(config['include_set_ids'])
         if 'small_first' in config:
             self._small_first.set(config['small_first'])
             self._toggle_start_fields()
