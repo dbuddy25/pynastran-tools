@@ -42,8 +42,17 @@ except ImportError:
 # Cards NOT in CARD_ENTITY_MAP are preserved via the parser's passthrough mechanism.
 # Do NOT put cards here that are also in CARD_ENTITY_MAP (they'd be lost).
 _CARDS_TO_SKIP = [
-    'BCPROPS', 'BCPARA', 'BOUTPUT', 'BGPARM',
+    'BCPROP', 'BCPROPS', 'BCPARA', 'BOUTPUT', 'BGPARM',
 ]
+
+# Passthrough cards with fields referencing renumbered IDs.
+# start_field: first PID field index on the card's first line
+# cont_start_field: first PID field index on continuation lines
+# etype: which entity type map to use
+_PASSTHROUGH_FIELD_MAPS = {
+    'BCPROP':  {'start_field': 2, 'cont_start_field': 1, 'etype': 'pid'},
+    'BCPROPS': {'start_field': 2, 'cont_start_field': 1, 'etype': 'pid'},
+}
 
 _SHORT_LABELS = {
     'nid': 'Nodes', 'eid': 'Elems', 'pid': 'Props', 'mid': 'Mats',
@@ -52,6 +61,58 @@ _SHORT_LABELS = {
     'method_id': 'Methods', 'table_id': 'Tables',
 }
 
+
+
+def _replace_fields(line, start_field, id_map):
+    """Replace fixed-format 8-char fields in a BDF line using id_map.
+
+    Fields are 0-indexed (field 0 = columns 0-7, field 1 = columns 8-15, etc.).
+    Only fields from start_field through field 8 are examined.  Empty/blank
+    fields are left unchanged.
+
+    Args:
+        line: raw text line (with trailing newline)
+        start_field: first field index to consider for replacement
+        id_map: dict[int, int] mapping old IDs to new IDs
+
+    Returns:
+        modified line string
+    """
+    if not id_map:
+        return line
+
+    # Work on the content without trailing newline
+    has_newline = line.endswith('\n')
+    content = line.rstrip('\n')
+
+    # Process fields 0-8 (columns 0-72 in 8-char fixed format)
+    chars = list(content.ljust(max(len(content), (start_field + 1) * 8)))
+
+    for fi in range(start_field, 9):
+        col_start = fi * 8
+        col_end = col_start + 8
+        if col_start >= len(chars):
+            break
+        field_str = ''.join(chars[col_start:min(col_end, len(chars))]).strip()
+        if not field_str:
+            continue
+        try:
+            old_id = int(field_str)
+        except ValueError:
+            continue
+        new_id = id_map.get(old_id)
+        if new_id is None:
+            continue
+        replacement = str(new_id).rjust(8)
+        for ci, ch in enumerate(replacement):
+            idx = col_start + ci
+            if idx < len(chars):
+                chars[idx] = ch
+            else:
+                chars.append(ch)
+
+    result = ''.join(chars).rstrip() + ('\n' if has_newline else '')
+    return result
 
 
 def _round_1sf_up(n):
@@ -1108,9 +1169,68 @@ class OutputWriter:
                 self._log(f"  DIAG {fname}/{etype}: wrote {n_written}/"
                           f"{n_expected}")
 
+    @staticmethod
+    def _renumber_passthrough_lines(passthrough_lines, maps):
+        """Renumber ID fields in passthrough card lines (e.g. BCPROP PIDs).
+
+        Parses fixed-format (8-char) fields and replaces IDs using the
+        appropriate entity map from _PASSTHROUGH_FIELD_MAPS.
+
+        Args:
+            passthrough_lines: list of raw text lines
+            maps: dict[entity_type, dict[old_id, new_id]]
+
+        Returns:
+            list of (possibly modified) text lines
+        """
+        result = []
+        current_card = None  # name of the passthrough card we're inside
+
+        for line in passthrough_lines:
+            # Comment or blank — pass through unchanged
+            stripped = line.strip()
+            if not stripped or stripped.startswith('$'):
+                result.append(line)
+                current_card = None
+                continue
+
+            # Determine card name from first 8 chars (fixed) or first comma field (free)
+            if ',' in line:
+                card_name = line.split(',')[0].strip().upper()
+            else:
+                card_name = line[:8].strip().upper()
+
+            if card_name and card_name[0].isalpha():
+                # New card line
+                cfg = _PASSTHROUGH_FIELD_MAPS.get(card_name)
+                if cfg:
+                    current_card = card_name
+                    id_map = maps.get(cfg['etype'], {})
+                    result.append(_replace_fields(
+                        line, cfg['start_field'], id_map))
+                else:
+                    current_card = None
+                    result.append(line)
+            elif (current_card and card_name == '') or (
+                    card_name and (card_name[0].isdigit()
+                                  or card_name[0] in ('+', '*'))):
+                # Continuation line of current passthrough card
+                if current_card:
+                    cfg = _PASSTHROUGH_FIELD_MAPS[current_card]
+                    id_map = maps.get(cfg['etype'], {})
+                    result.append(_replace_fields(
+                        line, cfg['cont_start_field'], id_map))
+                else:
+                    result.append(line)
+            else:
+                current_card = None
+                result.append(line)
+
+        return result
+
     def _write_include_file(self, orig_path, out_path):
         """Write a single include file with its renumbered cards."""
-        lines = [f'$ Renumbered from: {os.path.basename(orig_path)}\n']
+        lines = []
 
         ordered_lines, written_ids = self._write_ordered_cards(orig_path)
         lines.extend(ordered_lines)
@@ -1118,14 +1238,12 @@ class OutputWriter:
         # Fallback: catch any cards missed by CARD_ORDER
         remaining_lines = self._write_remaining_cards(orig_path, written_ids)
         if remaining_lines:
-            lines.append('$ --- Fallback cards (not in CARD_ORDER) ---\n')
             lines.extend(remaining_lines)
 
         # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
         passthrough = self.parser.file_passthrough.get(orig_path, [])
         if passthrough:
-            lines.append('$ --- Passthrough cards (not renumbered) ---\n')
-            lines.extend(passthrough)
+            lines.extend(self._renumber_passthrough_lines(passthrough, self.maps))
 
         self._log_diagnostics(orig_path, written_ids)
 
@@ -1162,14 +1280,12 @@ class OutputWriter:
         # Fallback: catch any cards missed by CARD_ORDER
         remaining_lines = self._write_remaining_cards(orig_path, written_ids)
         if remaining_lines:
-            lines.append('$ --- Fallback cards (not in CARD_ORDER) ---\n')
             lines.extend(remaining_lines)
 
         # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
         passthrough = self.parser.file_passthrough.get(orig_path, [])
         if passthrough:
-            lines.append('$ --- Passthrough cards (not renumbered) ---\n')
-            lines.extend(passthrough)
+            lines.extend(self._renumber_passthrough_lines(passthrough, self.maps))
 
         self._log_diagnostics(orig_path, written_ids)
 
