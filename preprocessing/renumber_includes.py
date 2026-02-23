@@ -39,8 +39,10 @@ except ImportError:
 
 # Cards that pyNastran may not support — disable to avoid parse errors.
 # Shorter list than mass_scale because the renumber tool needs most contact cards.
+# Cards NOT in CARD_ENTITY_MAP are preserved via the parser's passthrough mechanism.
+# Do NOT put cards here that are also in CARD_ENTITY_MAP (they'd be lost).
 _CARDS_TO_SKIP = [
-    'BCPROPS', 'BCTPARM', 'BCPARA', 'BOUTPUT',
+    'BCPROPS', 'BCPARA', 'BOUTPUT', 'BGPARM',
 ]
 
 _SHORT_LABELS = {
@@ -1137,6 +1139,12 @@ class OutputWriter:
             lines.append('$ --- Fallback cards (not in CARD_ORDER) ---\n')
             lines.extend(remaining_lines)
 
+        # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
+        passthrough = self.parser.file_passthrough.get(orig_path, [])
+        if passthrough:
+            lines.append('$ --- Passthrough cards (not renumbered) ---\n')
+            lines.extend(passthrough)
+
         self._log_diagnostics(orig_path, written_ids)
 
         with open(out_path, 'w') as f:
@@ -1150,11 +1158,9 @@ class OutputWriter:
         exec_lines, case_lines = self._read_sections(orig_path)
         lines.extend(exec_lines)
 
-        # 2. Case control — with IDs updated
+        # 2. Case control — copy verbatim (no ID renumbering)
         if case_lines:
-            updated_case = self.case_renumberer.renumber_case_control(
-                case_lines)
-            lines.extend(updated_case)
+            lines.extend(case_lines)
 
         # 3. BEGIN BULK
         lines.append('BEGIN BULK\n')
@@ -1176,6 +1182,12 @@ class OutputWriter:
         if remaining_lines:
             lines.append('$ --- Fallback cards (not in CARD_ORDER) ---\n')
             lines.extend(remaining_lines)
+
+        # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
+        passthrough = self.parser.file_passthrough.get(orig_path, [])
+        if passthrough:
+            lines.append('$ --- Passthrough cards (not renumbered) ---\n')
+            lines.extend(passthrough)
 
         self._log_diagnostics(orig_path, written_ids)
 

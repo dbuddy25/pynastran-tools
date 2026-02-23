@@ -119,6 +119,7 @@ class IncludeFileParser:
     def __init__(self):
         self.file_tree = {}          # filepath -> list of child include paths
         self.file_ids = {}           # filepath -> {entity_type: set(ids)}
+        self.file_passthrough = {}   # filepath -> list of raw lines for unrecognized cards
         self.all_files = []          # ordered list of filepaths (main first)
 
     def parse(self, main_path):
@@ -126,6 +127,7 @@ class IncludeFileParser:
         main_path = os.path.abspath(main_path)
         self.file_tree = {}
         self.file_ids = {}
+        self.file_passthrough = {}
         self.all_files = []
         self._parse_file(main_path, is_main=True)
 
@@ -140,6 +142,7 @@ class IncludeFileParser:
 
         self.all_files.append(filepath)
         self.file_ids[filepath] = defaultdict(set)
+        self.file_passthrough[filepath] = []
         self.file_tree[filepath] = []
 
         if not os.path.isfile(filepath):
@@ -151,6 +154,7 @@ class IncludeFileParser:
         file_dir = os.path.dirname(filepath)
         in_bulk = not is_main
         past_exec = not is_main
+        in_passthrough_card = False  # track continuations of unrecognized cards
 
         i = 0
         while i < len(lines):
@@ -175,13 +179,33 @@ class IncludeFileParser:
                 full_path = self._resolve_include(inc_path, file_dir)
                 self.file_tree[filepath].append(full_path)
                 self._parse_file(full_path, is_main=False)
+                in_passthrough_card = False
                 i += 1
                 continue
 
             if in_bulk and stripped and not stripped.startswith('$'):
-                self._classify_card(filepath, [line])
+                card_name = self._extract_card_name(stripped)
+                if card_name and (card_name[0] == '+' or card_name[0] == '*'):
+                    # Continuation line — include if previous card was passthrough
+                    if in_passthrough_card:
+                        self.file_passthrough[filepath].append(line)
+                elif card_name and CARD_ENTITY_MAP.get(card_name) is not None:
+                    in_passthrough_card = False
+                    self._classify_card(filepath, [line])
+                elif card_name:
+                    in_passthrough_card = True
+                    self.file_passthrough[filepath].append(line)
 
             i += 1
+
+    @staticmethod
+    def _extract_card_name(stripped_line):
+        """Extract card name from a stripped bulk data line."""
+        if ',' in stripped_line:
+            card_name = stripped_line.split(',')[0].strip().upper()
+        else:
+            card_name = stripped_line[:8].strip().upper()
+        return card_name.rstrip('*')
 
     def _classify_card(self, filepath, card_lines):
         """Extract card name and primary ID, add to file_ids."""
