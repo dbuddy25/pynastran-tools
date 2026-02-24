@@ -194,6 +194,11 @@ class ManageGroupsDialog(ctk.CTkToplevel):
             variable=self._show_ungrouped,
         ).pack(pady=(20, 0))
 
+        ctk.CTkButton(mid, text="Import CSV\u2026", width=140,
+                      command=self._import_csv).pack(pady=(20, 2))
+        ctk.CTkButton(mid, text="Export Template\u2026", width=140,
+                      command=self._export_template).pack(pady=2)
+
         # Right: existing groups
         right = ctk.CTkFrame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
@@ -295,6 +300,91 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._groups = {k: self._groups[k] for k in keys}
         self._refresh_group_list()
         self._group_listbox.selection_set(idx + 1)
+
+    def _import_csv(self):
+        """Import groups from a CSV file (Group Name, ID Start, ID End)."""
+        import csv
+        path = filedialog.askopenfilename(
+            title="Import Groups CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+
+        available_set = set(self._available_ids)
+        try:
+            with open(path, newline='') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                # Skip header row if it looks like a header
+                if header and header[0].strip().lower() in ('group name',
+                                                             'group_name',
+                                                             'name'):
+                    pass  # consumed header
+                else:
+                    # Not a header — process as data
+                    if header:
+                        self._process_csv_row(header, available_set)
+
+                for row in reader:
+                    self._process_csv_row(row, available_set)
+        except Exception as exc:
+            messagebox.showerror("Import Error", str(exc), parent=self)
+            return
+
+        self._refresh_group_list()
+
+    def _process_csv_row(self, row, available_set):
+        """Parse one CSV row and add IDs to the group."""
+        if len(row) < 3:
+            return
+        name = row[0].strip()
+        if not name:
+            return
+        all_ids = set()
+        # Iterate column pairs: (1,2), (3,4), (5,6), ...
+        i = 1
+        while i + 1 < len(row):
+            try:
+                id_start = int(row[i])
+                id_end = int(row[i + 1])
+            except (ValueError, TypeError):
+                i += 2
+                continue
+            all_ids.update(j for j in range(id_start, id_end + 1)
+                           if j in available_set)
+            i += 2
+        if not all_ids:
+            return
+        if name in self._groups:
+            self._groups[name].update(all_ids)
+        else:
+            self._groups[name] = all_ids
+
+    def _export_template(self):
+        """Export a CSV template pre-filled with available IDs."""
+        import csv
+        path = filedialog.asksaveasfilename(
+            title="Export Groups Template",
+            defaultextension='.csv',
+            filetypes=[("CSV files", "*.csv")],
+            parent=self)
+        if not path:
+            return
+
+        try:
+            with open(path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Group Name', 'ID Start', 'ID End'])
+                # Pre-fill one row per available ID as a starting point
+                for id_val in self._available_ids:
+                    label = self._id_labels.get(id_val, '')
+                    writer.writerow([label, id_val, id_val])
+            messagebox.showinfo("Exported",
+                                f"Template saved to:\n{path}",
+                                parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc), parent=self)
 
     def _apply(self):
         self._on_apply(self._groups, self._show_ungrouped.get())
