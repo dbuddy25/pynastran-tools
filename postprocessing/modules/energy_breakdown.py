@@ -610,22 +610,26 @@ REQUIREMENTS
     def _extract_comment_name(comment):
         """Extract a descriptive name from a BDF card comment string.
 
-        pyNastran stores ``$ Wing Skin\\n`` style comments on cards.
+        pyNastran attaches *all* preceding comment lines to a card, so
+        file-level headers or section dividers may appear before the
+        actual card name.  We take the **last** non-empty comment line
+        (the one directly above the card) as the descriptive name.
+
         Strips any prefix before a colon (e.g. ``$ Skin: Wing Upper``
         becomes ``Wing Upper``).
-        Returns the first non-empty line with the leading ``$`` stripped,
-        or *None* if there is nothing useful.
         """
         if not comment:
             return None
+        result = None
         for line in comment.splitlines():
             line = line.strip().lstrip('$').strip()
             if line:
-                # Strip prefix before colon (e.g. "Skin: Wing Upper" → "Wing Upper")
+                # Strip prefix before colon
                 if ':' in line:
                     line = line.split(':', 1)[1].strip()
-                return line if line else None
-        return None
+                if line:
+                    result = line
+        return result
 
     def _build_mappings(self, bdf_path):
         """Build eid→pid, eid→mid, eid→file mappings from BDF."""
