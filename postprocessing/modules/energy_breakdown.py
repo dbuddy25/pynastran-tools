@@ -244,7 +244,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
 # ---------------------------------------------------------------- GUI module
 
 class EnergyBreakdownModule:
-    name = "Energy Breakdown"
+    name = "ESE Breakdown"
 
     def __init__(self, parent):
         self.frame = ctk.CTkFrame(parent)
@@ -273,7 +273,7 @@ class EnergyBreakdownModule:
 
     # ------------------------------------------------------------------ UI
     _GUIDE_TEXT = """\
-Energy Breakdown Tool — Quick Guide
+ESE Breakdown Tool — Quick Guide
 
 PURPOSE
 Display element strain energy percentages (ESE%) from a Nastran OP2 file,
@@ -488,11 +488,16 @@ REQUIREMENTS
         nmodes = len(self._modes)
         ese_by_eid = {}
 
-        for attr_name in dir(op2):
+        # Modern pyNastran (1.4+): data lives in op2.op2_results.strain_energy
+        se = getattr(getattr(op2, 'op2_results', None), 'strain_energy', None)
+        if se is None:
+            se = op2  # fallback for older pyNastran
+
+        for attr_name in dir(se):
             if not attr_name.endswith('_strain_energy'):
                 continue
-            result_dict = getattr(op2, attr_name, None)
-            if not isinstance(result_dict, dict):
+            result_dict = getattr(se, attr_name, None)
+            if not isinstance(result_dict, dict) or not result_dict:
                 continue
 
             for subcase_id, result in result_dict.items():
@@ -905,7 +910,7 @@ REQUIREMENTS
         wb = Workbook()
         styles = make_energy_styles()
         ws = wb.active
-        ws.title = "Energy Breakdown"
+        ws.title = "ESE Breakdown"
         write_energy_sheet(ws, export_data, styles, op2_name=op2_name,
                            threshold=threshold, title=title)
 
@@ -922,7 +927,7 @@ def main():
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
-    root.title("Energy Breakdown")
+    root.title("ESE Breakdown")
     root.geometry("1400x600")
     mod = EnergyBreakdownModule(root)
     mod.frame.pack(fill=tk.BOTH, expand=True)

@@ -5,7 +5,7 @@ Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Mass Scale (BDF mass scaling by include file)
   - Renumber (include file ID renumbering)
   - MEFFMASS (modal effective mass fractions from OP2)
-  - Energy Breakdown (element strain energy % by group from OP2)
+  - ESE Breakdown (element strain energy % by group from OP2)
 
 Usage:
     python nastran_tools.py
@@ -87,7 +87,7 @@ class Sidebar(ctk.CTkFrame):
         # Post-Processing section
         self._add_section("Post-Processing")
         self._add_tool("meff", "MEFFMASS")
-        self._add_tool("energy", "Energy Breakdown")
+        self._add_tool("energy", "ESE Breakdown")
 
     def _add_section(self, label):
         ctk.CTkLabel(
