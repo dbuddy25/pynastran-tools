@@ -787,9 +787,18 @@ REQUIREMENTS
             final_groups = {label_fn(gid): arr
                             for gid, arr in raw_groups.items()}
 
-        # Sort labels
-        if group_by == "Include File" and self._file_order:
-            # Preserve BDF encounter order for include files
+        # Sort labels — custom groups keep creation order, remainder sorted
+        if self._custom_groups:
+            # Custom group names in creation order first
+            custom_names = [n for n in self._custom_groups if n in final_groups]
+            rest = [l for l in final_groups if l not in self._custom_groups]
+            if group_by == "Include File" and self._file_order:
+                order_map = {f: i for i, f in enumerate(self._file_order)}
+                rest.sort(key=lambda lbl: order_map.get(lbl, 999999))
+            else:
+                rest.sort(key=self._group_sort_key)
+            labels = custom_names + rest
+        elif group_by == "Include File" and self._file_order:
             order_map = {f: i for i, f in enumerate(self._file_order)}
             labels = sorted(final_groups.keys(),
                             key=lambda lbl: order_map.get(lbl, 999999))
