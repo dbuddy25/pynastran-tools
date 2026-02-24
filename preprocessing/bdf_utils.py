@@ -109,6 +109,43 @@ def make_model(cards_to_skip=None):
     return model
 
 
+# ── Card line parsing ─────────────────────────────────────────────────────────
+
+def extract_card_info(line):
+    """Extract card name and primary ID from a raw BDF line.
+
+    Handles fixed-field (8-char or 16-char) and free-field (comma-delimited).
+    Returns (name, id) or (None, None) for comments, continuations, blanks.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith('$'):
+        return None, None
+
+    first_char = stripped[0]
+    if first_char in ('+', '*') or not first_char.isalpha():
+        return None, None
+
+    if ',' in stripped:
+        fields = stripped.split(',')
+        card_name = fields[0].strip().upper()
+        id_str = fields[1].strip() if len(fields) > 1 else ''
+    else:
+        card_name = stripped[:8].strip().upper()
+        if card_name.endswith('*'):
+            id_str = stripped[8:24].strip() if len(stripped) > 8 else ''
+        else:
+            id_str = stripped[8:16].strip() if len(stripped) > 8 else ''
+
+    card_name = card_name.rstrip('*')
+
+    try:
+        card_id = int(id_str)
+    except (ValueError, TypeError):
+        return card_name, None
+
+    return card_name, card_id
+
+
 # ── Include file parser ──────────────────────────────────────────────────────
 
 class IncludeFileParser:

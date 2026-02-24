@@ -29,12 +29,12 @@ from pyNastran.bdf.bdf import BDF
 try:
     from bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        RENUMBER_TYPES, make_model,
+        RENUMBER_TYPES, make_model, extract_card_info,
     )
 except ImportError:
     from preprocessing.bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        RENUMBER_TYPES, make_model,
+        RENUMBER_TYPES, make_model, extract_card_info,
     )
 
 # Cards that pyNastran may not support — disable to avoid parse errors.
@@ -61,6 +61,27 @@ _SHORT_LABELS = {
     'method_id': 'Methods', 'table_id': 'Tables',
 }
 
+_FEMAP_ID_RE = re.compile(
+    r'((?:NID|EID|PID|MID|CID)\s*=\s*)(\d+)', re.IGNORECASE)
+
+_FEMAP_TAG_TO_ETYPE = {
+    'NID': 'nid', 'EID': 'eid', 'PID': 'pid', 'MID': 'mid', 'CID': 'cid',
+}
+
+
+def _renumber_femap_comment(line, maps):
+    """Renumber IDs in Femap-style comments (e.g. PID=10 -> PID=20)."""
+    def _replace(match):
+        prefix = match.group(1)
+        tag = prefix.split('=')[0].strip().upper()
+        old_id = int(match.group(2))
+        etype = _FEMAP_TAG_TO_ETYPE.get(tag)
+        if etype:
+            id_map = maps.get(etype, {})
+            new_id = id_map.get(old_id, old_id)
+            return prefix + str(new_id)
+        return match.group(0)
+    return _FEMAP_ID_RE.sub(_replace, line)
 
 
 def _replace_fields(line, start_field, id_map):
@@ -965,51 +986,6 @@ class CaseControlRenumberer:
 class OutputWriter:
     """Write renumbered cards to per-file output preserving include structure."""
 
-    # Card write order categories
-    CARD_ORDER = [
-        # 1. Coordinate systems
-        ('CORD2R', 'CORD2C', 'CORD2S', 'CORD1R', 'CORD1C', 'CORD1S'),
-        # 2. Nodes
-        ('GRID', 'SPOINT'),
-        # 3. Solid/shell/beam elements
-        ('CHEXA', 'CPENTA', 'CTETRA', 'CQUAD4', 'CQUAD8', 'CTRIA3',
-         'CTRIA6', 'CQUADR', 'CTRIAR', 'CSHEAR',
-         'CBAR', 'CBEAM', 'CROD', 'CONROD', 'CBUSH',
-         'CELAS1', 'CELAS2', 'CELAS3', 'CELAS4',
-         'CDAMP1', 'CDAMP2', 'CDAMP3', 'CDAMP4',
-         'CGAP', 'CWELD', 'CFAST', 'CVISC', 'PLOTEL',
-         'CHBDYG', 'CHBDYE'),
-        # 4. Rigid elements
-        ('RBE2', 'RBE3', 'RBAR'),
-        # 5. Mass elements
-        ('CONM1', 'CONM2', 'CMASS1', 'CMASS2', 'CMASS3', 'CMASS4'),
-        # 6. Properties
-        ('PSHELL', 'PCOMP', 'PCOMPG', 'PCOMPLS', 'PSOLID', 'PLSOLID',
-         'PBAR', 'PBARL', 'PBEAM', 'PBEAML', 'PROD',
-         'PBUSH', 'PBUSHT', 'PELAS', 'PDAMP', 'PGAP',
-         'PSHEAR', 'PWELD', 'PFAST', 'PVISC'),
-        # 7. Materials
-        ('MAT1', 'MAT2', 'MAT8', 'MAT9', 'MAT10'),
-        # 8. Loads
-        ('FORCE', 'MOMENT', 'PLOAD', 'PLOAD2', 'PLOAD4', 'GRAV',
-         'RFORCE', 'TEMP', 'TEMPD', 'DAREA'),
-        # 9. Load combinations
-        ('LOAD', 'DLOAD'),
-        # 10. Dynamic loads
-        ('RLOAD1', 'RLOAD2', 'TLOAD1', 'TLOAD2'),
-        # 11. Constraints
-        ('SPC', 'SPC1', 'SPCADD', 'MPC', 'MPCADD'),
-        # 12. Contact
-        ('BSURF', 'BSURFS', 'BCTSET', 'BCTADD', 'BCONP', 'BCBODY',
-         'BCTPARA', 'BCTPARM', 'BLSEG', 'BFRIC'),
-        # 13. Sets
-        ('SET1', 'SET3'),
-        # 14. Methods
-        ('EIGRL', 'EIGR'),
-        # 15. Tables
-        ('TABLED1', 'TABLEM1'),
-    ]
-
     def __init__(self, model, parser, maps, log_func=None):
         """
         Args:
@@ -1070,12 +1046,6 @@ class OutputWriter:
 
         return written_files
 
-    def _get_new_ids_for_file(self, filepath, entity_type):
-        """Get the set of NEW ids that belong to this file."""
-        id_map = self.maps.get(entity_type, {})
-        orig_ids = self.parser.file_ids[filepath].get(entity_type, set())
-        return {id_map.get(old_id, old_id) for old_id in orig_ids}
-
     @staticmethod
     def _write_card_safe(card):
         """Write a single card, returning the string or None on failure."""
@@ -1087,334 +1057,203 @@ class OutputWriter:
             except Exception:
                 return None
 
-    def _write_ordered_cards(self, filepath):
-        """Write cards via CARD_ORDER. Returns (lines, written_ids_by_etype)."""
-        lines = []
-        written_ids = defaultdict(set)  # {entity_type: set(new_ids)}
+    def _build_renumbered_lookup(self, filepath):
+        """Build {(card_type, old_id): [card_objects]} for cards in a file.
 
-        for card_group in self.CARD_ORDER:
-            group_lines = []
-            for card_type in card_group:
-                entity_type = CARD_ENTITY_MAP.get(card_type)
-                cards = self._get_cards_for_file(filepath, card_type)
-                for card in cards:
-                    text = self._write_card_safe(card)
-                    if text:
-                        group_lines.append(text)
-                        if entity_type:
-                            cid = getattr(card, 'eid', None) or \
-                                  getattr(card, 'nid', None) or \
-                                  getattr(card, 'pid', None) or \
-                                  getattr(card, 'mid', None) or \
-                                  getattr(card, 'cid', None) or \
-                                  getattr(card, 'sid', None) or \
-                                  getattr(card, 'tid', None) or \
-                                  getattr(card, 'conid', None) or \
-                                  getattr(card, 'contact_id', None)
-                            if cid is not None:
-                                written_ids[entity_type].add(cid)
-            if group_lines:
-                lines.extend(group_lines)
-
-        return lines, written_ids
-
-    def _write_remaining_cards(self, filepath, written_ids):
-        """Fallback: write any cards belonging to this file not yet written."""
-        lines = []
-        fname = os.path.basename(filepath)
+        Keys use old IDs to match extract_card_info() on original file lines.
+        Values are lists to handle multiple cards sharing type+id (e.g. FORCE).
+        """
+        lookup = defaultdict(list)
 
         for etype in ENTITY_TYPES:
-            new_ids = self._get_new_ids_for_file(filepath, etype)
-            if not new_ids:
+            old_ids = self.parser.file_ids[filepath].get(etype, set())
+            if not old_ids:
                 continue
 
-            already = written_ids.get(etype, set())
-            remaining = new_ids - already
-            if not remaining:
-                continue
+            id_map = self.maps.get(etype, {})
 
-            # Search all model dicts for this entity type
-            dict_specs = self._MODEL_DICTS.get(etype, [])
-            for attr_name, is_list_dict in dict_specs:
+            for attr_name, is_list_dict in self._MODEL_DICTS.get(etype, []):
                 d = getattr(self.model, attr_name, None)
                 if not d or not isinstance(d, dict):
                     continue
-                for card_id, card_or_list in d.items():
-                    if card_id not in remaining:
+
+                for old_id in old_ids:
+                    new_id = id_map.get(old_id, old_id)
+                    card_or_list = d.get(new_id)
+                    if card_or_list is None:
                         continue
-                    cards = card_or_list if is_list_dict and \
-                        isinstance(card_or_list, list) else [card_or_list]
-                    for card in cards:
+
+                    if is_list_dict and isinstance(card_or_list, list):
+                        for card in card_or_list:
+                            lookup[(card.type, old_id)].append(card)
+                    else:
+                        lookup[(card_or_list.type, old_id)].append(
+                            card_or_list)
+
+        return lookup
+
+    def _rewrite_bulk_data(self, lines, lookup):
+        """Rewrite bulk data lines, replacing cards with renumbered versions.
+
+        Preserves comments, blank lines, and original card ordering.
+        Renumbers Femap-style IDs in comments (e.g. PID=10 -> PID=100).
+        """
+        out = []
+        replacing = False       # swallowing continuations of a replaced card
+        in_passthrough = False  # inside a passthrough card (BCPROP etc.)
+        passthrough_cfg = None
+        comment_buf = []
+
+        for line in lines:
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # ENDDATA: stop state, flush, pass through
+            if upper.startswith('ENDDATA'):
+                replacing = False
+                in_passthrough = False
+                out.extend(_renumber_femap_comment(c, self.maps)
+                           for c in comment_buf)
+                comment_buf.clear()
+                out.append(line)
+                continue
+
+            # INCLUDE: stop state, flush, pass through
+            if upper.startswith('INCLUDE'):
+                replacing = False
+                in_passthrough = False
+                out.extend(_renumber_femap_comment(c, self.maps)
+                           for c in comment_buf)
+                comment_buf.clear()
+                out.append(line)
+                continue
+
+            # Comment or blank: buffer
+            if not stripped or stripped.startswith('$'):
+                comment_buf.append(line)
+                continue
+
+            # New card (first char alphabetic)
+            first_char = stripped[0]
+            if first_char.isalpha():
+                replacing = False
+                in_passthrough = False
+                card_name, card_id = extract_card_info(line)
+
+                if card_name and card_id is not None:
+                    key = (card_name, card_id)
+                    if key in lookup and lookup[key]:
+                        card = lookup[key].pop(0)
                         text = self._write_card_safe(card)
                         if text:
-                            lines.append(text)
-                            remaining.discard(card_id)
+                            # Strip write_card's leading comment
+                            text_lines = text.split('\n')
+                            while (text_lines and
+                                   text_lines[0].strip().startswith('$')):
+                                text_lines.pop(0)
+                            text = '\n'.join(text_lines)
+                            if text and not text.endswith('\n'):
+                                text += '\n'
+                            out.extend(
+                                _renumber_femap_comment(c, self.maps)
+                                for c in comment_buf)
+                            comment_buf.clear()
+                            out.append(text)
+                            replacing = True
+                            continue
 
-            if remaining:
-                self._log(f"  WARNING: {fname}/{etype}: "
-                          f"{len(remaining)} IDs not found in model dicts")
+                # Check passthrough
+                if card_name:
+                    cfg = _PASSTHROUGH_FIELD_MAPS.get(card_name)
+                    if cfg:
+                        in_passthrough = True
+                        passthrough_cfg = cfg
+                        id_map = self.maps.get(cfg['etype'], {})
+                        out.extend(
+                            _renumber_femap_comment(c, self.maps)
+                            for c in comment_buf)
+                        comment_buf.clear()
+                        out.append(_replace_fields(
+                            line, cfg['start_field'], id_map))
+                        continue
 
-        return lines
-
-    def _log_diagnostics(self, filepath, written_ids):
-        """Log card counts per entity type for diagnostics."""
-        fname = os.path.basename(filepath)
-        for etype in ENTITY_TYPES:
-            expected = self._get_new_ids_for_file(filepath, etype)
-            n_written = len(written_ids.get(etype, set()))
-            n_expected = len(expected)
-            if n_expected == 0:
-                continue
-            if n_written != n_expected:
-                self._log(f"  DIAG {fname}/{etype}: wrote {n_written}/"
-                          f"{n_expected}")
-
-    @staticmethod
-    def _renumber_passthrough_lines(passthrough_lines, maps):
-        """Renumber ID fields in passthrough card lines (e.g. BCPROP PIDs).
-
-        Parses fixed-format (8-char) fields and replaces IDs using the
-        appropriate entity map from _PASSTHROUGH_FIELD_MAPS.
-
-        Args:
-            passthrough_lines: list of raw text lines
-            maps: dict[entity_type, dict[old_id, new_id]]
-
-        Returns:
-            list of (possibly modified) text lines
-        """
-        result = []
-        current_card = None  # name of the passthrough card we're inside
-
-        for line in passthrough_lines:
-            # Comment or blank — pass through unchanged
-            stripped = line.strip()
-            if not stripped or stripped.startswith('$'):
-                result.append(line)
-                current_card = None
-                continue
-
-            # Determine card name from first 8 chars (fixed) or first comma field (free)
-            if ',' in line:
-                card_name = line.split(',')[0].strip().upper()
+                # Not replaced — flush and pass through
+                out.extend(_renumber_femap_comment(c, self.maps)
+                           for c in comment_buf)
+                comment_buf.clear()
+                out.append(line)
             else:
-                card_name = line[:8].strip().upper()
-
-            if card_name and card_name[0].isalpha():
-                # New card line
-                cfg = _PASSTHROUGH_FIELD_MAPS.get(card_name)
-                if cfg:
-                    current_card = card_name
-                    id_map = maps.get(cfg['etype'], {})
-                    result.append(_replace_fields(
-                        line, cfg['start_field'], id_map))
+                # Continuation line
+                if replacing:
+                    comment_buf.clear()
+                elif in_passthrough and passthrough_cfg:
+                    out.extend(comment_buf)
+                    comment_buf.clear()
+                    id_map = self.maps.get(
+                        passthrough_cfg['etype'], {})
+                    out.append(_replace_fields(
+                        line, passthrough_cfg['cont_start_field'],
+                        id_map))
                 else:
-                    current_card = None
-                    result.append(line)
-            elif (current_card and card_name == '') or (
-                    card_name and (card_name[0].isdigit()
-                                  or card_name[0] in ('+', '*'))):
-                # Continuation line of current passthrough card
-                if current_card:
-                    cfg = _PASSTHROUGH_FIELD_MAPS[current_card]
-                    id_map = maps.get(cfg['etype'], {})
-                    result.append(_replace_fields(
-                        line, cfg['cont_start_field'], id_map))
-                else:
-                    result.append(line)
-            else:
-                current_card = None
-                result.append(line)
+                    out.extend(comment_buf)
+                    comment_buf.clear()
+                    out.append(line)
 
-        return result
+        # Flush remaining buffer
+        out.extend(_renumber_femap_comment(c, self.maps) for c in comment_buf)
+
+        return out
 
     def _write_include_file(self, orig_path, out_path):
-        """Write a single include file with its renumbered cards."""
-        lines = []
+        """Write a single include file preserving comments and card order."""
+        if not os.path.isfile(orig_path):
+            return
 
-        ordered_lines, written_ids = self._write_ordered_cards(orig_path)
-        lines.extend(ordered_lines)
-
-        # Fallback: catch any cards missed by CARD_ORDER
-        remaining_lines = self._write_remaining_cards(orig_path, written_ids)
-        if remaining_lines:
-            lines.extend(remaining_lines)
-
-        # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
-        passthrough = self.parser.file_passthrough.get(orig_path, [])
-        if passthrough:
-            lines.extend(self._renumber_passthrough_lines(passthrough, self.maps))
-
-        self._log_diagnostics(orig_path, written_ids)
-
-        with open(out_path, 'w') as f:
-            f.writelines(lines)
-
-    def _write_main_file(self, orig_path, out_path, include_out_paths):
-        """Write the main BDF file with updated case control and includes."""
-        lines = []
-
-        # 1. Executive control — copy verbatim from original
-        exec_lines, case_lines = self._read_sections(orig_path)
-        lines.extend(exec_lines)
-
-        # 2. Case control — copy verbatim (no ID renumbering)
-        if case_lines:
-            lines.extend(case_lines)
-
-        # 3. BEGIN BULK
-        lines.append('BEGIN BULK\n')
-
-        # 4. INCLUDE statements with updated paths
-        main_dir = os.path.dirname(out_path)
-        for orig_inc_path in self.parser.file_tree.get(orig_path, []):
-            if orig_inc_path in include_out_paths:
-                inc_out = include_out_paths[orig_inc_path]
-                rel_path = os.path.relpath(inc_out, main_dir)
-                lines.append(f"INCLUDE '{rel_path}'\n")
-
-        # 5. Main file's own bulk data cards
-        ordered_lines, written_ids = self._write_ordered_cards(orig_path)
-        lines.extend(ordered_lines)
-
-        # Fallback: catch any cards missed by CARD_ORDER
-        remaining_lines = self._write_remaining_cards(orig_path, written_ids)
-        if remaining_lines:
-            lines.extend(remaining_lines)
-
-        # Passthrough: cards not in CARD_ENTITY_MAP, written back unchanged
-        passthrough = self.parser.file_passthrough.get(orig_path, [])
-        if passthrough:
-            lines.extend(self._renumber_passthrough_lines(passthrough, self.maps))
-
-        self._log_diagnostics(orig_path, written_ids)
-
-        # 6. ENDDATA
-        lines.append('ENDDATA\n')
-
-        with open(out_path, 'w') as f:
-            f.writelines(lines)
-
-    def _get_cards_for_file(self, filepath, card_type):
-        """Get all card objects of a given type that belong to the file."""
-        cards = []
-        model = self.model
-        entity_type = CARD_ENTITY_MAP.get(card_type)
-        if entity_type is None:
-            return cards
-
-        new_ids = self._get_new_ids_for_file(filepath, entity_type)
-        if not new_ids:
-            return cards
-
-        # Map card type to model dict
-        card_dicts = self._get_card_dict(card_type)
-        for card_dict in card_dicts:
-            for card_id, card in card_dict.items():
-                if isinstance(card, list):
-                    # Some dicts store lists (loads, spcs, mpcs)
-                    for c in card:
-                        if c.type == card_type and card_id in new_ids:
-                            cards.append(c)
-                else:
-                    if card.type == card_type and card_id in new_ids:
-                        cards.append(card)
-
-        return cards
-
-    def _get_card_dict(self, card_type):
-        """Return the model dict(s) that store cards of this type."""
-        model = self.model
-        entity_type = CARD_ENTITY_MAP.get(card_type)
-
-        if entity_type == 'nid':
-            if card_type == 'SPOINT':
-                return [getattr(model, 'spoints', {})]
-            return [model.nodes]
-        elif entity_type == 'eid':
-            if card_type in ('RBE2', 'RBE3', 'RBAR'):
-                return [model.rigid_elements]
-            if card_type in ('CONM1', 'CONM2', 'CMASS1', 'CMASS2',
-                             'CMASS3', 'CMASS4'):
-                return [model.masses]
-            if card_type == 'PLOTEL':
-                return [getattr(model, 'plotels', {})]
-            return [model.elements]
-        elif entity_type == 'pid':
-            return [model.properties]
-        elif entity_type == 'mid':
-            return [model.materials]
-        elif entity_type == 'cid':
-            return [model.coords]
-        elif entity_type == 'spc_id':
-            dicts = []
-            if card_type == 'SPCADD':
-                dicts.append(getattr(model, 'spcadds', {}))
-            else:
-                dicts.append(getattr(model, 'spcs', {}))
-            return dicts
-        elif entity_type == 'mpc_id':
-            dicts = []
-            if card_type == 'MPCADD':
-                dicts.append(getattr(model, 'mpcadds', {}))
-            else:
-                dicts.append(getattr(model, 'mpcs', {}))
-            return dicts
-        elif entity_type == 'load_id':
-            dicts = [getattr(model, 'loads', {})]
-            if card_type == 'DLOAD':
-                dicts.append(getattr(model, 'dloads', {}))
-            if card_type in ('RLOAD1', 'RLOAD2', 'TLOAD1', 'TLOAD2'):
-                dicts.append(getattr(model, 'dload_entries', {}))
-            return dicts
-        elif entity_type == 'contact_id':
-            dicts = []
-            attr_map = {
-                'BSURF': 'bsurf', 'BSURFS': 'bsurfs',
-                'BCTSET': 'bctsets', 'BCTADD': 'bctadds',
-                'BCONP': 'bconp', 'BCBODY': 'bcbodys',
-                'BLSEG': 'blsegs', 'BFRIC': 'bfriction',
-                'BCTPARA': 'bctparas', 'BCTPARM': 'bctparms',
-            }
-            attr = attr_map.get(card_type)
-            if attr:
-                dicts.append(getattr(model, attr, {}))
-            return dicts
-        elif entity_type == 'set_id':
-            return [getattr(model, 'sets', {})]
-        elif entity_type == 'method_id':
-            return [getattr(model, 'methods', {})]
-        elif entity_type == 'table_id':
-            return [getattr(model, 'tables', {})]
-
-        return [{}]
-
-    def _read_sections(self, filepath):
-        """Read a BDF file and split into exec control lines and case control lines."""
-        exec_lines = []
-        case_lines = []
-
-        if not os.path.isfile(filepath):
-            return exec_lines, case_lines
-
-        with open(filepath, 'r', errors='replace') as f:
+        with open(orig_path, 'r', errors='replace') as f:
             lines = f.readlines()
 
-        section = 'exec'  # exec -> case -> bulk
-        for line in lines:
-            upper = line.strip().upper()
-            if section == 'exec':
-                exec_lines.append(line)
-                if upper.startswith('CEND'):
-                    section = 'case'
-            elif section == 'case':
-                if upper.startswith('BEGIN') and 'BULK' in upper:
-                    section = 'bulk'
-                    break
-                case_lines.append(line)
-            # Stop at BEGIN BULK
+        lookup = self._build_renumbered_lookup(orig_path)
+        out_lines = self._rewrite_bulk_data(lines, lookup)
+        self._log_diagnostics(orig_path, lookup)
 
-        return exec_lines, case_lines
+        with open(out_path, 'w') as f:
+            f.writelines(out_lines)
+
+    def _write_main_file(self, orig_path, out_path, include_out_paths):
+        """Write the main BDF preserving comments, card order, and structure."""
+        if not os.path.isfile(orig_path):
+            return
+
+        with open(orig_path, 'r', errors='replace') as f:
+            lines = f.readlines()
+
+        lookup = self._build_renumbered_lookup(orig_path)
+
+        out = []
+        bulk_start = len(lines)
+
+        for i, line in enumerate(lines):
+            upper = line.strip().upper()
+            out.append(line)
+            if upper.startswith('BEGIN') and 'BULK' in upper:
+                bulk_start = i + 1
+                break
+
+        if bulk_start < len(lines):
+            out.extend(self._rewrite_bulk_data(lines[bulk_start:], lookup))
+
+        self._log_diagnostics(orig_path, lookup)
+
+        with open(out_path, 'w') as f:
+            f.writelines(out)
+
+    def _log_diagnostics(self, filepath, lookup):
+        """Log warnings for unconsumed lookup entries after processing."""
+        fname = os.path.basename(filepath)
+        for (card_type, old_id), cards in lookup.items():
+            if cards:
+                self._log(f"  WARNING: {fname}: {len(cards)} {card_type} "
+                          f"(old_id={old_id}) not matched in original file")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
