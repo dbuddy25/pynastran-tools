@@ -42,50 +42,66 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
                        title=None):
     """Write an energy breakdown sheet to an openpyxl worksheet.
 
-    data: dict with keys 'modes', 'freqs', 'headers', 'table' (list of rows).
+    data keys:
+      'headers'     — main header labels (group names or PID labels)
+      'sub_headers' — optional second header row (PIDs / filenames, hideable)
+      'table'       — list of data rows
     """
     from openpyxl.utils import get_column_letter
 
     s = styles
     headers = data['headers']
+    sub_headers = data.get('sub_headers')
     table = data['table']
     total_cols = len(headers)
 
-    row_offset = 1 if title else 0
+    cur_row = 0
 
     # Row 1: custom title (only when title provided)
     if title:
-        cell = ws.cell(row=1, column=1, value=title)
+        cur_row += 1
+        cell = ws.cell(row=cur_row, column=1, value=title)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
         cell.alignment = s['center']
-        ws.merge_cells(start_row=1, start_column=1,
-                       end_row=1, end_column=total_cols)
+        ws.merge_cells(start_row=cur_row, start_column=1,
+                       end_row=cur_row, end_column=total_cols)
         for ci in range(2, total_cols + 1):
-            ws.cell(row=1, column=ci).fill = s['dark_fill']
+            ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
     # OP2 filename row
-    name_row = 1 + row_offset
+    cur_row += 1
     name_text = op2_name if op2_name else ""
-    cell = ws.cell(row=name_row, column=1, value=name_text)
+    cell = ws.cell(row=cur_row, column=1, value=name_text)
     cell.font = s['white_bold']
     cell.fill = s['dark_fill']
     cell.alignment = s['center']
-    ws.merge_cells(start_row=name_row, start_column=1,
-                   end_row=name_row, end_column=total_cols)
+    ws.merge_cells(start_row=cur_row, start_column=1,
+                   end_row=cur_row, end_column=total_cols)
     for ci in range(2, total_cols + 1):
-        ws.cell(row=name_row, column=ci).fill = s['dark_fill']
+        ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
-    # Sub-headers row
-    sub_row = 2 + row_offset
+    # Main headers row (group names)
+    cur_row += 1
     for ci, h in enumerate(headers, 1):
-        cell = ws.cell(row=sub_row, column=ci, value=h)
+        cell = ws.cell(row=cur_row, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
 
+    # Sub-headers row (PIDs / filenames — can be hidden)
+    sub_header_row = None
+    if sub_headers:
+        cur_row += 1
+        sub_header_row = cur_row
+        for ci, h in enumerate(sub_headers, 1):
+            cell = ws.cell(row=cur_row, column=ci, value=h)
+            cell.font = s['sub_font']
+            cell.fill = s['mid_fill']
+            cell.alignment = s['center']
+
     # Data rows
-    data_start = 3 + row_offset
+    data_start = cur_row + 1
     total_col_idx = total_cols - 1  # 0-based index of Total column
     for i, row_data in enumerate(table):
         row = i + data_start
@@ -108,15 +124,14 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
                         cell.font = s['bold_red_font'] if val >= threshold else s['red_font']
             cell.border = s['cell_border']
 
-    # Column widths
+    # Equal column widths
+    col_width = 14
     ws.column_dimensions['A'].width = 7
     ws.column_dimensions['B'].width = 12
     for ci in range(3, total_cols + 1):
-        col_letter = get_column_letter(ci)
-        header_len = len(str(headers[ci - 1]))
-        ws.column_dimensions[col_letter].width = max(10, header_len + 3)
-    freeze_row = data_start
-    ws.freeze_panes = f'A{freeze_row}'
+        ws.column_dimensions[get_column_letter(ci)].width = col_width
+
+    ws.freeze_panes = f'A{data_start}'
 
 
 # --------------------------------------------------------- Manage Groups Dialog
@@ -1042,16 +1057,20 @@ REQUIREMENTS
         title = self._title_var.get().strip() or None
         op2_name = os.path.basename(self._op2_path) if self._op2_path else None
 
-        # Build export headers with names
-        export_labels = []
+        # Build export headers — names row + PIDs/filenames row (hideable)
+        name_labels = ['Mode', 'Freq (Hz)']
+        id_labels = ['', '']
+        has_sub = False
         for lbl in labels:
             name = self._get_column_name(lbl)
             hdr = self._get_column_header(lbl)
+            name_labels.append(name if name else hdr)
+            id_labels.append(hdr)
             if name and name != hdr:
-                export_labels.append(f"{name}\n{hdr}")
-            else:
-                export_labels.append(hdr)
-        headers = ['Mode', 'Freq (Hz)'] + export_labels + ['Total']
+                has_sub = True
+        name_labels.append('Total')
+        id_labels.append('')
+        headers = name_labels
         table = []
         for i in range(nmodes):
             row = [int(self._modes[i]), float(self._freqs[i])]
@@ -1065,6 +1084,7 @@ REQUIREMENTS
 
         export_data = {
             'headers': headers,
+            'sub_headers': id_labels if has_sub else None,
             'table': table,
         }
 
