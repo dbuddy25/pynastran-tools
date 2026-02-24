@@ -5,6 +5,7 @@ Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Mass Scale (BDF mass scaling by include file)
   - Renumber (include file ID renumbering)
   - MEFFMASS (modal effective mass fractions from OP2)
+  - Energy Breakdown (element strain energy % by group from OP2)
 
 Usage:
     python nastran_tools.py
@@ -32,6 +33,13 @@ try:
     from modules.meff import MeffModule
 except Exception:
     _meff_available = False
+
+# EnergyBreakdownModule — lazy import with fallback
+_energy_available = True
+try:
+    from modules.energy_breakdown import EnergyBreakdownModule
+except Exception:
+    _energy_available = False
 
 
 __version__ = "0.1.0"
@@ -79,6 +87,7 @@ class Sidebar(ctk.CTkFrame):
         # Post-Processing section
         self._add_section("Post-Processing")
         self._add_tool("meff", "MEFFMASS")
+        self._add_tool("energy", "Energy Breakdown")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -154,6 +163,12 @@ class NastranToolsApp(ctk.CTk):
             self._tools['meff'] = meff.frame
         else:
             self._sidebar.disable_tool("meff")
+
+        if _energy_available:
+            energy = EnergyBreakdownModule(self._content)
+            self._tools['energy'] = energy.frame
+        else:
+            self._sidebar.disable_tool("energy")
 
         self._active_tool = None
 
