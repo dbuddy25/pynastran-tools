@@ -384,7 +384,7 @@ REQUIREMENTS
         # Table (tksheet)
         self._sheet = Sheet(
             self.frame,
-            headers=["Mode", "Freq (Hz)", "Total ESE%"],
+            headers=["Mode", "Freq (Hz)", "Total"],
             show_top_left=False,
             show_row_index=False,
         )
@@ -535,6 +535,8 @@ REQUIREMENTS
                         arr = np.zeros(nmodes)
                         arr[:n] = pct[:n]
                         ese_by_eid[eid_int] = arr
+
+                break  # Only process first valid result per element type
 
         return ese_by_eid
 
@@ -783,7 +785,7 @@ REQUIREMENTS
         nmodes = len(self._modes)
 
         # Build headers
-        headers = ['Mode', 'Freq (Hz)'] + [f'{lbl} ESE%' for lbl in labels] + ['Total ESE%']
+        headers = ['Mode', 'Freq (Hz)'] + list(labels) + ['Total']
 
         # Build table data
         table_data = []
@@ -894,7 +896,7 @@ REQUIREMENTS
         op2_name = os.path.basename(self._op2_path) if self._op2_path else None
 
         # Build export data
-        headers = ['Mode', 'Freq (Hz)'] + [f'{lbl} ESE%' for lbl in labels] + ['Total ESE%']
+        headers = ['Mode', 'Freq (Hz)'] + list(labels) + ['Total']
         table = []
         for i in range(nmodes):
             row = [int(self._modes[i]), float(self._freqs[i])]
