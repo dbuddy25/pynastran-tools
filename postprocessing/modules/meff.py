@@ -4,6 +4,7 @@ Reads EFMFACS from an OP2 and displays per-mode fractions with
 cumulative sums for each direction (Tx-Rz).
 """
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -11,8 +12,6 @@ import customtkinter as ctk
 from tksheet import Sheet
 
 import numpy as np
-if not hasattr(np, 'in1d'):
-    np.in1d = np.isin
 import scipy.sparse
 
 DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
@@ -21,6 +20,14 @@ DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 _SINGLE_HEADERS = ['Mode', 'Freq (Hz)']
 for _d in DIRECTIONS:
     _SINGLE_HEADERS.extend([f'{_d} Frac', f'{_d} Sum'])
+
+
+def _matrix_to_dense(matrix_obj):
+    """Convert a pyNastran Matrix object's data to a dense numpy array."""
+    data = matrix_obj.data
+    if scipy.sparse.issparse(data):
+        return data.toarray()
+    return np.asarray(data)
 
 
 # --------------------------------------------------------- Excel helpers
@@ -37,10 +44,7 @@ def make_meff_styles():
         'center': Alignment(horizontal="center", vertical="center"),
         'right': Alignment(horizontal="right", vertical="center"),
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
-        'weak_font': Font(color="FF0000"),
         'bold_font': Font(bold=True),
-        'bold_weak_font': Font(bold=True, color="FF0000"),
-        'num4': '0.0000',
         'num2': '0.00',
         'num1': '0.0',
     }
@@ -201,8 +205,9 @@ REQUIREMENTS
         toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=5, pady=(5, 0))
 
-        ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
-                       command=self._open_op2).pack(side=tk.LEFT)
+        self._op2_btn = ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
+                                      command=self._open_op2)
+        self._op2_btn.pack(side=tk.LEFT)
 
         # Title field
         ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(10, 2))
@@ -262,8 +267,9 @@ REQUIREMENTS
             return 0.1
 
     def _on_threshold_change(self, *args):
-        """Re-display current view when threshold changes."""
-        self._show_single_view()
+        """Update highlighting when threshold changes."""
+        if self.data is not None:
+            self._apply_highlights()
 
     def _apply_highlights(self):
         """Apply threshold-based cell highlighting to the current view."""
@@ -288,6 +294,36 @@ REQUIREMENTS
         show_guide(self.frame.winfo_toplevel(), "MEFFMASS Guide",
                    self._GUIDE_TEXT)
 
+    # ---------------------------------------------------------- background work
+    def _run_in_background(self, label, work_fn, done_fn):
+        """Run *work_fn* in a background thread, keeping the UI responsive.
+
+        *label* is shown in the status bar while the work runs.
+        *done_fn(result, error)* is called on the main thread when finished.
+        The Open OP2 button is disabled during execution.
+        """
+        self._status_label.configure(text=label, text_color="gray")
+        self._op2_btn.configure(state=tk.DISABLED)
+
+        container = {}  # mutable container for thread results
+
+        def _worker():
+            try:
+                container['result'] = work_fn()
+            except Exception as exc:
+                container['error'] = exc
+
+        def _poll():
+            if thread.is_alive():
+                self.frame.after(50, _poll)
+            else:
+                self._op2_btn.configure(state=tk.NORMAL)
+                done_fn(container.get('result'), container.get('error'))
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        self.frame.after(50, _poll)
+
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
         """Open a primary OP2 file."""
@@ -297,23 +333,27 @@ REQUIREMENTS
         if not path:
             return
 
-        self._status_label.configure(text=f"Loading\u2026", text_color="gray")
-        self.frame.update_idletasks()
-
-        try:
+        def _work():
             from pyNastran.op2.op2 import OP2
             op2 = OP2(mode='nx')
             op2.read_op2(path)
-        except Exception as exc:
-            messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
-            self._status_label.configure(text="Load failed", text_color="red")
-            return
+            return op2
 
-        self._op2_path = path
-        self._status_label.configure(
-            text=os.path.basename(path), text_color=("gray10", "gray90"))
+        def _done(op2, error):
+            if error is not None:
+                messagebox.showerror("Error",
+                                     f"Could not read OP2:\n{error}")
+                self._status_label.configure(text="Load failed",
+                                             text_color="red")
+                return
 
-        self.load(op2)
+            self._op2_path = path
+            self._status_label.configure(
+                text=os.path.basename(path),
+                text_color=("gray10", "gray90"))
+            self.load(op2)
+
+        self._run_in_background("Loading\u2026", _work, _done)
 
     # -------------------------------------------------------------- load
     def load(self, op2):
@@ -322,6 +362,10 @@ REQUIREMENTS
         self.data = None
 
         if not op2.eigenvalues:
+            messagebox.showwarning(
+                "No Eigenvalues",
+                "No eigenvalue data found in this OP2.\n\n"
+                "Is this a SOL 103 run?")
             return
 
         eigval_table = next(iter(op2.eigenvalues.values()))
@@ -337,10 +381,7 @@ REQUIREMENTS
                 "  MEFFMASS(PLOT) = ALL")
             return
 
-        raw = meff_frac.data
-        if scipy.sparse.issparse(raw):
-            raw = raw.toarray()
-        raw = np.asarray(raw)
+        raw = _matrix_to_dense(meff_frac)
 
         frac = raw.T  # (nmodes, 6)
         cumsum = np.cumsum(frac, axis=0)
@@ -362,13 +403,13 @@ REQUIREMENTS
             return
         modes, freqs = self.data['modes'], self.data['freqs']
         frac, cumsum = self.data['frac'], self.data['cumsum']
-        data = []
+        rows = []
         for i in range(len(modes)):
             row = [int(modes[i]), f"{freqs[i]:.1f}"]
             for j in range(6):
                 row.extend([f"{frac[i, j]:.2f}", f"{cumsum[i, j]:.2f}"])
-            data.append(row)
-        self._sheet.set_sheet_data(data)
+            rows.append(row)
+        self._sheet.set_sheet_data(rows)
         self._apply_highlights()
 
     # ------------------------------------------------------------ export

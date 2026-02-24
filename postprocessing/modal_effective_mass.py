@@ -17,7 +17,6 @@ import os
 import sys
 
 import numpy as np
-import scipy.sparse
 from pyNastran.op2.op2 import OP2
 
 # Ensure modules/ is importable regardless of working directory
@@ -26,13 +25,12 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 try:
-    from modules.meff import (make_meff_styles, write_meff_single_sheet)
+    from modules.meff import (DIRECTIONS, _matrix_to_dense,
+                               make_meff_styles, write_meff_single_sheet)
 except ImportError:
-    from postprocessing.modules.meff import (make_meff_styles,
+    from postprocessing.modules.meff import (DIRECTIONS, _matrix_to_dense,
+                                              make_meff_styles,
                                               write_meff_single_sheet)
-
-
-DIRECTIONS = ['Tx', 'Ty', 'Tz', 'Rx', 'Ry', 'Rz']
 
 
 def read_op2_file(filename: str) -> OP2:
@@ -47,14 +45,6 @@ def read_op2_file(filename: str) -> OP2:
         print(f"ERROR: Could not read OP2 file: {exc}")
         sys.exit(1)
     return op2
-
-
-def _matrix_to_dense(matrix_obj) -> np.ndarray:
-    """Convert a pyNastran Matrix object's data to a dense numpy array."""
-    data = matrix_obj.data
-    if scipy.sparse.issparse(data):
-        return data.toarray()
-    return np.asarray(data)
 
 
 def _read_data(op2):
@@ -107,7 +97,7 @@ def print_table(data):
         print(line)
 
 
-def export_to_excel(data, xlsx_path):
+def export_to_excel(data, xlsx_path, op2_name=None, threshold=0.1):
     """Export to a formatted single-sheet Excel workbook."""
     try:
         from openpyxl import Workbook
@@ -120,7 +110,8 @@ def export_to_excel(data, xlsx_path):
     styles = make_meff_styles()
     ws = wb.active
     ws.title = "Effective Mass Fractions"
-    write_meff_single_sheet(ws, data, styles)
+    write_meff_single_sheet(ws, data, styles, op2_name=op2_name,
+                            threshold=threshold)
 
     try:
         wb.save(xlsx_path)
@@ -136,6 +127,8 @@ def main() -> None:
     parser.add_argument('op2', help='Path to the OP2 file')
     parser.add_argument('--xlsx', '-x', type=str, default=None,
                         help='Export to Excel (.xlsx) file')
+    parser.add_argument('--threshold', '-t', type=float, default=0.1,
+                        help='Bold threshold for Excel export (default: 0.1)')
     args = parser.parse_args()
 
     op2 = read_op2_file(args.op2)
@@ -144,7 +137,9 @@ def main() -> None:
     print_table(data)
 
     if args.xlsx:
-        export_to_excel(data, args.xlsx)
+        export_to_excel(data, args.xlsx,
+                        op2_name=os.path.basename(args.op2),
+                        threshold=args.threshold)
 
 
 if __name__ == '__main__':
