@@ -26,7 +26,8 @@ def make_energy_styles():
         'mid_fill': PatternFill("solid", fgColor="2E75B6"),
         'white_bold': Font(bold=True, color="FFFFFF", size=11),
         'sub_font': Font(bold=True, color="FFFFFF", size=10),
-        'center': Alignment(horizontal="center", vertical="center"),
+        'center': Alignment(horizontal="center", vertical="center",
+                             wrap_text=True),
         'right': Alignment(horizontal="right", vertical="center"),
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
         'bold_font': Font(bold=True),
@@ -284,6 +285,10 @@ class EnergyBreakdownModule:
         self._custom_groups = {}       # {name: set(ids)}
         self._show_ungrouped = True
 
+        # Editable column names (name row)
+        self._column_names = {}        # {column_label: display_name}
+        self._current_labels = []      # labels for mapping column edits
+
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -323,7 +328,6 @@ The Total column highlights red when deviating from 100% by >0.5%.
 
 EDGE CASES
   - CONROD elements have no PID — shown as "CONROD (no PID)" group
-  - Elements in OP2 but not in BDF — shown as "Unmapped"
   - DMIG strain energy entries are skipped (non-numeric element IDs)
 
 REQUIREMENTS
@@ -407,7 +411,9 @@ REQUIREMENTS
         self._sheet.enable_bindings(
             "single_select", "copy", "arrowkeys",
             "column_width_resize", "row_height_resize",
+            "edit_cell",
         )
+        self._sheet.extra_bindings([("end_edit_cell", self._on_name_edit)])
 
     # ---------------------------------------------------------- Guide
     def _show_guide(self):
@@ -430,9 +436,10 @@ REQUIREMENTS
             self._refresh_table()
 
     def _on_group_by_change(self, *args):
-        # Clear custom groups when switching grouping type
+        # Clear custom groups and names when switching grouping type
         self._custom_groups = {}
         self._show_ungrouped = True
+        self._column_names = {}
         if self._ese_by_eid is not None:
             self._refresh_table()
 
@@ -599,9 +606,10 @@ REQUIREMENTS
         self._status_label.configure(text=status,
                                      text_color=("gray10", "gray90"))
 
-        # Clear custom groups when loading new BDF
+        # Clear custom groups and names when loading new BDF
         self._custom_groups = {}
         self._show_ungrouped = True
+        self._column_names = {}
 
         if self._ese_by_eid is not None:
             self._refresh_table()
@@ -718,9 +726,7 @@ REQUIREMENTS
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
             mapping = self._eid_to_pid
-            pid_names = self._pid_names
-            label_fn = lambda gid: (f"{pid_names[gid]}\nPID {gid}"
-                                    if gid in pid_names else f"PID {gid}")
+            label_fn = lambda gid: f"PID {gid}"
         elif group_by == "Include File" and self._bdf_loaded:
             mapping = self._eid_to_file
             label_fn = lambda gid: str(gid)
@@ -736,17 +742,12 @@ REQUIREMENTS
                 total += pct
             return ['All Elements'], {'All Elements': total}
 
-        # Group elements
+        # Group elements (unmapped elements silently excluded)
         raw_groups = {}   # {group_id: array[nmodes]}
-        unmapped = np.zeros(nmodes)
-        has_unmapped = False
 
         for eid, pct in self._ese_by_eid.items():
             gid = mapping.get(eid)
-            if gid is None:
-                unmapped += pct
-                has_unmapped = True
-            else:
+            if gid is not None:
                 if gid not in raw_groups:
                     raw_groups[gid] = np.zeros(nmodes)
                 raw_groups[gid] += pct
@@ -786,9 +787,6 @@ REQUIREMENTS
             final_groups = {label_fn(gid): arr
                             for gid, arr in raw_groups.items()}
 
-        if has_unmapped:
-            final_groups['Unmapped'] = unmapped
-
         # Sort labels
         if group_by == "Include File" and self._file_order:
             # Preserve BDF encounter order for include files
@@ -807,26 +805,47 @@ REQUIREMENTS
         m = re.search(r'\bPID\s+(\d+)', label)
         if m:
             return (0, int(m.group(1)), '')
-        # "Unmapped" and "Other" sort last
-        if label in ('Unmapped', 'Other'):
+        # "Other" sorts last
+        if label == 'Other':
             return (2, 0, label)
         # Custom group names or filenames sort in the middle
         return (1, 0, label)
 
     # ---------------------------------------------------------- display
+    def _get_column_name(self, label):
+        """Return the display name for a column label.
+
+        Checks user overrides first, then falls back to BDF comment names
+        for PID columns.
+        """
+        if label in self._column_names:
+            return self._column_names[label]
+        import re
+        m = re.search(r'\bPID\s+(\d+)', label)
+        if m:
+            return self._pid_names.get(int(m.group(1)), '')
+        return ''
+
     def _refresh_table(self):
         """Rebuild the table from current data and grouping settings."""
         if self._ese_by_eid is None:
             return
 
         labels, group_data = self._aggregate_by_group()
+        self._current_labels = list(labels)
         nmodes = len(self._modes)
 
         # Build headers
         headers = ['Mode', 'Freq (Hz)'] + list(labels) + ['Total']
 
-        # Build table data
-        table_data = []
+        # Row 0: editable group names
+        name_row = ['Group', '']
+        for lbl in labels:
+            name_row.append(self._get_column_name(lbl))
+        name_row.append('')
+
+        # Data rows (modes)
+        table_data = [name_row]
         for i in range(nmodes):
             row = [int(self._modes[i]), f"{self._freqs[i]:.1f}"]
             total = 0.0
@@ -840,16 +859,14 @@ REQUIREMENTS
         # Update sheet
         self._sheet.headers(headers)
         self._sheet.set_sheet_data(table_data)
-        self._sheet.readonly_columns(columns=list(range(len(headers))))
+        self._sheet.set_header_height_lines(1)
         self._sheet.align_columns(
             list(range(len(headers))), align="center", align_header=True)
 
-        # Adjust header height for multi-line headers (name + PID)
-        max_lines = max((h.count('\n') + 1 for h in headers), default=1)
-        if max_lines > 1:
-            self._sheet.set_header_height_lines(max_lines)
-        else:
-            self._sheet.set_header_height_lines(1)
+        # Lock Mode, Freq, Total columns; lock data rows (not name row)
+        self._sheet.readonly_columns(columns=[0, 1, len(headers) - 1])
+        if len(table_data) > 1:
+            self._sheet.readonly_rows(rows=list(range(1, len(table_data))))
 
         self._apply_highlights()
 
@@ -867,16 +884,31 @@ REQUIREMENTS
         total_col = 2 + n_groups  # 0-based index of Total column
 
         for i in range(nmodes):
+            r = i + 1  # +1 to skip name row
             # Highlight group columns above threshold
             for j, lbl in enumerate(labels):
                 val = group_data[lbl][i]
                 if val >= threshold:
-                    self._sheet.highlight_cells(row=i, column=2 + j, fg="blue")
+                    self._sheet.highlight_cells(row=r, column=2 + j, fg="blue")
 
             # Highlight total column if deviating from 100%
             total = sum(group_data[lbl][i] for lbl in labels)
             if abs(total - 100.0) > 0.5:
-                self._sheet.highlight_cells(row=i, column=total_col, fg="red")
+                self._sheet.highlight_cells(row=r, column=total_col, fg="red")
+
+    def _on_name_edit(self, event):
+        """Capture edits to the name row and store them."""
+        r = event.row
+        c = event.column
+        if r != 0 or not self._current_labels:
+            return
+        col_idx = c - 2  # offset for Mode, Freq columns
+        if 0 <= col_idx < len(self._current_labels):
+            label = self._current_labels[col_idx]
+            new_name = self._sheet.get_cell_data(r, c) or ''
+            if isinstance(new_name, str):
+                new_name = new_name.strip()
+            self._column_names[label] = new_name
 
     # ---------------------------------------------------------- manage groups
     def _manage_groups(self):
@@ -951,8 +983,15 @@ REQUIREMENTS
         title = self._title_var.get().strip() or None
         op2_name = os.path.basename(self._op2_path) if self._op2_path else None
 
-        # Build export data
-        headers = ['Mode', 'Freq (Hz)'] + list(labels) + ['Total']
+        # Build export headers with names
+        export_labels = []
+        for lbl in labels:
+            name = self._get_column_name(lbl)
+            if name:
+                export_labels.append(f"{name}\n{lbl}")
+            else:
+                export_labels.append(lbl)
+        headers = ['Mode', 'Freq (Hz)'] + export_labels + ['Total']
         table = []
         for i in range(nmodes):
             row = [int(self._modes[i]), float(self._freqs[i])]
