@@ -33,7 +33,7 @@ def make_energy_styles():
         'red_font': Font(color="FF0000"),
         'bold_red_font': Font(bold=True, color="FF0000"),
         'num1': '0.0',
-        'num2': '0.00',
+        'num2': '0',
     }
 
 
@@ -155,6 +155,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._id_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         for id_val in self._available_ids:
             self._id_listbox.insert(tk.END, str(id_val))
+        # Initial consumed-ID styling applied after _refresh_group_list below
 
         # Middle: controls
         mid = ctk.CTkFrame(main, width=160)
@@ -205,6 +206,18 @@ class ManageGroupsDialog(ctk.CTkToplevel):
             if len(ids) > 5:
                 id_preview += f'... ({len(ids)} total)'
             self._group_listbox.insert(tk.END, f"{name}: {id_preview}")
+        self._update_consumed_styling()
+
+    def _update_consumed_styling(self):
+        """Grey out IDs in the available list that are already in a group."""
+        consumed = set()
+        for ids in self._groups.values():
+            consumed.update(ids)
+        for i, id_val in enumerate(self._available_ids):
+            if id_val in consumed:
+                self._id_listbox.itemconfig(i, fg="gray")
+            else:
+                self._id_listbox.itemconfig(i, fg="black")
 
     def _create_group(self):
         name = self._name_var.get().strip()
@@ -263,6 +276,9 @@ class EnergyBreakdownModule:
         self._eid_to_pid = {}
         self._eid_to_mid = {}
         self._eid_to_file = {}
+        self._pid_names = {}      # {pid: comment name}
+        self._mid_names = {}      # {mid: comment name}
+        self._file_order = []     # include files in BDF encounter order
         self._bdf_loaded = False
 
         # Custom group merges
@@ -592,6 +608,22 @@ REQUIREMENTS
         if self._ese_by_eid is not None:
             self._refresh_table()
 
+    @staticmethod
+    def _extract_comment_name(comment):
+        """Extract a descriptive name from a BDF card comment string.
+
+        pyNastran stores ``$ Wing Skin\\n`` style comments on cards.
+        Returns the first non-empty line with the leading ``$`` stripped,
+        or *None* if there is nothing useful.
+        """
+        if not comment:
+            return None
+        for line in comment.splitlines():
+            line = line.strip().lstrip('$').strip()
+            if line:
+                return line
+        return None
+
     def _build_mappings(self, bdf_path):
         """Build eid→pid, eid→mid, eid→file mappings from BDF."""
         from bdf_utils import IncludeFileParser, make_model
@@ -613,9 +645,31 @@ REQUIREMENTS
             for eid in eids:
                 self._eid_to_file[eid] = rel
 
+        # Save include file encounter order (relative paths)
+        self._file_order = []
+        for fp in parser.all_files:
+            try:
+                rel = os.path.relpath(fp, main_dir)
+            except ValueError:
+                rel = os.path.basename(fp)
+            self._file_order.append(rel)
+
         # Read BDF model for PID/MID mappings
         model = make_model()
         model.read_bdf(bdf_path)
+
+        # Extract comment names from property and material cards
+        self._pid_names = {}
+        for pid, prop in model.properties.items():
+            name = self._extract_comment_name(getattr(prop, 'comment', ''))
+            if name:
+                self._pid_names[pid] = name
+
+        self._mid_names = {}
+        for mid, mat in model.materials.items():
+            name = self._extract_comment_name(getattr(mat, 'comment', ''))
+            if name:
+                self._mid_names[mid] = name
 
         self._eid_to_pid = {}
         self._eid_to_mid = {}
@@ -682,10 +736,14 @@ REQUIREMENTS
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
             mapping = self._eid_to_pid
-            label_fn = lambda gid: f"PID {gid}"
+            pid_names = self._pid_names
+            label_fn = lambda gid: (f"PID {gid} \u2014 {pid_names[gid]}"
+                                    if gid in pid_names else f"PID {gid}")
         elif group_by == "Material ID" and self._bdf_loaded:
             mapping = self._eid_to_mid
-            label_fn = lambda gid: f"MID {gid}"
+            mid_names = self._mid_names
+            label_fn = lambda gid: (f"MID {gid} \u2014 {mid_names[gid]}"
+                                    if gid in mid_names else f"MID {gid}")
         elif group_by == "Include File" and self._bdf_loaded:
             mapping = self._eid_to_file
             label_fn = lambda gid: str(gid)
@@ -754,17 +812,23 @@ REQUIREMENTS
         if has_unmapped:
             final_groups['Unmapped'] = unmapped
 
-        # Sort labels: named custom groups first, then numeric sort
-        labels = sorted(final_groups.keys(), key=self._group_sort_key)
+        # Sort labels
+        if group_by == "Include File" and self._file_order:
+            # Preserve BDF encounter order for include files
+            order_map = {f: i for i, f in enumerate(self._file_order)}
+            labels = sorted(final_groups.keys(),
+                            key=lambda lbl: order_map.get(lbl, 999999))
+        else:
+            labels = sorted(final_groups.keys(), key=self._group_sort_key)
 
         return labels, final_groups
 
     @staticmethod
     def _group_sort_key(label):
         """Sort key: numeric groups by number, text groups alphabetically."""
-        # Try to extract number from "PID 123" or "MID 45" patterns
+        # Try to extract number from "PID 123" or "PID 123 — Name" patterns
         parts = label.split()
-        if len(parts) == 2 and parts[0] in ('PID', 'MID'):
+        if len(parts) >= 2 and parts[0] in ('PID', 'MID'):
             try:
                 return (0, int(parts[1]), '')
             except ValueError:
@@ -795,14 +859,16 @@ REQUIREMENTS
             for lbl in labels:
                 val = group_data[lbl][i]
                 total += val
-                row.append(f"{val:.2f}")
-            row.append(f"{total:.2f}")
+                row.append(f"{val:.0f}")
+            row.append(f"{total:.0f}")
             table_data.append(row)
 
         # Update sheet
         self._sheet.headers(headers)
         self._sheet.set_sheet_data(table_data)
         self._sheet.readonly_columns(columns=list(range(len(headers))))
+        self._sheet.align_columns(
+            list(range(len(headers))), align="center", align_header=True)
 
         self._apply_highlights()
 
