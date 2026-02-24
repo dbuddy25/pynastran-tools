@@ -410,6 +410,11 @@ REQUIREMENTS
                 row.extend([f"{frac[i, j]:.2f}", f"{cumsum[i, j]:.2f}"])
             rows.append(row)
         self._sheet.set_sheet_data(rows)
+        ncols = len(_SINGLE_HEADERS)
+        self._sheet.set_all_column_widths(60)
+        self._sheet.column_width(column=1, width=80)  # Freq (Hz) a bit wider
+        self._sheet.align_columns(
+            list(range(ncols)), align="center", align_header=True)
         self._apply_highlights()
 
     # ------------------------------------------------------------ export
