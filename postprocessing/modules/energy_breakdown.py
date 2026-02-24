@@ -191,6 +191,14 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._group_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self._refresh_group_list()
 
+        # Reorder buttons
+        reorder = ctk.CTkFrame(right, fg_color="transparent")
+        reorder.pack(fill=tk.X, pady=(4, 0))
+        ctk.CTkButton(reorder, text="\u25B2 Up", width=60,
+                      command=self._move_up).pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(reorder, text="\u25BC Down", width=60,
+                      command=self._move_down).pack(side=tk.LEFT)
+
         # Bottom buttons
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -250,6 +258,28 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         name = group_names[sel[0]]
         del self._groups[name]
         self._refresh_group_list()
+
+    def _move_up(self):
+        sel = self._group_listbox.curselection()
+        if not sel or sel[0] == 0:
+            return
+        idx = sel[0]
+        keys = list(self._groups.keys())
+        keys[idx - 1], keys[idx] = keys[idx], keys[idx - 1]
+        self._groups = {k: self._groups[k] for k in keys}
+        self._refresh_group_list()
+        self._group_listbox.selection_set(idx - 1)
+
+    def _move_down(self):
+        sel = self._group_listbox.curselection()
+        if not sel or sel[0] >= len(self._groups) - 1:
+            return
+        idx = sel[0]
+        keys = list(self._groups.keys())
+        keys[idx], keys[idx + 1] = keys[idx + 1], keys[idx]
+        self._groups = {k: self._groups[k] for k in keys}
+        self._refresh_group_list()
+        self._group_listbox.selection_set(idx + 1)
 
     def _apply(self):
         self._on_apply(self._groups, self._show_ungrouped.get())
@@ -825,15 +855,32 @@ REQUIREMENTS
         """Return the display name for a column label.
 
         Checks user overrides first, then falls back to BDF comment names
-        for PID columns.
+        for PID columns, or the group name for custom groups.
         """
         if label in self._column_names:
             return self._column_names[label]
+        # Custom groups: the label is the group name
+        if label in self._custom_groups:
+            return label
         import re
         m = re.search(r'\bPID\s+(\d+)', label)
         if m:
             return self._pid_names.get(int(m.group(1)), '')
         return ''
+
+    def _get_column_header(self, label):
+        """Return the header text for a column.
+
+        For custom groups, lists the constituent PIDs.
+        Otherwise returns the label as-is.
+        """
+        if label in self._custom_groups:
+            pids = sorted(self._custom_groups[label])
+            if len(pids) <= 6:
+                return 'PID ' + ', '.join(str(p) for p in pids)
+            preview = ', '.join(str(p) for p in pids[:6])
+            return f'PID {preview}\u2026 ({len(pids)})'
+        return label
 
     def _refresh_table(self):
         """Rebuild the table from current data and grouping settings."""
@@ -844,10 +891,13 @@ REQUIREMENTS
         self._current_labels = list(labels)
         nmodes = len(self._modes)
 
-        # Build headers
-        headers = ['Mode', 'Freq (Hz)'] + list(labels) + ['Total']
+        # Build headers — custom groups show PIDs, individual columns show label
+        headers = ['Mode', 'Freq (Hz)']
+        for lbl in labels:
+            headers.append(self._get_column_header(lbl))
+        headers.append('Total')
 
-        # Row 0: editable group names
+        # Row 0: editable group/column names
         name_row = ['Group', '']
         for lbl in labels:
             name_row.append(self._get_column_name(lbl))
@@ -996,10 +1046,11 @@ REQUIREMENTS
         export_labels = []
         for lbl in labels:
             name = self._get_column_name(lbl)
-            if name:
-                export_labels.append(f"{name}\n{lbl}")
+            hdr = self._get_column_header(lbl)
+            if name and name != hdr:
+                export_labels.append(f"{name}\n{hdr}")
             else:
-                export_labels.append(lbl)
+                export_labels.append(hdr)
         headers = ['Mode', 'Freq (Hz)'] + export_labels + ['Total']
         table = []
         for i in range(nmodes):
