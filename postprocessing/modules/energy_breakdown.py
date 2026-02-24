@@ -4,6 +4,7 @@ Reads element strain energy (ESE%) from an OP2 file and displays
 per-mode percentages grouped by include file or property ID.
 """
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -11,8 +12,6 @@ import customtkinter as ctk
 from tksheet import Sheet
 
 import numpy as np
-if not hasattr(np, 'in1d'):
-    np.in1d = np.isin
 
 
 # --------------------------------------------------------- Excel helpers
@@ -34,7 +33,7 @@ def make_energy_styles():
         'red_font': Font(color="FF0000"),
         'bold_red_font': Font(bold=True, color="FF0000"),
         'num1': '0.0',
-        'num2': '0.0',
+        'num2': '0.00',
     }
 
 
@@ -240,14 +239,17 @@ class ManageGroupsDialog(ctk.CTkToplevel):
 
     def _update_consumed_styling(self):
         """Grey out IDs in the available list that are already in a group."""
+        dark = ctk.get_appearance_mode() == "Dark"
+        fg_consumed = "gray50" if dark else "gray"
+        fg_available = "white" if dark else "black"
         consumed = set()
         for ids in self._groups.values():
             consumed.update(ids)
         for i, id_val in enumerate(self._available_ids):
             if id_val in consumed:
-                self._id_listbox.itemconfig(i, fg="gray")
+                self._id_listbox.itemconfig(i, fg=fg_consumed)
             else:
-                self._id_listbox.itemconfig(i, fg="black")
+                self._id_listbox.itemconfig(i, fg=fg_available)
 
     def _create_group(self):
         name = self._name_var.get().strip()
@@ -266,6 +268,14 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         ids = set()
         for idx in sel:
             ids.add(self._available_ids[idx])
+
+        if name in self._groups:
+            if not messagebox.askyesno(
+                    "Overwrite Group",
+                    f"Group '{name}' already exists. Overwrite it?",
+                    parent=self):
+                return
+
         self._groups[name] = ids
         self._name_var.set('')
         self._refresh_group_list()
@@ -313,7 +323,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
 
         available_set = set(self._available_ids)
         try:
-            with open(path, newline='') as f:
+            with open(path, newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f)
                 header = next(reader, None)
                 # Skip header row if it looks like a header
@@ -351,6 +361,8 @@ class ManageGroupsDialog(ctk.CTkToplevel):
             except (ValueError, TypeError):
                 i += 2
                 continue
+            if id_start > id_end:
+                id_start, id_end = id_end, id_start
             all_ids.update(j for j in range(id_start, id_end + 1)
                            if j in available_set)
             i += 2
@@ -373,13 +385,12 @@ class ManageGroupsDialog(ctk.CTkToplevel):
             return
 
         try:
-            with open(path, 'w', newline='') as f:
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Group Name', 'ID Start', 'ID End'])
                 # Pre-fill one row per available ID as a starting point
                 for id_val in self._available_ids:
-                    label = self._id_labels.get(id_val, '')
-                    writer.writerow([label, id_val, id_val])
+                    writer.writerow([str(id_val), id_val, id_val])
             messagebox.showinfo("Exported",
                                 f"Template saved to:\n{path}",
                                 parent=self)
@@ -475,11 +486,13 @@ REQUIREMENTS
         toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=5, pady=(5, 0))
 
-        ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
-                      command=self._open_op2).pack(side=tk.LEFT)
+        self._op2_btn = ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
+                                      command=self._open_op2)
+        self._op2_btn.pack(side=tk.LEFT)
 
-        ctk.CTkButton(toolbar, text="Open BDF\u2026", width=100,
-                      command=self._open_bdf).pack(side=tk.LEFT, padx=(5, 0))
+        self._bdf_btn = ctk.CTkButton(toolbar, text="Open BDF\u2026", width=100,
+                                      command=self._open_bdf)
+        self._bdf_btn.pack(side=tk.LEFT, padx=(5, 0))
 
         # Separator
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
@@ -568,7 +581,7 @@ REQUIREMENTS
 
     def _on_threshold_change(self, *args):
         if self._ese_by_eid is not None:
-            self._refresh_table()
+            self._apply_highlights()
 
     def _on_group_by_change(self, *args):
         # Clear custom groups and names when switching grouping type
@@ -578,6 +591,38 @@ REQUIREMENTS
         if self._ese_by_eid is not None:
             self._refresh_table()
 
+    # ---------------------------------------------------------- background work
+    def _run_in_background(self, label, work_fn, done_fn):
+        """Run *work_fn* in a background thread, keeping the UI responsive.
+
+        *label* is shown in the status bar while the work runs.
+        *done_fn(result, error)* is called on the main thread when finished.
+        The Open OP2 / Open BDF buttons are disabled during execution.
+        """
+        self._status_label.configure(text=label, text_color="gray")
+        self._op2_btn.configure(state=tk.DISABLED)
+        self._bdf_btn.configure(state=tk.DISABLED)
+
+        container = {}  # mutable container for thread results
+
+        def _worker():
+            try:
+                container['result'] = work_fn()
+            except Exception as exc:
+                container['error'] = exc
+
+        def _poll():
+            if thread.is_alive():
+                self.frame.after(50, _poll)
+            else:
+                self._op2_btn.configure(state=tk.NORMAL)
+                self._bdf_btn.configure(state=tk.NORMAL)
+                done_fn(container.get('result'), container.get('error'))
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        self.frame.after(50, _poll)
+
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
         path = filedialog.askopenfilename(
@@ -586,55 +631,54 @@ REQUIREMENTS
         if not path:
             return
 
-        self._status_label.configure(text="Loading OP2\u2026",
-                                     text_color="gray")
-        self.frame.update_idletasks()
-
-        try:
+        def _work():
             from pyNastran.op2.op2 import OP2
             op2 = OP2(mode='nx')
             op2.read_op2(path)
-        except Exception as exc:
-            messagebox.showerror("Error", f"Could not read OP2:\n{exc}")
-            self._status_label.configure(text="Load failed",
-                                         text_color="red")
-            return
+            return op2
 
-        self._op2_path = path
+        def _done(op2, error):
+            if error is not None:
+                messagebox.showerror("Error",
+                                     f"Could not read OP2:\n{error}")
+                self._status_label.configure(text="Load failed",
+                                             text_color="red")
+                return
 
-        # Extract eigenvalues
-        if not op2.eigenvalues:
-            messagebox.showwarning(
-                "No Eigenvalues",
-                "No eigenvalue data found in this OP2.")
-            self._status_label.configure(text="No eigenvalues",
-                                         text_color="red")
-            return
+            self._op2_path = path
 
-        eigval_table = next(iter(op2.eigenvalues.values()))
-        self._modes = np.array(eigval_table.mode)
-        self._freqs = np.array(eigval_table.cycles)
+            if not op2.eigenvalues:
+                messagebox.showwarning(
+                    "No Eigenvalues",
+                    "No eigenvalue data found in this OP2.")
+                self._status_label.configure(text="No eigenvalues",
+                                             text_color="red")
+                return
 
-        # Collect strain energy
-        self._ese_by_eid = self._collect_strain_energy(op2)
-        if not self._ese_by_eid:
-            messagebox.showwarning(
-                "No Strain Energy Data",
-                "No element strain energy data found in this OP2.\n\n"
-                "Add to your Nastran case control:\n"
-                "  ESE(PLOT) = ALL")
-            self._status_label.configure(text="No ESE data",
-                                         text_color="red")
-            return
+            eigval_table = next(iter(op2.eigenvalues.values()))
+            self._modes = np.array(eigval_table.mode)
+            self._freqs = np.array(eigval_table.cycles)
 
-        n_elems = len(self._ese_by_eid)
-        status = f"OP2: {os.path.basename(path)} ({n_elems} elements)"
-        if self._bdf_path:
-            status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
-        self._status_label.configure(text=status,
-                                     text_color=("gray10", "gray90"))
+            self._ese_by_eid = self._collect_strain_energy(op2)
+            if not self._ese_by_eid:
+                messagebox.showwarning(
+                    "No Strain Energy Data",
+                    "No element strain energy data found in this OP2.\n\n"
+                    "Add to your Nastran case control:\n"
+                    "  ESE(PLOT) = ALL")
+                self._status_label.configure(text="No ESE data",
+                                             text_color="red")
+                return
 
-        self._refresh_table()
+            n_elems = len(self._ese_by_eid)
+            status = f"OP2: {os.path.basename(path)} ({n_elems} elements)"
+            if self._bdf_path:
+                status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
+            self._status_label.configure(text=status,
+                                         text_color=("gray10", "gray90"))
+            self._refresh_table()
+
+        self._run_in_background("Loading OP2\u2026", _work, _done)
 
     def _collect_strain_energy(self, op2):
         """Discover all *_strain_energy attributes and collect ESE% per element.
@@ -705,49 +749,48 @@ REQUIREMENTS
         if not path:
             return
 
-        self._status_label.configure(text="Loading BDF\u2026",
-                                     text_color="gray")
-        self.frame.update_idletasks()
-
-        try:
+        def _work():
             self._build_mappings(path)
-        except Exception as exc:
-            messagebox.showerror("Error", f"Could not read BDF:\n{exc}")
-            self._status_label.configure(text="BDF load failed",
-                                         text_color="red")
-            return
 
-        self._bdf_path = path
-        self._bdf_loaded = True
+        def _done(_result, error):
+            if error is not None:
+                messagebox.showerror("Error",
+                                     f"Could not read BDF:\n{error}")
+                self._status_label.configure(text="BDF load failed",
+                                             text_color="red")
+                return
 
-        # Enable grouping controls
-        self._group_by_menu.configure(state=tk.NORMAL)
-        self._manage_btn.configure(state=tk.NORMAL)
+            self._bdf_path = path
+            self._bdf_loaded = True
 
-        # Update status
-        n_mapped = len(self._eid_to_pid)
-        status = ""
-        if self._op2_path:
-            n_elems = len(self._ese_by_eid) if self._ese_by_eid else 0
-            status += f"OP2: {os.path.basename(self._op2_path)} ({n_elems} elements)  |  "
-        status += f"BDF: {os.path.basename(path)} ({n_mapped} elements)"
+            self._group_by_menu.configure(state=tk.NORMAL)
+            self._manage_btn.configure(state=tk.NORMAL)
 
-        # Check for unmapped elements
-        if self._ese_by_eid:
-            unmapped = set(self._ese_by_eid.keys()) - set(self._eid_to_pid.keys())
-            if unmapped:
-                status += f"  [{len(unmapped)} unmapped]"
+            n_mapped = len(self._eid_to_pid)
+            status = ""
+            if self._op2_path:
+                n_elems = len(self._ese_by_eid) if self._ese_by_eid else 0
+                status += (f"OP2: {os.path.basename(self._op2_path)} "
+                           f"({n_elems} elements)  |  ")
+            status += f"BDF: {os.path.basename(path)} ({n_mapped} elements)"
 
-        self._status_label.configure(text=status,
-                                     text_color=("gray10", "gray90"))
+            if self._ese_by_eid:
+                unmapped = (set(self._ese_by_eid.keys())
+                            - set(self._eid_to_pid.keys()))
+                if unmapped:
+                    status += f"  [{len(unmapped)} unmapped]"
 
-        # Clear custom groups and names when loading new BDF
-        self._custom_groups = {}
-        self._show_ungrouped = True
-        self._column_names = {}
+            self._status_label.configure(text=status,
+                                         text_color=("gray10", "gray90"))
 
-        if self._ese_by_eid is not None:
-            self._refresh_table()
+            self._custom_groups = {}
+            self._show_ungrouped = True
+            self._column_names = {}
+
+            if self._ese_by_eid is not None:
+                self._refresh_table()
+
+        self._run_in_background("Loading BDF\u2026", _work, _done)
 
     @staticmethod
     def _extract_comment_name(comment):
@@ -993,6 +1036,8 @@ REQUIREMENTS
             return
 
         labels, group_data = self._aggregate_by_group()
+        self._cached_labels = list(labels)
+        self._cached_group_data = group_data
         self._current_labels = list(labels)
         nmodes = len(self._modes)
 
@@ -1042,7 +1087,10 @@ REQUIREMENTS
             return
 
         threshold = self._get_threshold()
-        labels, group_data = self._aggregate_by_group()
+        labels = getattr(self, '_cached_labels', None)
+        group_data = getattr(self, '_cached_group_data', None)
+        if labels is None or group_data is None:
+            labels, group_data = self._aggregate_by_group()
         nmodes = len(self._modes)
         n_groups = len(labels)
         total_col = 2 + n_groups  # 0-based index of Total column
