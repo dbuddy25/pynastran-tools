@@ -678,9 +678,13 @@ REQUIREMENTS
             pid = getattr(elem, 'pid', None)
             if pid is not None:
                 try:
-                    self._eid_to_pid[eid] = int(pid)
+                    pid_int = int(pid)
                 except (ValueError, TypeError):
                     self._eid_to_pid[eid] = pid
+                    continue
+                # Skip PID 0 — pyNastran default for elements without a property
+                if pid_int != 0:
+                    self._eid_to_pid[eid] = pid_int
             elif elem.type == 'CONROD':
                 self._eid_to_pid[eid] = 'CONROD (no PID)'
 
@@ -690,9 +694,12 @@ REQUIREMENTS
                 pid = getattr(elem, 'pid', None)
                 if pid is not None:
                     try:
-                        self._eid_to_pid[eid] = int(pid)
+                        pid_int = int(pid)
                     except (ValueError, TypeError):
                         self._eid_to_pid[eid] = pid
+                        continue
+                    if pid_int != 0:
+                        self._eid_to_pid[eid] = pid_int
 
     # ---------------------------------------------------------- aggregation
     def _aggregate_by_group(self):
