@@ -505,6 +505,10 @@ REQUIREMENTS
                     continue
 
                 eids = result.element
+                # element array is 2D (ntimes, nelems) in pyNastran 1.4+
+                # Use first time step — element IDs are the same across all modes
+                if eids.ndim == 2:
+                    eids = eids[0]
                 # data shape: (nmodes, nelems, ncols)
                 # column index 1 = percent of total
                 data = result.data
