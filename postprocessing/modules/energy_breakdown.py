@@ -1,7 +1,7 @@
 """Element strain energy breakdown module.
 
 Reads element strain energy (ESE%) from an OP2 file and displays
-per-mode percentages grouped by include file, property ID, or material ID.
+per-mode percentages grouped by include file or property ID.
 """
 import os
 import tkinter as tk
@@ -33,7 +33,7 @@ def make_energy_styles():
         'red_font': Font(color="FF0000"),
         'bold_red_font': Font(bold=True, color="FF0000"),
         'num1': '0.0',
-        'num2': '0',
+        'num2': '0.0',
     }
 
 
@@ -124,7 +124,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
     """Dialog for creating/editing custom group merges."""
 
     def __init__(self, parent, available_ids, existing_groups, show_ungrouped,
-                 on_apply):
+                 on_apply, id_labels=None):
         super().__init__(parent)
         self.title("Manage Groups")
         self.geometry("600x450")
@@ -132,6 +132,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self.transient(parent)
 
         self._available_ids = sorted(available_ids)
+        self._id_labels = id_labels or {}
         self._groups = {k: set(v) for k, v in existing_groups.items()}
         self._show_ungrouped = tk.BooleanVar(value=show_ungrouped)
         self._on_apply = on_apply
@@ -154,8 +155,8 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                                       exportselection=False)
         self._id_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         for id_val in self._available_ids:
-            self._id_listbox.insert(tk.END, str(id_val))
-        # Initial consumed-ID styling applied after _refresh_group_list below
+            label = self._id_labels.get(id_val, str(id_val))
+            self._id_listbox.insert(tk.END, label)
 
         # Middle: controls
         mid = ctk.CTkFrame(main, width=160)
@@ -274,10 +275,8 @@ class EnergyBreakdownModule:
 
         # Mappings from BDF
         self._eid_to_pid = {}
-        self._eid_to_mid = {}
         self._eid_to_file = {}
         self._pid_names = {}      # {pid: comment name}
-        self._mid_names = {}      # {mid: comment name}
         self._file_order = []     # include files in BDF encounter order
         self._bdf_loaded = False
 
@@ -293,14 +292,14 @@ ESE Breakdown Tool — Quick Guide
 
 PURPOSE
 Display element strain energy percentages (ESE%) from a Nastran OP2 file,
-broken down by include file, property ID, or material ID. Useful for modal
+broken down by include file or property ID. Useful for modal
 analysis (SOL 103) to understand energy distribution per mode.
 
 WORKFLOW
 1. Open OP2 — select an OP2 file containing strain energy data.
    (Requires ESE(PLOT) = ALL in your case control deck.)
 2. Open BDF — load the corresponding BDF to enable grouping by
-   property ID, material ID, or include file.
+   property ID or include file.
 3. Select grouping — use the "Group by" dropdown to choose how
    elements are aggregated.
 4. Review — the table shows modes as rows and groups as columns,
@@ -310,7 +309,6 @@ WORKFLOW
 
 GROUPING MODES
   Property ID — group by element property ID (PID)
-  Material ID — group by material ID (MID), resolved through properties
   Include File — group by source BDF include file
 
 MANAGE GROUPS
@@ -352,7 +350,7 @@ REQUIREMENTS
         ctk.CTkLabel(toolbar, text="Group by:").pack(side=tk.LEFT, padx=(0, 2))
         self._group_by_menu = ctk.CTkOptionMenu(
             toolbar, variable=self._group_by_var,
-            values=["Property ID", "Material ID", "Include File"],
+            values=["Property ID", "Include File"],
             width=140, command=self._on_group_by_change,
         )
         self._group_by_menu.pack(side=tk.LEFT)
@@ -613,6 +611,8 @@ REQUIREMENTS
         """Extract a descriptive name from a BDF card comment string.
 
         pyNastran stores ``$ Wing Skin\\n`` style comments on cards.
+        Strips any prefix before a colon (e.g. ``$ Skin: Wing Upper``
+        becomes ``Wing Upper``).
         Returns the first non-empty line with the leading ``$`` stripped,
         or *None* if there is nothing useful.
         """
@@ -621,7 +621,10 @@ REQUIREMENTS
         for line in comment.splitlines():
             line = line.strip().lstrip('$').strip()
             if line:
-                return line
+                # Strip prefix before colon (e.g. "Skin: Wing Upper" → "Wing Upper")
+                if ':' in line:
+                    line = line.split(':', 1)[1].strip()
+                return line if line else None
         return None
 
     def _build_mappings(self, bdf_path):
@@ -658,24 +661,16 @@ REQUIREMENTS
         model = make_model()
         model.read_bdf(bdf_path)
 
-        # Extract comment names from property and material cards
+        # Extract comment names from property cards
         self._pid_names = {}
         for pid, prop in model.properties.items():
             name = self._extract_comment_name(getattr(prop, 'comment', ''))
             if name:
                 self._pid_names[pid] = name
 
-        self._mid_names = {}
-        for mid, mat in model.materials.items():
-            name = self._extract_comment_name(getattr(mat, 'comment', ''))
-            if name:
-                self._mid_names[mid] = name
-
         self._eid_to_pid = {}
-        self._eid_to_mid = {}
 
         for eid, elem in model.elements.items():
-            # PID mapping
             pid = getattr(elem, 'pid', None)
             if pid is not None:
                 try:
@@ -684,30 +679,6 @@ REQUIREMENTS
                     self._eid_to_pid[eid] = pid
             elif elem.type == 'CONROD':
                 self._eid_to_pid[eid] = 'CONROD (no PID)'
-
-            # MID mapping
-            mid = None
-            if elem.type == 'CONROD':
-                # CONROD has mid directly on the element
-                mid = getattr(elem, 'mid', None)
-            elif pid is not None:
-                # Resolve through property
-                try:
-                    pid_int = int(pid)
-                    prop = model.properties.get(pid_int)
-                    if prop is not None:
-                        if hasattr(prop, 'Mid'):
-                            mid = prop.Mid()
-                        elif hasattr(prop, 'mid'):
-                            mid = prop.mid
-                except (ValueError, TypeError, AttributeError):
-                    pass
-
-            if mid is not None:
-                try:
-                    self._eid_to_mid[eid] = int(mid)
-                except (ValueError, TypeError):
-                    self._eid_to_mid[eid] = mid
 
         # Also include mass elements that may not have PID/MID
         for eid, elem in model.masses.items():
@@ -737,13 +708,8 @@ REQUIREMENTS
         if group_by == "Property ID" and self._bdf_loaded:
             mapping = self._eid_to_pid
             pid_names = self._pid_names
-            label_fn = lambda gid: (f"PID {gid} \u2014 {pid_names[gid]}"
+            label_fn = lambda gid: (f"{pid_names[gid]}\nPID {gid}"
                                     if gid in pid_names else f"PID {gid}")
-        elif group_by == "Material ID" and self._bdf_loaded:
-            mapping = self._eid_to_mid
-            mid_names = self._mid_names
-            label_fn = lambda gid: (f"MID {gid} \u2014 {mid_names[gid]}"
-                                    if gid in mid_names else f"MID {gid}")
         elif group_by == "Include File" and self._bdf_loaded:
             mapping = self._eid_to_file
             label_fn = lambda gid: str(gid)
@@ -826,13 +792,10 @@ REQUIREMENTS
     @staticmethod
     def _group_sort_key(label):
         """Sort key: numeric groups by number, text groups alphabetically."""
-        # Try to extract number from "PID 123" or "PID 123 — Name" patterns
-        parts = label.split()
-        if len(parts) >= 2 and parts[0] in ('PID', 'MID'):
-            try:
-                return (0, int(parts[1]), '')
-            except ValueError:
-                pass
+        import re
+        m = re.search(r'\bPID\s+(\d+)', label)
+        if m:
+            return (0, int(m.group(1)), '')
         # "Unmapped" and "Other" sort last
         if label in ('Unmapped', 'Other'):
             return (2, 0, label)
@@ -859,8 +822,8 @@ REQUIREMENTS
             for lbl in labels:
                 val = group_data[lbl][i]
                 total += val
-                row.append(f"{val:.0f}")
-            row.append(f"{total:.0f}")
+                row.append(f"{val:.1f}")
+            row.append(f"{total:.1f}")
             table_data.append(row)
 
         # Update sheet
@@ -869,6 +832,13 @@ REQUIREMENTS
         self._sheet.readonly_columns(columns=list(range(len(headers))))
         self._sheet.align_columns(
             list(range(len(headers))), align="center", align_header=True)
+
+        # Adjust header height for multi-line headers (name + PID)
+        max_lines = max((h.count('\n') + 1 for h in headers), default=1)
+        if max_lines > 1:
+            self._sheet.set_header_height_lines(max_lines)
+        else:
+            self._sheet.set_header_height_lines(1)
 
         self._apply_highlights()
 
@@ -907,8 +877,6 @@ REQUIREMENTS
         group_by = self._group_by_var.get()
         if group_by == "Property ID":
             mapping = self._eid_to_pid
-        elif group_by == "Material ID":
-            mapping = self._eid_to_mid
         else:
             mapping = self._eid_to_file
 
@@ -919,12 +887,23 @@ REQUIREMENTS
             if gid is not None:
                 available.add(gid)
 
+        # Build display labels for the dialog
+        id_labels = {}
+        if group_by == "Property ID":
+            for gid in available:
+                name = self._pid_names.get(gid)
+                if name:
+                    id_labels[gid] = f"PID {gid} \u2014 {name}"
+                else:
+                    id_labels[gid] = f"PID {gid}"
+
         ManageGroupsDialog(
             self.frame.winfo_toplevel(),
             available_ids=available,
             existing_groups=self._custom_groups,
             show_ungrouped=self._show_ungrouped,
             on_apply=self._on_groups_applied,
+            id_labels=id_labels,
         )
 
     def _on_groups_applied(self, groups, show_ungrouped):
