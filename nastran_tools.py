@@ -6,6 +6,7 @@ Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Renumber (include file ID renumbering)
   - MEFFMASS (modal effective mass fractions from OP2)
   - ESE Breakdown (element strain energy % by group from OP2)
+  - CBUSH Forces (CBUSH element forces from OP2)
 
 Usage:
     python nastran_tools.py
@@ -40,6 +41,13 @@ try:
     from modules.energy_breakdown import EnergyBreakdownModule
 except Exception:
     _energy_available = False
+
+# CbushForcesModule — lazy import with fallback
+_cbush_available = True
+try:
+    from modules.cbush_forces import CbushForcesModule
+except Exception:
+    _cbush_available = False
 
 
 __version__ = "0.1.0"
@@ -88,6 +96,7 @@ class Sidebar(ctk.CTkFrame):
         self._add_section("Post-Processing")
         self._add_tool("meff", "MEFFMASS")
         self._add_tool("energy", "ESE Breakdown")
+        self._add_tool("cbush", "CBUSH Forces")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -169,6 +178,12 @@ class NastranToolsApp(ctk.CTk):
             self._tools['energy'] = energy.frame
         else:
             self._sidebar.disable_tool("energy")
+
+        if _cbush_available:
+            cbush = CbushForcesModule(self._content)
+            self._tools['cbush'] = cbush.frame
+        else:
+            self._sidebar.disable_tool("cbush")
 
         self._active_tool = None
 
