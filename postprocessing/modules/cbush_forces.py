@@ -140,8 +140,8 @@ class _ExportDoneDialog(tk.Toplevel):
         self.resizable(False, False)
         self._file_path = file_path
 
-        tk.Label(self, text=message, justify='left',
-                 padx=16, pady=(16, 8)).pack()
+        tk.Label(self, text=message, justify='left').pack(
+            padx=16, pady=(16, 8))
 
         btn_frame = tk.Frame(self)
         btn_frame.pack(pady=(0, 16))
