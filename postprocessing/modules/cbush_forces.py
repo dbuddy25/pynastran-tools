@@ -524,7 +524,7 @@ REQUIREMENTS
             wb.save(path)
             n = len(self._subcase_order)
             _ExportDoneDialog(
-                self._parent,
+                self.frame.winfo_toplevel(),
                 f"Saved {n} sheet(s) to:\n{path}",
                 path,
             )

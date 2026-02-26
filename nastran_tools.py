@@ -50,7 +50,7 @@ except Exception:
     _cbush_available = False
 
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def show_guide(parent, title, text):
