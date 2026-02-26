@@ -438,8 +438,9 @@ REQUIREMENTS
             user_name = self._subcase_names.get(sc_id, '').strip()
 
             # Build sheet name (31-char Excel limit, deduplicated)
-            if user_name:
-                base = user_name[:31]
+            effective_name = user_name or self._subcase_titles.get(sc_id, '')
+            if effective_name:
+                base = effective_name[:31]
             else:
                 base = f"Subcase {sc_id}"[:31]
 
@@ -453,8 +454,8 @@ REQUIREMENTS
 
             # Build load case label for header
             lc_label = f"Subcase {sc_id}"
-            if user_name:
-                lc_label += f" \u2014 {user_name}"
+            if effective_name:
+                lc_label += f" \u2014 {effective_name}"
 
             if i == 0:
                 ws = wb.active
