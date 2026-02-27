@@ -90,17 +90,8 @@ def partition_model(model):
         for nid in nids:
             node_to_elems[nid].add(eid)
 
-    for eid, rigid in model.rigid_elements.items():
-        nids = _get_rigid_nodes(rigid)
-        elem_to_nodes[eid] = nids
-        for nid in nids:
-            node_to_elems[nid].add(eid)
-
-    for eid, mass_elem in model.masses.items():
-        nids = _get_mass_nodes(mass_elem)
-        elem_to_nodes[eid] = nids
-        for nid in nids:
-            node_to_elems[nid].add(eid)
+    # NOTE: rigid_elements and masses are NOT added to adjacency.
+    # They would bridge across CBUSH boundaries. Assigned post-flood-fill.
 
     # Step 2: Find RBE2-CBUSH-RBE2 boundary walls
     rbe2_by_ind_node = {}   # independent_nid -> RBE2 element
@@ -171,10 +162,18 @@ def partition_model(model):
     # Step 4: Build Part objects
     parts = []
     for i, eids in enumerate(raw_parts):
+        # Collect property IDs first (needed for naming)
+        property_ids = set()
+        for eid in eids:
+            pid = _get_element_pid(model, eid)
+            if pid is not None:
+                property_ids.add(pid)
+
         part = Part(
             part_id=i + 1,
-            name=f"Part_{i + 1:03d}",
+            name=_derive_part_name(model, property_ids, i + 1),
             element_ids=eids,
+            property_ids=property_ids,
         )
         # Collect nodes
         for eid in eids:
@@ -185,18 +184,40 @@ def partition_model(model):
                 part.node_ids.update(chain.rbe2_a_dep_nodes)
             if set(chain.rbe2_b_dep_nodes) & part.node_ids:
                 part.node_ids.update(chain.rbe2_b_dep_nodes)
-        # Collect property IDs
-        for eid in eids:
-            pid = _get_element_pid(model, eid)
-            if pid is not None:
-                part.property_ids.add(pid)
         parts.append(part)
+
+    # Deduplicate part names
+    name_counts = defaultdict(int)
+    for part in parts:
+        name_counts[part.name] += 1
+    seen = defaultdict(int)
+    for part in parts:
+        if name_counts[part.name] > 1:
+            seen[part.name] += 1
+            part.name = f"{part.name}_{seen[part.name]}"
 
     # Build node-to-part lookup
     node_to_part = {}
     for part in parts:
         for nid in part.node_ids:
             node_to_part[nid] = part.part_id
+
+    # Assign interior rigid elements to parts by node voting
+    part_by_id = {p.part_id: p for p in parts}
+    for eid, rigid in model.rigid_elements.items():
+        if eid in wall_eids:
+            continue  # boundary RBE2s go to joint files
+        nids = _get_rigid_nodes(rigid)
+        owner = _find_part_for_nodes(list(nids), node_to_part)
+        if owner is not None:
+            part_by_id[owner].element_ids.add(eid)
+
+    # Assign mass elements to parts by node voting
+    for eid, mass_elem in model.masses.items():
+        nids = _get_mass_nodes(mass_elem)
+        owner = _find_part_for_nodes(list(nids), node_to_part)
+        if owner is not None:
+            part_by_id[owner].element_ids.add(eid)
 
     # Step 5: Build joints from chains
     joint_map = {}  # (min_part_id, max_part_id) -> Joint
@@ -405,6 +426,43 @@ def _find_part_for_nodes(node_list, node_to_part):
     if not votes:
         return None
     return max(votes, key=votes.get)
+
+
+def _derive_part_name(model, property_ids, part_id):
+    """Derive a human-readable name from the first property's comment."""
+    for pid in sorted(property_ids):
+        prop = model.properties.get(pid)
+        if prop is None:
+            continue
+        comment = getattr(prop, 'comment', '')
+        name = _parse_comment_name(comment)
+        if name:
+            return name
+    return f"Part_{part_id:03d}"
+
+
+def _parse_comment_name(comment):
+    """Extract a usable name from a property comment string."""
+    if not comment:
+        return None
+    text = comment.strip().lstrip('$').strip()
+    if not text:
+        return None
+    # Femap format: "Femap Property 10 : Wing_Skin PSHELL"
+    if ':' in text:
+        after_colon = text.split(':', 1)[1].strip()
+        tokens = after_colon.split()
+        if tokens:
+            return tokens[0]
+    # Generic: strip card types and IDs, take remaining text
+    for card_type in ('PSHELL', 'PCOMP', 'PCOMPG', 'PSOLID', 'PBAR',
+                       'PBARL', 'PBEAM', 'PROD', 'PBUSH'):
+        text = text.replace(card_type, '').strip()
+    text = re.sub(r'PID\s*=\s*\d+', '', text, flags=re.IGNORECASE).strip()
+    text = re.sub(r'^\d+\s*', '', text).strip()
+    if text:
+        return text[:30].strip().rstrip('-_')
+    return None
 
 
 def _assign_contact_to_joints(model, parts, joint_map, warnings):
@@ -1206,47 +1264,28 @@ def build_pyvista_mesh(model, parts):
 
 
 def show_partition_preview(mesh, parts):
-    """Show a pyvista Plotter window with parts colored categorically."""
+    """Show pyvista preview — single mesh colored by part_id scalar."""
     try:
         import pyvista as pv
-        import numpy as np
     except ImportError:
         return
-
-    if mesh is None:
+    if mesh is None or mesh.n_cells == 0:
         return
 
     plotter = pv.Plotter(title="BDF Partition Preview")
 
-    # Build categorical colormap
-    part_ids = sorted(set(p.part_id for p in parts))
-    n_parts = len(part_ids)
+    n_parts = len(parts)
+    plotter.add_mesh(
+        mesh,
+        scalars='part_id',
+        cmap='tab20' if n_parts <= 20 else 'turbo',
+        show_edges=False,
+        show_scalar_bar=True,
+        scalar_bar_args={'title': 'Part ID'},
+    )
 
-    try:
-        from matplotlib import colormaps
-        cmap = colormaps.get_cmap('tab20')
-    except (ImportError, AttributeError):
-        try:
-            import matplotlib.pyplot as plt
-            cmap = plt.cm.get_cmap('tab20')
-        except ImportError:
-            cmap = None
-
-    if cmap is not None and n_parts > 0:
-        colors = [cmap(i / max(n_parts - 1, 1))[:3] for i in range(n_parts)]
-    else:
-        colors = [(0.5, 0.5, 0.5)] * max(n_parts, 1)
-
-    part_id_to_color = dict(zip(part_ids, colors))
-
-    for part in parts:
-        sub = mesh.extract_cells(
-            np.where(mesh.cell_data['part_id'] == part.part_id)[0])
-        if sub.n_cells == 0:
-            continue
-        color = part_id_to_color.get(part.part_id, (0.5, 0.5, 0.5))
-        plotter.add_mesh(sub, color=color, show_edges=True,
-                         label=part.name, opacity=1.0)
-
-    plotter.add_legend()
+    plotter.add_text(
+        f"{n_parts} parts, {mesh.n_cells} elements",
+        position='upper_left', font_size=10,
+    )
     plotter.show()
