@@ -3,3 +3,4 @@ customtkinter>=5.0
 tksheet>=7.0
 numpy
 scipy
+pyvista>=0.43              # optional, for 3D partition preview
