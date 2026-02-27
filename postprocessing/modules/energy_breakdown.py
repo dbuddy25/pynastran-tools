@@ -155,6 +155,12 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._build_ui()
 
     def _build_ui(self):
+        # Listbox colors (tk.Listbox doesn't inherit CTk dark styling)
+        self._dark = ctk.get_appearance_mode() == "Dark"
+        lb_bg = "#2b2b2b" if self._dark else "white"
+        lb_fg = "#dce4ee" if self._dark else "black"
+        lb_sel_bg = "#1f6aa5" if self._dark else "#0078d4"
+
         # Main paned layout
         main = ctk.CTkFrame(self)
         main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -167,7 +173,10 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W)
 
         self._id_listbox = tk.Listbox(left, selectmode=tk.EXTENDED,
-                                      exportselection=False)
+                                      exportselection=False,
+                                      bg=lb_bg, fg=lb_fg,
+                                      selectbackground=lb_sel_bg,
+                                      selectforeground="white")
         self._id_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         for id_val in self._available_ids:
             label = self._id_labels.get(id_val, str(id_val))
@@ -206,7 +215,10 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W)
 
         self._group_listbox = tk.Listbox(right, selectmode=tk.SINGLE,
-                                         exportselection=False)
+                                         exportselection=False,
+                                         bg=lb_bg, fg=lb_fg,
+                                         selectbackground=lb_sel_bg,
+                                         selectforeground="white")
         self._group_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self._refresh_group_list()
 
@@ -239,9 +251,8 @@ class ManageGroupsDialog(ctk.CTkToplevel):
 
     def _update_consumed_styling(self):
         """Grey out IDs in the available list that are already in a group."""
-        dark = ctk.get_appearance_mode() == "Dark"
-        fg_consumed = "gray50" if dark else "gray"
-        fg_available = "white" if dark else "black"
+        fg_consumed = "gray50" if self._dark else "gray"
+        fg_available = "#dce4ee" if self._dark else "black"
         consumed = set()
         for ids in self._groups.values():
             consumed.update(ids)
