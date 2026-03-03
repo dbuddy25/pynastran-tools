@@ -684,7 +684,7 @@ REQUIREMENTS
                 for j in range(6):
                     row.append(f"{forces[i, j]:.2E}")
                 raw_rows.append(row)
-            raw_rows.sort(key=lambda r: (r[0], r[1]))
+            raw_rows.sort(key=lambda r: r[1])
             rows = raw_rows
         else:
             headers = list(_HEADERS)
@@ -731,7 +731,7 @@ REQUIREMENTS
             # Sort by (property_name, eid)
             indices = list(range(len(eids)))
             prop_list = [self._get_prop_name(int(eids[i])) for i in indices]
-            order = sorted(indices, key=lambda i: (prop_list[i], int(eids[i])))
+            order = sorted(indices, key=lambda i: int(eids[i]))
             eids = eids[order]
             forces = forces[order]
             prop_names = [prop_list[i] for i in order]
