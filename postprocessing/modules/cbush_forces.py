@@ -21,9 +21,40 @@ from tksheet import Sheet
 
 import numpy as np
 
-_HEADERS = ['EID', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz']
-_HEADERS_WITH_PROP = ['Property', 'EID', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz']
+_HEADERS_BASE = ['Axial Dir', 'EID', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz',
+                 'Axial', 'Comb Shear', 'Comb Moment']
+_HEADERS_BASE_WITH_PROP = ['Property', 'Axial Dir', 'EID', 'Fx', 'Fy', 'Fz',
+                           'Mx', 'My', 'Mz', 'Axial', 'Comb Shear',
+                           'Comb Moment']
 _FORCE_COLS = ['fx', 'fy', 'fz', 'mx', 'my', 'mz']
+
+_AXIAL_MAP = {
+    'X': {'axial': 0, 'shear': (1, 2), 'moment': (4, 5)},
+    'Y': {'axial': 1, 'shear': (0, 2), 'moment': (3, 5)},
+    'Z': {'axial': 2, 'shear': (0, 1), 'moment': (3, 4)},
+}
+
+
+def _compute_derived(forces_row, axial_dir):
+    """Return (axial_force, combined_shear, combined_moment).
+
+    Parameters
+    ----------
+    forces_row : array-like, length 6 — [Fx, Fy, Fz, Mx, My, Mz]
+    axial_dir : str — 'X', 'Y', or 'Z'
+    """
+    m = _AXIAL_MAP[axial_dir]
+    axial = float(forces_row[m['axial']])
+    s1, s2 = m['shear']
+    shear = float(np.sqrt(forces_row[s1] ** 2 + forces_row[s2] ** 2))
+    m1, m2 = m['moment']
+    moment = float(np.sqrt(forces_row[m1] ** 2 + forces_row[m2] ** 2))
+    return axial, shear, moment
+
+
+def _build_headers(has_bdf):
+    """Return header list based on whether BDF is loaded."""
+    return list(_HEADERS_BASE_WITH_PROP if has_bdf else _HEADERS_BASE)
 
 
 # --------------------------------------------------------- Excel helpers
@@ -46,7 +77,8 @@ def make_cbush_styles():
 
 def write_cbush_sheet(ws, eids, forces, styles, op2_name=None,
                        title=None, sheet_label=None, prop_names=None,
-                       scale_factor=1.0, start_row=0):
+                       scale_factor=1.0, start_row=0,
+                       axial_dirs=None, derived=None):
     """Write one CBUSH forces block to an openpyxl worksheet.
 
     Parameters
@@ -61,6 +93,8 @@ def write_cbush_sheet(ws, eids, forces, styles, op2_name=None,
     prop_names : list[str] or None -- per-element property names (same order as eids)
     scale_factor : float -- multiplier applied to force values
     start_row : int -- 0-based row offset (for stacking multiple blocks)
+    axial_dirs : list[str] or None -- per-element axial direction ('X','Y','Z')
+    derived : list[tuple] or None -- per-element (axial, shear, moment)
 
     Returns
     -------
@@ -70,7 +104,7 @@ def write_cbush_sheet(ws, eids, forces, styles, op2_name=None,
 
     s = styles
     has_prop = prop_names is not None
-    headers = _HEADERS_WITH_PROP if has_prop else _HEADERS
+    headers = _build_headers(has_prop)
     total_cols = len(headers)
     cur_row = start_row
 
@@ -108,7 +142,8 @@ def write_cbush_sheet(ws, eids, forces, styles, op2_name=None,
         ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
     # Column headers
-    cur_row += 1
+    header_row = cur_row + 1
+    cur_row = header_row
     for ci, h in enumerate(headers, 1):
         cell = ws.cell(row=cur_row, column=ci, value=h)
         cell.font = s['sub_font']
@@ -117,53 +152,72 @@ def write_cbush_sheet(ws, eids, forces, styles, op2_name=None,
 
     # Data rows
     data_start = cur_row + 1
-    force_col_offset = 2 if has_prop else 1  # 1-based column of first force
-    eid_col = 2 if has_prop else 1
+    col = 1  # running 1-based column
 
     for i in range(len(eids)):
         row = data_start + i
+        col = 1
         if has_prop:
-            c = ws.cell(row=row, column=1, value=prop_names[i])
+            c = ws.cell(row=row, column=col, value=prop_names[i])
             c.alignment = s['left']
-        ws.cell(row=row, column=eid_col,
-                value=int(eids[i])).alignment = s['center']
+            col += 1
+        # Axial Dir
+        ad = axial_dirs[i] if axial_dirs else 'X'
+        ws.cell(row=row, column=col, value=ad).alignment = s['center']
+        col += 1
+        # EID
+        ws.cell(row=row, column=col, value=int(eids[i])).alignment = s['center']
+        col += 1
+        # 6 force components
         for j in range(6):
-            c = ws.cell(row=row, column=force_col_offset + 1 + j,
+            c = ws.cell(row=row, column=col + j,
                         value=float(forces[i, j]) * scale_factor)
             c.number_format = s['sci_fmt']
             c.alignment = s['center']
+        col += 6
+        # 3 derived columns
+        if derived:
+            for dval in derived[i]:
+                c = ws.cell(row=row, column=col, value=dval * scale_factor)
+                c.number_format = s['sci_fmt']
+                c.alignment = s['center']
+                col += 1
+        else:
+            col += 3
+        # Border all cells
         for ci in range(1, total_cols + 1):
             ws.cell(row=row, column=ci).border = s['cell_border']
 
     # Column widths (only set on first block — start_row == 0)
     if start_row == 0:
+        col = 1
         if has_prop:
-            ws.column_dimensions['A'].width = 18  # Property
-            ws.column_dimensions['B'].width = 10  # EID
-            for ci in range(3, total_cols + 1):
-                ws.column_dimensions[get_column_letter(ci)].width = 14
-        else:
-            ws.column_dimensions['A'].width = 10  # EID
-            for ci in range(2, total_cols + 1):
-                ws.column_dimensions[get_column_letter(ci)].width = 14
+            ws.column_dimensions[get_column_letter(col)].width = 18
+            col += 1
+        ws.column_dimensions[get_column_letter(col)].width = 10  # Axial Dir
+        col += 1
+        ws.column_dimensions[get_column_letter(col)].width = 10  # EID
+        col += 1
+        for ci in range(col, total_cols + 1):
+            ws.column_dimensions[get_column_letter(ci)].width = 14
 
     ws.freeze_panes = f'A{data_start}'
 
-    return data_start + len(eids)  # next available row (0-based not needed; caller uses as start_row)
+    return data_start + len(eids), header_row
 
 
 def _write_cbush_block_combined(ws, eids, forces, styles, sheet_label=None,
                                 prop_names=None, scale_factor=1.0,
-                                start_row=0):
+                                start_row=0, axial_dirs=None, derived=None):
     """Write a subcase block for combined-sheet mode (no title/OP2 rows).
 
-    Returns next available row (1-based).
+    Returns (next_row, header_row).
     """
     from openpyxl.utils import get_column_letter
 
     s = styles
     has_prop = prop_names is not None
-    headers = _HEADERS_WITH_PROP if has_prop else _HEADERS
+    headers = _build_headers(has_prop)
     total_cols = len(headers)
     cur_row = start_row
 
@@ -179,7 +233,8 @@ def _write_cbush_block_combined(ws, eids, forces, styles, sheet_label=None,
         ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
     # Column headers
-    cur_row += 1
+    header_row = cur_row + 1
+    cur_row = header_row
     for ci, h in enumerate(headers, 1):
         cell = ws.cell(row=cur_row, column=ci, value=h)
         cell.font = s['sub_font']
@@ -188,25 +243,75 @@ def _write_cbush_block_combined(ws, eids, forces, styles, sheet_label=None,
 
     # Data rows
     data_start = cur_row + 1
-    force_col_offset = 2 if has_prop else 1
-    eid_col = 2 if has_prop else 1
 
     for i in range(len(eids)):
         row = data_start + i
+        col = 1
         if has_prop:
-            c = ws.cell(row=row, column=1, value=prop_names[i])
+            c = ws.cell(row=row, column=col, value=prop_names[i])
             c.alignment = s['left']
-        ws.cell(row=row, column=eid_col,
-                value=int(eids[i])).alignment = s['center']
+            col += 1
+        # Axial Dir
+        ad = axial_dirs[i] if axial_dirs else 'X'
+        ws.cell(row=row, column=col, value=ad).alignment = s['center']
+        col += 1
+        # EID
+        ws.cell(row=row, column=col, value=int(eids[i])).alignment = s['center']
+        col += 1
+        # 6 force components
         for j in range(6):
-            c = ws.cell(row=row, column=force_col_offset + 1 + j,
+            c = ws.cell(row=row, column=col + j,
                         value=float(forces[i, j]) * scale_factor)
             c.number_format = s['sci_fmt']
             c.alignment = s['center']
+        col += 6
+        # 3 derived columns
+        if derived:
+            for dval in derived[i]:
+                c = ws.cell(row=row, column=col, value=dval * scale_factor)
+                c.number_format = s['sci_fmt']
+                c.alignment = s['center']
+                col += 1
+        # Border
         for ci in range(1, total_cols + 1):
             ws.cell(row=row, column=ci).border = s['cell_border']
 
-    return data_start + len(eids)  # next available 1-based row
+    return data_start + len(eids), header_row
+
+
+def _write_joint_summary_block(ws, joint_data, styles, header_row, start_col):
+    """Write joint summary mini-table to the right of main data.
+
+    Parameters
+    ----------
+    ws : openpyxl Worksheet
+    joint_data : list of (joint_name, shear_total) tuples
+    styles : dict from make_cbush_styles()
+    header_row : int (1-based) — row of the column headers in the main block
+    start_col : int (1-based) — first column for the joint summary
+    """
+    s = styles
+    # Headers
+    for ci, h in enumerate(['Joint', 'Shear Total']):
+        cell = ws.cell(row=header_row, column=start_col + ci, value=h)
+        cell.font = s['sub_font']
+        cell.fill = s['mid_fill']
+        cell.alignment = s['center']
+
+    # Data rows
+    from openpyxl.utils import get_column_letter
+    for i, (name, total) in enumerate(joint_data):
+        row = header_row + 1 + i
+        ws.cell(row=row, column=start_col, value=name).alignment = s['left']
+        c = ws.cell(row=row, column=start_col + 1, value=total)
+        c.number_format = s['sci_fmt']
+        c.alignment = s['center']
+        for ci in range(2):
+            ws.cell(row=row, column=start_col + ci).border = s['cell_border']
+
+    # Column widths
+    ws.column_dimensions[get_column_letter(start_col)].width = 16
+    ws.column_dimensions[get_column_letter(start_col + 1)].width = 14
 
 
 # ---------------------------------------------------------- post-export dialog
@@ -256,6 +361,147 @@ class _ExportDoneDialog(tk.Toplevel):
         self.destroy()
 
 
+# --------------------------------------------------------- Manage Joints Dialog
+
+class ManageJointsDialog(ctk.CTkToplevel):
+    """Dialog for creating/editing joint definitions (property groups)."""
+
+    def __init__(self, parent, available_pids, existing_joints, on_apply,
+                 id_labels=None):
+        super().__init__(parent)
+        self.title("Manage Joints")
+        self.geometry("600x400")
+        self.resizable(True, True)
+        self.transient(parent)
+
+        self._available_pids = sorted(available_pids)
+        self._id_labels = id_labels or {}
+        # Preserve insertion order
+        self._joints = {}
+        for k, v in existing_joints.items():
+            self._joints[k] = set(v)
+        self._on_apply = on_apply
+
+        self._build_ui()
+
+    def _build_ui(self):
+        dark = ctk.get_appearance_mode() == "Dark"
+        self._dark = dark
+        lb_bg = "#2b2b2b" if dark else "white"
+        lb_fg = "#dce4ee" if dark else "black"
+        lb_sel_bg = "#1f6aa5" if dark else "#0078d4"
+
+        main = ctk.CTkFrame(self)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left: available properties
+        left = ctk.CTkFrame(main)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        ctk.CTkLabel(left, text="Available Properties",
+                     font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W)
+        self._pid_listbox = tk.Listbox(left, selectmode=tk.EXTENDED,
+                                       exportselection=False,
+                                       bg=lb_bg, fg=lb_fg,
+                                       selectbackground=lb_sel_bg,
+                                       selectforeground="white")
+        self._pid_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        for pid in self._available_pids:
+            self._pid_listbox.insert(tk.END, self._id_labels.get(pid, str(pid)))
+
+        # Middle: controls
+        mid = ctk.CTkFrame(main, width=150)
+        mid.pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        mid.pack_propagate(False)
+
+        ctk.CTkLabel(mid, text="Joint Name:").pack(anchor=tk.W, pady=(20, 2))
+        self._name_var = tk.StringVar()
+        ctk.CTkEntry(mid, textvariable=self._name_var, width=130).pack()
+
+        ctk.CTkButton(mid, text="Create Joint \u2192", width=130,
+                      command=self._create_joint).pack(pady=(10, 2))
+        ctk.CTkButton(mid, text="Delete Joint", width=130,
+                      fg_color="firebrick",
+                      command=self._delete_joint).pack(pady=2)
+
+        # Right: existing joints
+        right = ctk.CTkFrame(main)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        ctk.CTkLabel(right, text="Joints",
+                     font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W)
+        self._joint_listbox = tk.Listbox(right, selectmode=tk.SINGLE,
+                                         exportselection=False,
+                                         bg=lb_bg, fg=lb_fg,
+                                         selectbackground=lb_sel_bg,
+                                         selectforeground="white")
+        self._joint_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._refresh_joint_list()
+
+        # Bottom buttons
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ctk.CTkButton(bottom, text="Apply", width=80,
+                      command=self._apply).pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(bottom, text="Cancel", width=80,
+                      fg_color="gray50",
+                      command=self.destroy).pack(side=tk.RIGHT)
+
+    def _refresh_joint_list(self):
+        self._joint_listbox.delete(0, tk.END)
+        for name, pids in self._joints.items():
+            preview = ', '.join(str(p) for p in sorted(pids)[:5])
+            if len(pids) > 5:
+                preview += f'... ({len(pids)} total)'
+            self._joint_listbox.insert(tk.END, f"{name}: {preview}")
+        self._update_consumed_styling()
+
+    def _update_consumed_styling(self):
+        fg_consumed = "gray50" if self._dark else "gray"
+        fg_available = "#dce4ee" if self._dark else "black"
+        consumed = set()
+        for pids in self._joints.values():
+            consumed.update(pids)
+        for i, pid in enumerate(self._available_pids):
+            if pid in consumed:
+                self._pid_listbox.itemconfig(i, fg=fg_consumed)
+            else:
+                self._pid_listbox.itemconfig(i, fg=fg_available)
+
+    def _create_joint(self):
+        name = self._name_var.get().strip()
+        if not name:
+            messagebox.showwarning("No Name", "Enter a joint name.",
+                                   parent=self)
+            return
+        sel = self._pid_listbox.curselection()
+        if not sel:
+            messagebox.showwarning("No Selection",
+                                   "Select properties from the left list.",
+                                   parent=self)
+            return
+        pids = {self._available_pids[i] for i in sel}
+        if name in self._joints:
+            if not messagebox.askyesno(
+                    "Overwrite Joint",
+                    f"Joint '{name}' already exists. Overwrite it?",
+                    parent=self):
+                return
+        self._joints[name] = pids
+        self._name_var.set('')
+        self._refresh_joint_list()
+
+    def _delete_joint(self):
+        sel = self._joint_listbox.curselection()
+        if not sel:
+            return
+        name = list(self._joints.keys())[sel[0]]
+        del self._joints[name]
+        self._refresh_joint_list()
+
+    def _apply(self):
+        self._on_apply(self._joints)
+        self.destroy()
+
+
 # ---------------------------------------------------------------- GUI module
 
 class CbushForcesModule:
@@ -283,6 +529,14 @@ class CbushForcesModule:
         self._pid_names = {}       # {pid: comment name}
         self._eid_to_pid = {}      # {eid: pid}
 
+        # Axial direction state
+        self._axial_var = tk.StringVar(value='X')
+        self._eid_axial = {}       # {eid: 'X'|'Y'|'Z'} per-element overrides
+
+        # Joint state (property groups for shear totals)
+        self._joints = {}          # {joint_name: set(pid, ...)}
+        self._joint_order = []     # display order
+
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -309,6 +563,26 @@ WORKFLOW
 6. Export to Excel -- choose separate sheets (one per subcase) or
    combined (all subcases stacked on a single sheet).
 
+AXIAL DIRECTION
+The Axial Dir dropdown sets the global axial direction (X, Y, or Z)
+for computing derived force quantities:
+  Axial      -- force along the axial direction
+  Comb Shear -- sqrt of sum-of-squares of the two transverse forces
+  Comb Moment-- sqrt of sum-of-squares of the two transverse moments
+
+Per-element overrides: click the Axial Dir cell for any row to change
+that element's axial direction independently.  Overrides persist across
+subcase switches and are included in the Excel export.
+
+JOINTS
+Joints are named groups of properties.  When joints are defined, a
+summary table appears to the right showing the total combined shear
+summed across all elements belonging to each joint's member properties.
+  - Manage Joints -- opens a dialog to create/delete joints (requires BDF)
+  - Joint totals update automatically when switching subcases or changing
+    axial directions
+  - Joint summary is included in the Excel export
+
 TITLE FIELD
 Optional title text that appears as a header row in every Excel sheet.
 Leave blank to omit.
@@ -323,6 +597,8 @@ EXCEL OUTPUT
   - Frozen header rows for easy scrolling
   - Color-coded header bands
   - Property column included when BDF is loaded
+  - Axial Dir, Axial, Comb Shear, Comb Moment columns always present
+  - Joint summary table to the right of main data (when joints defined)
 
 REQUIREMENTS
   - pyNastran (for OP2/BDF reading)
@@ -393,26 +669,62 @@ REQUIREMENTS
                         variable=self._combined_var).pack(
             side=tk.LEFT, padx=(0, 4))
 
+        ctk.CTkLabel(row2, text="|", text_color="gray").pack(
+            side=tk.LEFT, padx=6)
+
+        ctk.CTkLabel(row2, text="Axial Dir:").pack(
+            side=tk.LEFT, padx=(0, 2))
+        self._axial_menu = ctk.CTkOptionMenu(
+            row2, variable=self._axial_var, values=['X', 'Y', 'Z'],
+            command=self._on_axial_change, width=60)
+        self._axial_menu.pack(side=tk.LEFT, padx=(0, 4))
+
+        ctk.CTkLabel(row2, text="|", text_color="gray").pack(
+            side=tk.LEFT, padx=6)
+
+        self._joints_btn = ctk.CTkButton(
+            row2, text="Manage Joints\u2026", width=120,
+            command=self._open_joints_dialog, state=tk.DISABLED)
+        self._joints_btn.pack(side=tk.LEFT, padx=(0, 4))
+
         # Status label
         self._status_label = ctk.CTkLabel(
             self.frame, text="No OP2 loaded", text_color="gray")
         self._status_label.pack(anchor=tk.W, padx=10, pady=(2, 0))
 
-        # Table
+        # Table area: main sheet + joint summary side by side
+        table_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         self._sheet = Sheet(
-            self.frame,
-            headers=list(_HEADERS),
+            table_frame,
+            headers=_build_headers(False),
             show_top_left=False,
             show_row_index=False,
         )
-        self._sheet.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._sheet.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._sheet.disable_bindings()
         self._sheet.enable_bindings(
             "single_select", "drag_select", "row_select",
             "column_select", "copy", "arrowkeys",
             "column_width_resize", "row_height_resize",
         )
-        self._sheet.readonly_columns(columns=list(range(len(_HEADERS))))
+
+        # Joint summary sheet (hidden until joints exist)
+        self._joint_sheet = Sheet(
+            table_frame,
+            headers=['Joint', 'Shear Total'],
+            show_top_left=False,
+            show_row_index=False,
+            width=250,
+        )
+        self._joint_sheet.disable_bindings()
+        self._joint_sheet.enable_bindings(
+            "single_select", "copy", "arrowkeys",
+            "column_width_resize",
+        )
+        # Hidden by default — shown when joints exist
+        self._joint_sheet_visible = False
 
     # ---------------------------------------------------------- Guide
     def _show_guide(self):
@@ -501,6 +813,7 @@ REQUIREMENTS
                 return
 
             self._bdf_path = path
+            self._joints_btn.configure(state=tk.NORMAL)
 
             status = ""
             if self._op2_path:
@@ -582,6 +895,7 @@ REQUIREMENTS
         self._subcase_scales.clear()
         self._subcase_order.clear()
         self._active_subcase = None
+        self._eid_axial.clear()  # reset per-element overrides on new OP2
         self._sheet.set_sheet_data([])
 
         if not hasattr(op2, 'cbush_force') or not op2.cbush_force:
@@ -662,6 +976,63 @@ REQUIREMENTS
         if self._active_subcase is not None:
             self._subcase_scales[self._active_subcase] = self._scale_var.get()
 
+    def _on_axial_change(self, _value=None):
+        """Global axial direction dropdown changed — refresh table."""
+        if self._subcase_data:
+            self._show_subcase()
+
+    def _on_cell_axial_change(self, event=None):
+        """Per-cell axial direction dropdown changed."""
+        if event is None:
+            return
+        try:
+            r = event[1]  # row index
+        except (IndexError, TypeError):
+            return
+
+        has_bdf = self._has_bdf()
+        axial_col = 1 if has_bdf else 0
+        new_dir = self._sheet.get_cell_data(r, axial_col)
+        if new_dir not in ('X', 'Y', 'Z'):
+            return
+
+        # Determine EID for this row
+        eid_col = 2 if has_bdf else 1
+        eid = int(self._sheet.get_cell_data(r, eid_col))
+
+        # Store or remove override
+        default_dir = self._axial_var.get()
+        if new_dir == default_dir:
+            self._eid_axial.pop(eid, None)
+        else:
+            self._eid_axial[eid] = new_dir
+
+        # Recompute derived values for this row
+        sc = self._active_subcase
+        if sc is None:
+            return
+        eids = self._subcase_eids[sc]
+        forces = self._subcase_data[sc]
+        idx = None
+        for i in range(len(eids)):
+            if int(eids[i]) == eid:
+                idx = i
+                break
+        if idx is None:
+            return
+
+        axial, shear, moment = _compute_derived(forces[idx], new_dir)
+        force_offset = 3 if has_bdf else 2
+        derived_offset = force_offset + 6
+        self._sheet.set_cell_data(r, derived_offset, f"{axial:.2E}")
+        self._sheet.set_cell_data(r, derived_offset + 1, f"{shear:.2E}")
+        self._sheet.set_cell_data(r, derived_offset + 2, f"{moment:.2E}")
+        self._sheet.redraw()
+
+        # Refresh joint summary if joints exist
+        if self._joints:
+            self._refresh_joint_summary()
+
     def _show_subcase(self):
         """Populate sheet with the active subcase data."""
         sc = self._active_subcase
@@ -672,41 +1043,133 @@ REQUIREMENTS
         eids = self._subcase_eids[sc]
         forces = self._subcase_data[sc]
         has_bdf = self._has_bdf()
+        headers = _build_headers(has_bdf)
+        default_dir = self._axial_var.get()
 
-        if has_bdf:
-            headers = list(_HEADERS_WITH_PROP)
-            # Build rows with property names, then sort by (prop_name, eid)
-            raw_rows = []
-            for i in range(len(eids)):
-                eid = int(eids[i])
+        # Build sorted row indices by EID
+        order = sorted(range(len(eids)), key=lambda i: int(eids[i]))
+
+        rows = []
+        for i in order:
+            eid = int(eids[i])
+            axial_dir = self._eid_axial.get(eid, default_dir)
+            axial, shear, moment = _compute_derived(forces[i], axial_dir)
+
+            if has_bdf:
                 prop = self._get_prop_name(eid)
-                row = [prop, eid]
-                for j in range(6):
-                    row.append(f"{forces[i, j]:.2E}")
-                raw_rows.append(row)
-            raw_rows.sort(key=lambda r: r[1])
-            rows = raw_rows
-        else:
-            headers = list(_HEADERS)
-            rows = []
-            for i in range(len(eids)):
-                row = [int(eids[i])]
-                for j in range(6):
-                    row.append(f"{forces[i, j]:.2E}")
-                rows.append(row)
+                row = [prop, axial_dir, eid]
+            else:
+                row = [axial_dir, eid]
+            for j in range(6):
+                row.append(f"{forces[i, j]:.2E}")
+            row.append(f"{axial:.2E}")
+            row.append(f"{shear:.2E}")
+            row.append(f"{moment:.2E}")
+            rows.append(row)
 
         self._sheet.headers(headers)
         self._sheet.set_sheet_data(rows)
         ncols = len(headers)
         self._sheet.set_all_column_widths(90)
         if has_bdf:
-            self._sheet.column_width(column=0, width=140)  # Property wider
-            self._sheet.column_width(column=1, width=80)   # EID narrower
+            self._sheet.column_width(column=0, width=140)  # Property
+            self._sheet.column_width(column=1, width=70)   # Axial Dir
+            self._sheet.column_width(column=2, width=80)   # EID
         else:
-            self._sheet.column_width(column=0, width=80)   # EID narrower
+            self._sheet.column_width(column=0, width=70)   # Axial Dir
+            self._sheet.column_width(column=1, width=80)   # EID
         self._sheet.align_columns(
             list(range(ncols)), align="center", align_header=True)
+
+        # All columns readonly, then enable Axial Dir dropdown per cell
         self._sheet.readonly_columns(columns=list(range(ncols)))
+        axial_col = 1 if has_bdf else 0
+        for r in range(len(rows)):
+            self._sheet.create_dropdown(
+                r, axial_col, values=['X', 'Y', 'Z'],
+                set_value=rows[r][axial_col],
+            )
+
+        # Bind dropdown edit events
+        self._sheet.extra_bindings([
+            ("end_edit_cell", self._on_cell_axial_change),
+        ])
+
+        # Refresh joint summary
+        if self._joints:
+            self._refresh_joint_summary()
+
+    # ---------------------------------------------------------- joints
+
+    def _open_joints_dialog(self):
+        """Open the Manage Joints dialog."""
+        if not self._has_bdf():
+            return
+        available_pids = sorted(set(self._eid_to_pid.values()))
+        id_labels = {}
+        for pid in available_pids:
+            name = self._pid_names.get(pid)
+            if name:
+                id_labels[pid] = f"{pid} - {name}"
+            else:
+                id_labels[pid] = str(pid)
+        ManageJointsDialog(
+            self.frame.winfo_toplevel(),
+            available_pids,
+            {n: self._joints[n] for n in self._joint_order if n in self._joints},
+            self._on_joints_apply,
+            id_labels=id_labels,
+        )
+
+    def _on_joints_apply(self, joints):
+        """Callback from ManageJointsDialog."""
+        self._joints = {k: set(v) for k, v in joints.items()}
+        self._joint_order = list(joints.keys())
+
+        if self._joints:
+            if not self._joint_sheet_visible:
+                self._joint_sheet.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
+                self._joint_sheet_visible = True
+            self._refresh_joint_summary()
+        else:
+            if self._joint_sheet_visible:
+                self._joint_sheet.pack_forget()
+                self._joint_sheet_visible = False
+
+    def _refresh_joint_summary(self):
+        """Recompute joint shear totals for the active subcase."""
+        sc = self._active_subcase
+        if sc is None or not self._joints:
+            self._joint_sheet.set_sheet_data([])
+            return
+
+        eids = self._subcase_eids[sc]
+        forces = self._subcase_data[sc]
+        default_dir = self._axial_var.get()
+
+        # Build eid→force index
+        eid_idx = {int(eids[i]): i for i in range(len(eids))}
+
+        rows = []
+        for name in self._joint_order:
+            if name not in self._joints:
+                continue
+            pids = self._joints[name]
+            shear_total = 0.0
+            for eid, pid in self._eid_to_pid.items():
+                if pid in pids and eid in eid_idx:
+                    axial_dir = self._eid_axial.get(eid, default_dir)
+                    _, shear, _ = _compute_derived(
+                        forces[eid_idx[eid]], axial_dir)
+                    shear_total += shear
+            rows.append([name, f"{shear_total:.2E}"])
+
+        self._joint_sheet.headers(['Joint', 'Shear Total'])
+        self._joint_sheet.set_sheet_data(rows)
+        self._joint_sheet.set_all_column_widths(110)
+        self._joint_sheet.align_columns(
+            [0, 1], align="center", align_header=True)
+        self._joint_sheet.readonly_columns(columns=[0, 1])
 
     # ------------------------------------------------------------ export helpers
 
@@ -718,25 +1181,35 @@ REQUIREMENTS
             return 1.0
 
     def _prepare_export_data(self, sc_id):
-        """Build sorted eids, forces, prop_names, scale, label for one subcase.
+        """Build sorted eids, forces, prop_names, axial_dirs, derived, scale, label.
 
-        Returns (eids, forces, prop_names_or_None, scale_factor, lc_label).
+        Returns (eids, forces, prop_names_or_None, axial_dirs, derived, scale, lc_label).
         """
         eids = self._subcase_eids[sc_id]
         forces = self._subcase_data[sc_id]
         has_bdf = self._has_bdf()
         scale = self._get_scale_factor(sc_id)
+        default_dir = self._axial_var.get()
+
+        # Sort by EID
+        order = sorted(range(len(eids)), key=lambda i: int(eids[i]))
+        eids = eids[order]
+        forces = forces[order]
 
         if has_bdf:
-            # Sort by (property_name, eid)
-            indices = list(range(len(eids)))
-            prop_list = [self._get_prop_name(int(eids[i])) for i in indices]
-            order = sorted(indices, key=lambda i: int(eids[i]))
-            eids = eids[order]
-            forces = forces[order]
-            prop_names = [prop_list[i] for i in order]
+            prop_names = [self._get_prop_name(int(eids[i]))
+                          for i in range(len(eids))]
         else:
             prop_names = None
+
+        # Axial dirs and derived values
+        axial_dirs = []
+        derived = []
+        for i in range(len(eids)):
+            eid = int(eids[i])
+            ad = self._eid_axial.get(eid, default_dir)
+            axial_dirs.append(ad)
+            derived.append(_compute_derived(forces[i], ad))
 
         # Build label
         user_name = self._subcase_names.get(sc_id, '').strip()
@@ -747,7 +1220,7 @@ REQUIREMENTS
         if scale != 1.0:
             lc_label += f" (SF: {scale:g})"
 
-        return eids, forces, prop_names, scale, lc_label
+        return eids, forces, prop_names, axial_dirs, derived, scale, lc_label
 
     def _make_sheet_name(self, sc_id, used_names):
         """Build a unique 31-char Excel sheet name."""
@@ -768,6 +1241,33 @@ REQUIREMENTS
         return sheet_name
 
     # ------------------------------------------------------------ export
+    def _compute_joint_data(self, sc_id, scale):
+        """Compute joint summary data for export.
+
+        Returns list of (joint_name, scaled_shear_total) or empty list.
+        """
+        if not self._joints or not self._has_bdf():
+            return []
+
+        eids = self._subcase_eids[sc_id]
+        forces = self._subcase_data[sc_id]
+        default_dir = self._axial_var.get()
+        eid_idx = {int(eids[i]): i for i in range(len(eids))}
+
+        result = []
+        for name in self._joint_order:
+            if name not in self._joints:
+                continue
+            pids = self._joints[name]
+            shear_total = 0.0
+            for eid, pid in self._eid_to_pid.items():
+                if pid in pids and eid in eid_idx:
+                    ad = self._eid_axial.get(eid, default_dir)
+                    _, shear, _ = _compute_derived(forces[eid_idx[eid]], ad)
+                    shear_total += shear
+            result.append((name, shear_total * scale))
+        return result
+
     def _export_excel(self):
         if not self._subcase_data:
             messagebox.showinfo("Nothing to export",
@@ -798,6 +1298,9 @@ REQUIREMENTS
         title = self._title_var.get().strip() or None
         styles = make_cbush_styles()
         combined = self._combined_var.get()
+        has_bdf = self._has_bdf()
+        headers = _build_headers(has_bdf)
+        joint_col = len(headers) + 2  # gap column + start
 
         wb = Workbook()
 
@@ -808,35 +1311,39 @@ REQUIREMENTS
             cur_row = 0
 
             for i, sc_id in enumerate(self._subcase_order):
-                eids, forces, prop_names, scale, lc_label = \
-                    self._prepare_export_data(sc_id)
+                eids, forces, prop_names, axial_dirs, derived, scale, \
+                    lc_label = self._prepare_export_data(sc_id)
 
                 if i == 0:
-                    # First block gets full header (title + OP2 name + case)
-                    cur_row = write_cbush_sheet(
+                    cur_row, header_row = write_cbush_sheet(
                         ws, eids, forces, styles,
                         op2_name=op2_name, title=title,
                         sheet_label=lc_label, prop_names=prop_names,
-                        scale_factor=scale, start_row=cur_row)
+                        scale_factor=scale, start_row=cur_row,
+                        axial_dirs=axial_dirs, derived=derived)
                 else:
-                    # Subsequent blocks: blank row + case label + headers + data
                     cur_row += 1  # blank row
-                    cur_row = _write_cbush_block_combined(
+                    cur_row, header_row = _write_cbush_block_combined(
                         ws, eids, forces, styles,
                         sheet_label=lc_label, prop_names=prop_names,
-                        scale_factor=scale, start_row=cur_row)
+                        scale_factor=scale, start_row=cur_row,
+                        axial_dirs=axial_dirs, derived=derived)
 
-            # Set column widths once (if not already set by first block for
-            # start_row==0 case in write_cbush_sheet)
+                # Joint summary per block
+                jdata = self._compute_joint_data(sc_id, scale)
+                if jdata:
+                    _write_joint_summary_block(
+                        ws, jdata, styles, header_row, joint_col)
+
             n = len(self._subcase_order)
             msg = f"Saved {n} case(s) to 1 sheet:\n{path}"
         else:
-            # Separate sheets (original behavior)
+            # Separate sheets
             used_names = set()
 
             for i, sc_id in enumerate(self._subcase_order):
-                eids, forces, prop_names, scale, lc_label = \
-                    self._prepare_export_data(sc_id)
+                eids, forces, prop_names, axial_dirs, derived, scale, \
+                    lc_label = self._prepare_export_data(sc_id)
                 sheet_name = self._make_sheet_name(sc_id, used_names)
 
                 if i == 0:
@@ -845,12 +1352,19 @@ REQUIREMENTS
                 else:
                     ws = wb.create_sheet(title=sheet_name)
 
-                write_cbush_sheet(
+                _next_row, header_row = write_cbush_sheet(
                     ws, eids, forces, styles,
                     op2_name=op2_name, title=title,
                     sheet_label=lc_label, prop_names=prop_names,
                     scale_factor=scale,
+                    axial_dirs=axial_dirs, derived=derived,
                 )
+
+                # Joint summary
+                jdata = self._compute_joint_data(sc_id, scale)
+                if jdata:
+                    _write_joint_summary_block(
+                        ws, jdata, styles, header_row, joint_col)
 
             n = len(self._subcase_order)
             msg = f"Saved {n} sheet(s) to:\n{path}"
