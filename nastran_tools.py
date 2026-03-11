@@ -7,6 +7,7 @@ Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - MEFFMASS (modal effective mass fractions from OP2)
   - ESE Breakdown (element strain energy % by group from OP2)
   - CBUSH Forces (CBUSH element forces from OP2)
+  - Mass Breakdown (BDF mass breakdown by group with GPWG validation)
 
 Usage:
     python nastran_tools.py
@@ -48,6 +49,13 @@ try:
     from modules.cbush_forces import CbushForcesModule
 except Exception:
     _cbush_available = False
+
+# MassBreakdownModule — lazy import with fallback
+_mass_breakdown_available = True
+try:
+    from modules.mass_breakdown import MassBreakdownModule
+except Exception:
+    _mass_breakdown_available = False
 
 
 __version__ = "0.1.4"
@@ -97,6 +105,7 @@ class Sidebar(ctk.CTkFrame):
         self._add_tool("meff", "MEFFMASS")
         self._add_tool("energy", "ESE Breakdown")
         self._add_tool("cbush", "CBUSH Forces")
+        self._add_tool("mass_breakdown", "Mass Breakdown")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -184,6 +193,12 @@ class NastranToolsApp(ctk.CTk):
             self._tools['cbush'] = cbush.frame
         else:
             self._sidebar.disable_tool("cbush")
+
+        if _mass_breakdown_available:
+            mass_bd = MassBreakdownModule(self._content)
+            self._tools['mass_breakdown'] = mass_bd.frame
+        else:
+            self._sidebar.disable_tool("mass_breakdown")
 
         self._active_tool = None
 
