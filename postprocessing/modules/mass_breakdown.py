@@ -1,7 +1,8 @@
 """Mass breakdown module.
 
 Reads element masses from a BDF file and displays per-group mass totals,
-with optional OP2 GPWG validation. Supports superelements.
+with optional OP2 GPWG validation. Supports superelements and DMIG mass
+matrices referenced via M2GG case control.
 """
 import os
 import re
@@ -152,6 +153,9 @@ class MassBreakdownModule:
         self._count_by_file = {}
         self._file_order = []
 
+        # DMIG mass from M2GG case control
+        self._dmig_mass = {}       # {"M2GG: MPART1 (x1.03)": float, ...}
+
         # GPWG from OP2
         self._gpwg_mass = None     # total GPWG mass (float) or None
 
@@ -199,6 +203,13 @@ This tells Nastran to compute and output the Grid Point Weight
 Generator table at the origin. The GPWG contains total mass,
 center of gravity, and inertia for the assembled model.
 For superelement models, each SE will have its own GPWG entry.
+
+DMIG MASS (M2GG)
+If the case control deck contains M2GG entries referencing DMIG mass
+matrices (e.g. M2GG = 1.03*MPART1, 1.06*MPART2), the tool extracts
+mass from each matrix by summing diagonal translational DOFs and
+applying the scale factor. Each matrix appears as its own group
+(e.g. "M2GG: MPART1 (x1.03)") in both grouping modes.
 
 MASS ELEMENTS
 CONM2 and other mass elements (CMASS1-4, CONM1) are grouped as
@@ -397,6 +408,88 @@ REQUIREMENTS
             mass_by_key[key] = mass_by_key.get(key, 0.0) + m
             count_by_key[key] = count_by_key.get(key, 0) + 1
 
+    @staticmethod
+    def _extract_dmig_mass(model):
+        """Extract mass from DMIG matrices referenced by M2GG case control.
+
+        Parses M2GG entries from the case control deck, retrieves each
+        referenced DMIG matrix, and sums diagonal translational DOF entries
+        (components 1,2,3) to compute per-matrix mass.
+
+        Returns dict {display_label: mass} for each M2GG term, e.g.
+        {"MPART1 (x1.03)": 45.23, "MPART2 (x1.06)": 38.71}.
+        """
+        import numpy as np
+
+        ccd = getattr(model, 'case_control_deck', None)
+        if ccd is None:
+            return {}
+
+        # Collect M2GG entries from all subcases (including subcase 0 = global)
+        m2gg_terms = []  # list of (scale, matrix_name)
+        seen_names = set()
+        for sc_id, subcase in ccd.subcases.items():
+            try:
+                value, _options = subcase.get_parameter('M2GG')
+            except (KeyError, AttributeError):
+                continue
+            if isinstance(value, int):
+                # SET reference — not supported yet
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        scale, name = item
+                        if name not in seen_names:
+                            m2gg_terms.append((float(scale), str(name)))
+                            seen_names.add(name)
+
+        if not m2gg_terms:
+            return {}
+
+        dmig_dict = getattr(model, 'dmig', {})
+        dmig_mass = {}
+
+        for scale, name in m2gg_terms:
+            dmig_obj = dmig_dict.get(name)
+            if dmig_obj is None:
+                continue
+
+            try:
+                matrix, rows, _cols = dmig_obj.get_matrix(
+                    is_sparse=False, apply_symmetry=True)
+                matrix = np.asarray(matrix)
+            except Exception:
+                continue
+
+            # Sum diagonal entries at translational DOFs (1, 2, 3)
+            dof_mass = 0.0
+            n_trans_dofs = 0
+            for row_idx, gc_pair in rows.items():
+                grid, comp = gc_pair
+                if comp in (1, 2, 3):
+                    dof_mass += matrix[row_idx, row_idx]
+                    n_trans_dofs += 1
+
+            # Each node contributes mass on 3 translational DOFs;
+            # divide by 3 to get physical mass
+            if n_trans_dofs > 0:
+                node_mass = dof_mass / 3.0
+            else:
+                continue
+
+            scaled_mass = scale * node_mass
+            if abs(scaled_mass) < 1e-20:
+                continue
+
+            if abs(scale - 1.0) > 1e-6:
+                label = f"M2GG: {name} (x{scale:g})"
+            else:
+                label = f"M2GG: {name}"
+            dmig_mass[label] = scaled_mass
+
+        return dmig_mass
+
     def _open_bdf(self):
         path = filedialog.askopenfilename(
             title="Open BDF File",
@@ -417,7 +510,8 @@ REQUIREMENTS
                 return
 
             (mass_by_key, count_by_key, pid_names,
-             has_se, mass_by_file, count_by_file, file_order) = result
+             has_se, mass_by_file, count_by_file, file_order,
+             dmig_mass) = result
 
             self._bdf_path = path
             self._mass_by_key = mass_by_key
@@ -427,6 +521,7 @@ REQUIREMENTS
             self._mass_by_file = mass_by_file
             self._count_by_file = count_by_file
             self._file_order = file_order
+            self._dmig_mass = dmig_mass
             self._bdf_loaded = True
 
             self._manage_btn.configure(state=tk.NORMAL)
@@ -436,10 +531,12 @@ REQUIREMENTS
             self._show_ungrouped = True
             self._column_names = {}
 
-            n_groups = len(mass_by_key)
-            total_mass = sum(mass_by_key.values())
+            n_groups = len(mass_by_key) + len(dmig_mass)
+            total_mass = sum(mass_by_key.values()) + sum(dmig_mass.values())
             status = (f"BDF: {os.path.basename(path)} "
                       f"({n_groups} groups, total mass: {total_mass:.3f})")
+            if dmig_mass:
+                status += f"  [{len(dmig_mass)} M2GG]"
             if self._op2_path:
                 status += f"  |  OP2: {os.path.basename(self._op2_path)}"
             self._status_label.configure(text=status,
@@ -452,7 +549,7 @@ REQUIREMENTS
         """Background worker — extract mass data from BDF.
 
         Returns (mass_by_key, count_by_key, pid_names, has_superelements,
-                 mass_by_file, count_by_file, file_order).
+                 mass_by_file, count_by_file, file_order, dmig_mass).
         """
         from bdf_utils import IncludeFileParser, make_model
 
@@ -483,6 +580,9 @@ REQUIREMENTS
                                      mass_by_key=mass_by_key,
                                      count_by_key=count_by_key,
                                      pid_names=pid_names)
+
+        # DMIG mass from M2GG case control
+        dmig_mass = self._extract_dmig_mass(model)
 
         # Include file mapping (residual only)
         mass_by_file = {}
@@ -538,7 +638,7 @@ REQUIREMENTS
             count_by_file[rel] = count_by_file.get(rel, 0) + 1
 
         return (mass_by_key, count_by_key, pid_names, has_se,
-                mass_by_file, count_by_file, file_order)
+                mass_by_file, count_by_file, file_order, dmig_mass)
 
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
@@ -624,6 +724,10 @@ REQUIREMENTS
         else:
             raw_groups = dict(self._mass_by_key)
 
+        # Append DMIG mass groups (appear in both grouping modes)
+        for label, mass in self._dmig_mass.items():
+            raw_groups[label] = mass
+
         # Apply custom group merges
         if self._custom_groups:
             merged_groups = {}
@@ -672,15 +776,17 @@ REQUIREMENTS
 
     @staticmethod
     def _group_sort_key(label):
-        """Sort key: numeric PIDs by number, special groups last."""
+        """Sort key: numeric PIDs by number, DMIG after PIDs, special last."""
         m = re.search(r'PID\s+(\d+)', label)
         if m:
             return (0, int(m.group(1)), '')
+        if label.startswith('M2GG:'):
+            return (1, 0, label)
         if label in ('Other', 'Mass Elements') or label.endswith('Mass Elements'):
-            return (2, 0, label)
+            return (3, 0, label)
         if 'CONROD' in label:
-            return (1, 999999, label)
-        return (1, 0, label)
+            return (2, 999999, label)
+        return (2, 0, label)
 
     # ---------------------------------------------------------- display
     def _get_display_name(self, key):
@@ -803,6 +909,9 @@ REQUIREMENTS
                 name = self._pid_names.get(key)
                 if name:
                     id_labels[key] = f"{key} \u2014 {name}"
+
+        # Include DMIG groups as available for merging
+        available.update(self._dmig_mass.keys())
 
         ManageGroupsDialog(
             self.frame.winfo_toplevel(),
