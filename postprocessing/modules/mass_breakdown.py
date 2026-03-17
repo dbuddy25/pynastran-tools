@@ -140,7 +140,8 @@ class MassBreakdownModule:
         self._op2_path = None
         self._title_var = tk.StringVar(value='')
         self._group_by_var = tk.StringVar(value='Property ID')
-        self._scale_var = tk.StringVar(value='1.0')
+        self._units_var = tk.StringVar(value='slinch')
+        self._display_var = tk.StringVar(value='lb')
 
         # Raw mass data from BDF
         self._mass_by_key = {}     # {"PID 5": float, "SE10:PID 5": float, ...}
@@ -187,10 +188,11 @@ WORKFLOW
 5. Open OP2 (optional) — load an OP2 for GPWG validation.
 6. Export to Excel — save as a formatted .xlsx workbook.
 
-DISPLAY SCALE
-Enter a scale factor to multiply all displayed mass values. Useful
-for unit conversion (e.g. 2.20462 to display kg as lbs). The scale
-is applied to the table and Excel export. Percentages are unaffected.
+UNIT CONVERSION
+Set "Units" to your model's mass unit (kg, lb, or slinch) and
+use the arrow dropdown to select display units. For example,
+slinch -> lb converts from slinch to pounds. The conversion is
+applied to the table and Excel export. Percentages are unaffected.
 
 GROUPING MODES
   Property ID — group by element property ID (PID)
@@ -262,13 +264,20 @@ REQUIREMENTS
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
             side=tk.LEFT, padx=6)
 
-        # Display scale factor
-        ctk.CTkLabel(toolbar, text="Scale:").pack(side=tk.LEFT, padx=(0, 2))
-        scale_entry = ctk.CTkEntry(toolbar, textvariable=self._scale_var,
-                                   width=70)
-        scale_entry.pack(side=tk.LEFT, padx=(0, 2))
-        scale_entry.bind("<Return>", self._on_scale_change)
-        scale_entry.bind("<FocusOut>", self._on_scale_change)
+        # Unit conversion
+        unit_choices = list(self._UNIT_TO_KG.keys())
+        ctk.CTkLabel(toolbar, text="Units:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkOptionMenu(
+            toolbar, variable=self._units_var, values=unit_choices,
+            width=80, command=self._on_units_change,
+        ).pack(side=tk.LEFT)
+
+        ctk.CTkLabel(toolbar, text="\u2192").pack(side=tk.LEFT, padx=4)
+
+        ctk.CTkOptionMenu(
+            toolbar, variable=self._display_var, values=unit_choices,
+            width=80, command=self._on_units_change,
+        ).pack(side=tk.LEFT)
 
         # Separator
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
@@ -326,16 +335,24 @@ REQUIREMENTS
         if self._bdf_loaded:
             self._refresh_table()
 
-    def _on_scale_change(self, *args):
+    # Mass unit conversion factors to kg (base unit)
+    _UNIT_TO_KG = {
+        'kg':     1.0,
+        'lb':     0.45359237,
+        'slinch': 175.12683,    # 1 lbf·s²/in = 386.088 lbm = 175.127 kg
+    }
+
+    def _on_units_change(self, *args):
         if self._bdf_loaded:
             self._refresh_table()
 
     def _get_display_scale(self):
-        """Return the user's display scale factor, defaulting to 1.0."""
-        try:
-            return float(self._scale_var.get())
-        except (ValueError, TypeError):
-            return 1.0
+        """Return conversion factor from model units to display units."""
+        from_unit = self._units_var.get()
+        to_unit = self._display_var.get()
+        from_kg = self._UNIT_TO_KG.get(from_unit, 1.0)
+        to_kg = self._UNIT_TO_KG.get(to_unit, 1.0)
+        return from_kg / to_kg
 
     # ---------------------------------------------------------- background work
     def _run_in_background(self, label, work_fn, done_fn):

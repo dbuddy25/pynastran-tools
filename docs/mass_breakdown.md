@@ -57,6 +57,24 @@ Groups elements by their source BDF include file. Useful for models organized by
 
 > **Note:** Include file grouping currently maps only residual structure elements. Superelement elements won't appear in this mode.
 
+## Unit Conversion
+
+The toolbar provides two dropdowns for mass unit conversion:
+
+- **Units** — the mass unit your model is in (kg, lb, or slinch)
+- **Arrow dropdown** — the unit to display as
+
+For example, if your model uses slinch (lbf·s²/in, common with inch-based FEA), set Units to `slinch` and the display dropdown to `lb` to see mass in pounds.
+
+| From | To | Factor |
+|---|---|---|
+| slinch | lb | 386.09 |
+| slinch | kg | 175.13 |
+| kg | lb | 2.205 |
+| lb | kg | 0.4536 |
+
+The conversion applies to the table and Excel export. Percentages are unaffected. The GPWG validation row is also converted so the comparison stays consistent.
+
 ## Custom Groups (Manage Groups)
 
 Click **Manage Groups** to open the grouping dialog:
