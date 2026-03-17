@@ -126,7 +126,8 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
 
     # Column widths
     ws.column_dimensions['A'].width = 30
-    for ci in range(1, total_cols):
+    ws.column_dimensions['B'].width = 14    # Type column
+    for ci in range(2, total_cols):
         col_letter = get_column_letter(ci + 1)
         ws.column_dimensions[col_letter].width = 16
 
@@ -856,6 +857,26 @@ REQUIREMENTS
         return (2, 0, label)
 
     # ---------------------------------------------------------- display
+    @staticmethod
+    def _key_type(key):
+        """Return the source type for a single raw group key."""
+        if key.startswith('M2GG:'):
+            return 'External SE'
+        if re.match(r'SE\d+:', key):
+            return 'Part SE'
+        return 'Residual'
+
+    def _get_group_type(self, key):
+        """Return the type label for a group key (handles custom groups)."""
+        if key in self._custom_groups:
+            types = {self._key_type(k) for k in self._custom_groups[key]}
+            if len(types) == 1:
+                return types.pop()
+            return 'Mixed'
+        if key == 'Other':
+            return ''
+        return self._key_type(key)
+
     def _get_display_name(self, key):
         """Return the display name for a group key."""
         if key in self._column_names:
@@ -882,10 +903,10 @@ REQUIREMENTS
 
         # Build headers — add converted column only when units differ
         if show_converted:
-            headers = ['Group', f'Mass ({from_unit})', f'Mass ({to_unit})',
-                       '% of Total']
+            headers = ['Group', 'Type', f'Mass ({from_unit})',
+                       f'Mass ({to_unit})', '% of Total']
         else:
-            headers = ['Group', f'Mass ({from_unit})', '% of Total']
+            headers = ['Group', 'Type', f'Mass ({from_unit})', '% of Total']
 
         # Name row
         name_row = ['Name'] + [''] * (len(headers) - 1)
@@ -897,18 +918,20 @@ REQUIREMENTS
             pct = (raw / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
+            gtype = self._get_group_type(key)
             if show_converted:
-                table_data.append([label, round(raw, 2),
+                table_data.append([label, gtype, round(raw, 2),
                                    round(raw * scale, 2), round(pct, 1)])
             else:
-                table_data.append([label, round(raw, 2), round(pct, 1)])
+                table_data.append([label, gtype, round(raw, 2),
+                                   round(pct, 1)])
 
         # Total row
         if show_converted:
-            table_data.append(['TOTAL', round(total_mass, 2),
+            table_data.append(['TOTAL', '', round(total_mass, 2),
                                round(total_mass * scale, 2), 100.0])
         else:
-            table_data.append(['TOTAL', round(total_mass, 2), 100.0])
+            table_data.append(['TOTAL', '', round(total_mass, 2), 100.0])
 
         # GPWG validation row
         if self._gpwg_mass is not None:
@@ -916,10 +939,10 @@ REQUIREMENTS
             sign = '+' if delta >= 0 else ''
             gpwg_label = f"GPWG Total (\u0394: {sign}{delta:.2f})"
             if show_converted:
-                table_data.append([gpwg_label, round(self._gpwg_mass, 2),
+                table_data.append([gpwg_label, '', round(self._gpwg_mass, 2),
                                    round(self._gpwg_mass * scale, 2), ''])
             else:
-                table_data.append([gpwg_label,
+                table_data.append([gpwg_label, '',
                                    round(self._gpwg_mass, 2), ''])
 
         # Update sheet
@@ -930,10 +953,11 @@ REQUIREMENTS
         ncols = len(headers)
         self._sheet.set_all_column_widths(120)
         self._sheet.column_width(column=0, width=250)
+        self._sheet.column_width(column=1, width=100)
         self._sheet.align_columns(
             list(range(ncols)), align="center", align_header=True)
 
-        # Lock numeric columns and data rows
+        # Lock all columns except name row group label
         self._sheet.readonly_columns(columns=list(range(1, ncols)))
         n_data_rows = len(table_data)
         if n_data_rows > 1:
@@ -1059,10 +1083,10 @@ REQUIREMENTS
 
         # Build export data
         if show_converted:
-            headers = ['Group', f'Mass ({from_unit})', f'Mass ({to_unit})',
-                       '% of Total']
+            headers = ['Group', 'Type', f'Mass ({from_unit})',
+                       f'Mass ({to_unit})', '% of Total']
         else:
-            headers = ['Group', f'Mass ({from_unit})', '% of Total']
+            headers = ['Group', 'Type', f'Mass ({from_unit})', '% of Total']
 
         table = []
         for key in keys:
@@ -1070,15 +1094,16 @@ REQUIREMENTS
             pct = (raw / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
+            gtype = self._get_group_type(key)
             if show_converted:
-                table.append([label, raw, raw * scale, pct])
+                table.append([label, gtype, raw, raw * scale, pct])
             else:
-                table.append([label, raw, pct])
+                table.append([label, gtype, raw, pct])
 
         if show_converted:
-            total_row = ['TOTAL', total_mass, total_mass * scale, 100.0]
+            total_row = ['TOTAL', '', total_mass, total_mass * scale, 100.0]
         else:
-            total_row = ['TOTAL', total_mass, 100.0]
+            total_row = ['TOTAL', '', total_mass, 100.0]
 
         gpwg_row = None
         if self._gpwg_mass is not None:
@@ -1086,10 +1111,10 @@ REQUIREMENTS
             sign = '+' if delta >= 0 else ''
             if show_converted:
                 gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.2f})",
-                            self._gpwg_mass, self._gpwg_mass * scale, '']
+                            '', self._gpwg_mass, self._gpwg_mass * scale, '']
             else:
                 gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.2f})",
-                            self._gpwg_mass, '']
+                            '', self._gpwg_mass, '']
 
         export_data = {
             'headers': headers,
