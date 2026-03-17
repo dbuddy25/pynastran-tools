@@ -31,7 +31,7 @@ def make_mass_styles():
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
         'bold_font': Font(bold=True),
         'italic_font': Font(italic=True, color="808080"),
-        'num2': '0.0',
+        'num2': '0.00',
         'pct1': '0.0',
     }
 
@@ -86,6 +86,9 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
 
+    # Identify which columns are mass vs percent
+    pct_col = total_cols - 1  # last column is always %
+
     # Data rows
     data_start = cur_row + 1
     for i, row_data in enumerate(table):
@@ -94,7 +97,7 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
             cell = ws.cell(row=row, column=ci + 1, value=val)
             cell.alignment = s['center']
             if isinstance(val, float):
-                cell.number_format = s['num2'] if ci == 1 else s['pct1']
+                cell.number_format = s['pct1'] if ci == pct_col else s['num2']
             cell.border = s['cell_border']
 
     # Total row
@@ -106,7 +109,7 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
             cell.alignment = s['center']
             cell.font = s['bold_font']
             if isinstance(val, float):
-                cell.number_format = s['num2'] if ci == 1 else s['pct1']
+                cell.number_format = s['pct1'] if ci == pct_col else s['num2']
             cell.border = s['cell_border']
 
     # GPWG validation row
@@ -118,13 +121,14 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
             cell.alignment = s['center']
             cell.font = s['italic_font']
             if isinstance(val, float):
-                cell.number_format = s['num2'] if ci == 1 else s['pct1']
+                cell.number_format = s['pct1'] if ci == pct_col else s['num2']
             cell.border = s['cell_border']
 
     # Column widths
     ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 16
-    ws.column_dimensions['C'].width = 12
+    for ci in range(1, total_cols):
+        col_letter = get_column_letter(ci + 1)
+        ws.column_dimensions[col_letter].width = 16
 
     ws.freeze_panes = f'A{data_start}'
 
@@ -872,32 +876,51 @@ REQUIREMENTS
         total_mass = sum(group_mass.values())
         scale = self._get_display_scale()
 
-        # Build table rows: [Group, Mass, %]
-        # Row 0 is the name row (editable)
-        headers = ['Group', 'Mass', '% of Total']
+        from_unit = self._units_var.get()
+        to_unit = self._display_var.get()
+        show_converted = abs(scale - 1.0) > 1e-9
+
+        # Build headers — add converted column only when units differ
+        if show_converted:
+            headers = ['Group', f'Mass ({from_unit})', f'Mass ({to_unit})',
+                       '% of Total']
+        else:
+            headers = ['Group', f'Mass ({from_unit})', '% of Total']
 
         # Name row
-        name_row = ['Name', '', '']
+        name_row = ['Name'] + [''] * (len(headers) - 1)
 
-        # Data rows — round for clean display
+        # Data rows
         table_data = [name_row]
         for key in keys:
-            mass = group_mass[key] * scale
-            pct = (group_mass[key] / total_mass * 100.0) if total_mass > 0 else 0.0
+            raw = group_mass[key]
+            pct = (raw / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
-            table_data.append([label, round(mass, 1), round(pct, 1)])
+            if show_converted:
+                table_data.append([label, round(raw, 2),
+                                   round(raw * scale, 2), round(pct, 1)])
+            else:
+                table_data.append([label, round(raw, 2), round(pct, 1)])
 
         # Total row
-        table_data.append(['TOTAL', round(total_mass * scale, 1), 100.0])
+        if show_converted:
+            table_data.append(['TOTAL', round(total_mass, 2),
+                               round(total_mass * scale, 2), 100.0])
+        else:
+            table_data.append(['TOTAL', round(total_mass, 2), 100.0])
 
         # GPWG validation row
         if self._gpwg_mass is not None:
-            gpwg_scaled = self._gpwg_mass * scale
-            delta = gpwg_scaled - total_mass * scale
+            delta = self._gpwg_mass - total_mass
             sign = '+' if delta >= 0 else ''
-            gpwg_label = f"GPWG Total (\u0394: {sign}{delta:.1f})"
-            table_data.append([gpwg_label, round(gpwg_scaled, 1), ''])
+            gpwg_label = f"GPWG Total (\u0394: {sign}{delta:.2f})"
+            if show_converted:
+                table_data.append([gpwg_label, round(self._gpwg_mass, 2),
+                                   round(self._gpwg_mass * scale, 2), ''])
+            else:
+                table_data.append([gpwg_label,
+                                   round(self._gpwg_mass, 2), ''])
 
         # Update sheet
         self._sheet.headers(headers)
@@ -905,14 +928,13 @@ REQUIREMENTS
         self._sheet.set_header_height_lines(1)
 
         ncols = len(headers)
-        self._sheet.set_all_column_widths(100)
+        self._sheet.set_all_column_widths(120)
         self._sheet.column_width(column=0, width=250)
         self._sheet.align_columns(
             list(range(ncols)), align="center", align_header=True)
 
-        # Lock all columns except name row edits
-        self._sheet.readonly_columns(columns=[1, 2])
-        # Lock data rows (not name row at index 0)
+        # Lock numeric columns and data rows
+        self._sheet.readonly_columns(columns=list(range(1, ncols)))
         n_data_rows = len(table_data)
         if n_data_rows > 1:
             self._sheet.readonly_rows(rows=list(range(1, n_data_rows)))
@@ -928,15 +950,14 @@ REQUIREMENTS
 
         keys = self._current_keys
         n_keys = len(keys)
+        scale = self._get_display_scale()
+        ncols = 4 if abs(scale - 1.0) > 1e-9 else 3
 
         # Total row index = 1 (name row) + n_keys (data rows)
         total_row = 1 + n_keys
-        self._sheet.highlight_cells(row=total_row, column=0, fg="white",
-                                    bg="#1F4E79")
-        self._sheet.highlight_cells(row=total_row, column=1, fg="white",
-                                    bg="#1F4E79")
-        self._sheet.highlight_cells(row=total_row, column=2, fg="white",
-                                    bg="#1F4E79")
+        for c in range(ncols):
+            self._sheet.highlight_cells(row=total_row, column=c,
+                                        fg="white", bg="#1F4E79")
 
         # GPWG row — green if close (< 1% delta), red if not
         if self._gpwg_mass is not None:
@@ -952,7 +973,7 @@ REQUIREMENTS
                 fg_color = "#c0392b"   # red
                 bg_color = "#fdecea"
 
-            for c in range(3):
+            for c in range(ncols):
                 self._sheet.highlight_cells(row=gpwg_row, column=c,
                                             fg=fg_color, bg=bg_color)
 
@@ -1030,28 +1051,45 @@ REQUIREMENTS
         keys, group_mass = self._aggregate_by_group()
         total_mass = sum(group_mass.values())
         scale = self._get_display_scale()
+        from_unit = self._units_var.get()
+        to_unit = self._display_var.get()
+        show_converted = abs(scale - 1.0) > 1e-9
         title = self._title_var.get().strip() or None
         bdf_name = os.path.basename(self._bdf_path) if self._bdf_path else None
 
         # Build export data
-        headers = ['Group', 'Mass', '% of Total']
+        if show_converted:
+            headers = ['Group', f'Mass ({from_unit})', f'Mass ({to_unit})',
+                       '% of Total']
+        else:
+            headers = ['Group', f'Mass ({from_unit})', '% of Total']
+
         table = []
         for key in keys:
-            mass = group_mass[key] * scale
-            pct = (group_mass[key] / total_mass * 100.0) if total_mass > 0 else 0.0
+            raw = group_mass[key]
+            pct = (raw / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
-            table.append([label, mass, pct])
+            if show_converted:
+                table.append([label, raw, raw * scale, pct])
+            else:
+                table.append([label, raw, pct])
 
-        total_row = ['TOTAL', total_mass * scale, 100.0]
+        if show_converted:
+            total_row = ['TOTAL', total_mass, total_mass * scale, 100.0]
+        else:
+            total_row = ['TOTAL', total_mass, 100.0]
 
         gpwg_row = None
         if self._gpwg_mass is not None:
-            gpwg_scaled = self._gpwg_mass * scale
-            delta = gpwg_scaled - total_mass * scale
+            delta = self._gpwg_mass - total_mass
             sign = '+' if delta >= 0 else ''
-            gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.1f})",
-                        gpwg_scaled, '']
+            if show_converted:
+                gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.2f})",
+                            self._gpwg_mass, self._gpwg_mass * scale, '']
+            else:
+                gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.2f})",
+                            self._gpwg_mass, '']
 
         export_data = {
             'headers': headers,
