@@ -31,7 +31,7 @@ def make_mass_styles():
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
         'bold_font': Font(bold=True),
         'italic_font': Font(italic=True, color="808080"),
-        'num2': '0.000',
+        'num2': '0.0',
         'pct1': '0.0',
     }
 
@@ -140,6 +140,7 @@ class MassBreakdownModule:
         self._op2_path = None
         self._title_var = tk.StringVar(value='')
         self._group_by_var = tk.StringVar(value='Property ID')
+        self._scale_var = tk.StringVar(value='1.0')
 
         # Raw mass data from BDF
         self._mass_by_key = {}     # {"PID 5": float, "SE10:PID 5": float, ...}
@@ -185,6 +186,11 @@ WORKFLOW
 4. Manage Groups — combine multiple IDs into named groups.
 5. Open OP2 (optional) — load an OP2 for GPWG validation.
 6. Export to Excel — save as a formatted .xlsx workbook.
+
+DISPLAY SCALE
+Enter a scale factor to multiply all displayed mass values. Useful
+for unit conversion (e.g. 2.20462 to display kg as lbs). The scale
+is applied to the table and Excel export. Percentages are unaffected.
 
 GROUPING MODES
   Property ID — group by element property ID (PID)
@@ -256,6 +262,18 @@ REQUIREMENTS
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
             side=tk.LEFT, padx=6)
 
+        # Display scale factor
+        ctk.CTkLabel(toolbar, text="Scale:").pack(side=tk.LEFT, padx=(0, 2))
+        scale_entry = ctk.CTkEntry(toolbar, textvariable=self._scale_var,
+                                   width=70)
+        scale_entry.pack(side=tk.LEFT, padx=(0, 2))
+        scale_entry.bind("<Return>", self._on_scale_change)
+        scale_entry.bind("<FocusOut>", self._on_scale_change)
+
+        # Separator
+        ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
+            side=tk.LEFT, padx=6)
+
         # Title field
         ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(0, 2))
         ctk.CTkEntry(toolbar, textvariable=self._title_var, width=160).pack(
@@ -307,6 +325,17 @@ REQUIREMENTS
         self._column_names = {}
         if self._bdf_loaded:
             self._refresh_table()
+
+    def _on_scale_change(self, *args):
+        if self._bdf_loaded:
+            self._refresh_table()
+
+    def _get_display_scale(self):
+        """Return the user's display scale factor, defaulting to 1.0."""
+        try:
+            return float(self._scale_var.get())
+        except (ValueError, TypeError):
+            return 1.0
 
     # ---------------------------------------------------------- background work
     def _run_in_background(self, label, work_fn, done_fn):
@@ -539,7 +568,7 @@ REQUIREMENTS
             n_groups = len(mass_by_key) + len(dmig_mass)
             total_mass = sum(mass_by_key.values()) + sum(dmig_mass.values())
             status = (f"BDF: {os.path.basename(path)} "
-                      f"({n_groups} groups, total mass: {total_mass:.3f})")
+                      f"({n_groups} groups, total mass: {total_mass:.1f})")
             if dmig_mass:
                 status += f"  [{len(dmig_mass)} M2GG]"
             if self._op2_path:
@@ -588,6 +617,13 @@ REQUIREMENTS
 
         # DMIG mass from M2GG case control
         dmig_mass = self._extract_dmig_mass(model)
+
+        # Apply WTMASS to element-computed masses so they're in true mass
+        # units (consistent with GPWG and DMIG matrices)
+        wtmass = getattr(model, 'wtmass', 1.0)
+        if wtmass != 1.0:
+            for key in mass_by_key:
+                mass_by_key[key] *= wtmass
 
         # Include file mapping (residual only)
         mass_by_file = {}
@@ -642,6 +678,11 @@ REQUIREMENTS
             mass_by_file[rel] = mass_by_file.get(rel, 0.0) + m
             count_by_file[rel] = count_by_file.get(rel, 0) + 1
 
+        # Apply WTMASS to include-file masses too
+        if wtmass != 1.0:
+            for key in mass_by_file:
+                mass_by_file[key] *= wtmass
+
         return (mass_by_key, count_by_key, pid_names, has_se,
                 mass_by_file, count_by_file, file_order, dmig_mass)
 
@@ -681,8 +722,8 @@ REQUIREMENTS
                 n_groups = len(self._mass_by_key)
                 total_mass = sum(self._mass_by_key.values())
                 status += (f"BDF: {os.path.basename(self._bdf_path)} "
-                           f"({n_groups} groups, total mass: {total_mass:.3f})  |  ")
-            status += f"OP2: {os.path.basename(path)} (GPWG: {gpwg_mass:.3f})"
+                           f"({n_groups} groups, total mass: {total_mass:.1f})  |  ")
+            status += f"OP2: {os.path.basename(path)} (GPWG: {gpwg_mass:.1f})"
             self._status_label.configure(text=status,
                                          text_color=("gray10", "gray90"))
             if self._bdf_loaded:
@@ -812,32 +853,34 @@ REQUIREMENTS
         keys, group_mass = self._aggregate_by_group()
         self._current_keys = list(keys)
         total_mass = sum(group_mass.values())
+        scale = self._get_display_scale()
 
-        # Build table rows: [Name, Group Key, Mass, %]
+        # Build table rows: [Group, Mass, %]
         # Row 0 is the name row (editable)
         headers = ['Group', 'Mass', '% of Total']
 
         # Name row
         name_row = ['Name', '', '']
 
-        # Data rows
+        # Data rows — round for clean display
         table_data = [name_row]
         for key in keys:
-            mass = group_mass[key]
-            pct = (mass / total_mass * 100.0) if total_mass > 0 else 0.0
+            mass = group_mass[key] * scale
+            pct = (group_mass[key] / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
-            table_data.append([label, mass, pct])
+            table_data.append([label, round(mass, 1), round(pct, 1)])
 
         # Total row
-        table_data.append(['TOTAL', total_mass, 100.0])
+        table_data.append(['TOTAL', round(total_mass * scale, 1), 100.0])
 
         # GPWG validation row
         if self._gpwg_mass is not None:
-            delta = self._gpwg_mass - total_mass
+            gpwg_scaled = self._gpwg_mass * scale
+            delta = gpwg_scaled - total_mass * scale
             sign = '+' if delta >= 0 else ''
-            gpwg_label = f"GPWG Total (\u0394: {sign}{delta:.3f})"
-            table_data.append([gpwg_label, self._gpwg_mass, ''])
+            gpwg_label = f"GPWG Total (\u0394: {sign}{delta:.1f})"
+            table_data.append([gpwg_label, round(gpwg_scaled, 1), ''])
 
         # Update sheet
         self._sheet.headers(headers)
@@ -860,7 +903,7 @@ REQUIREMENTS
         self._apply_highlights()
 
     def _apply_highlights(self):
-        """Apply bold styling to total row and GPWG delta."""
+        """Apply styling to total row and GPWG delta (color-coded)."""
         self._sheet.dehighlight_all(redraw=False)
 
         if not self._bdf_loaded:
@@ -878,11 +921,23 @@ REQUIREMENTS
         self._sheet.highlight_cells(row=total_row, column=2, fg="white",
                                     bg="#1F4E79")
 
-        # GPWG row
+        # GPWG row — green if close (< 1% delta), red if not
         if self._gpwg_mass is not None:
             gpwg_row = total_row + 1
-            self._sheet.highlight_cells(row=gpwg_row, column=0, fg="gray")
-            self._sheet.highlight_cells(row=gpwg_row, column=1, fg="gray")
+            total_mass = sum(self._aggregate_by_group()[1].values())
+            delta = abs(self._gpwg_mass - total_mass)
+            pct_diff = (delta / self._gpwg_mass * 100.0) if self._gpwg_mass > 0 else 0.0
+
+            if pct_diff < 1.0:
+                fg_color = "#2d8a4e"   # green
+                bg_color = "#e6f5eb"
+            else:
+                fg_color = "#c0392b"   # red
+                bg_color = "#fdecea"
+
+            for c in range(3):
+                self._sheet.highlight_cells(row=gpwg_row, column=c,
+                                            fg=fg_color, bg=bg_color)
 
     def _on_name_edit(self, event):
         """Capture edits to the name row and store them."""
@@ -957,6 +1012,7 @@ REQUIREMENTS
 
         keys, group_mass = self._aggregate_by_group()
         total_mass = sum(group_mass.values())
+        scale = self._get_display_scale()
         title = self._title_var.get().strip() or None
         bdf_name = os.path.basename(self._bdf_path) if self._bdf_path else None
 
@@ -964,20 +1020,21 @@ REQUIREMENTS
         headers = ['Group', 'Mass', '% of Total']
         table = []
         for key in keys:
-            mass = group_mass[key]
-            pct = (mass / total_mass * 100.0) if total_mass > 0 else 0.0
+            mass = group_mass[key] * scale
+            pct = (group_mass[key] / total_mass * 100.0) if total_mass > 0 else 0.0
             display_name = self._get_display_name(key)
             label = display_name if display_name else key
             table.append([label, mass, pct])
 
-        total_row = ['TOTAL', total_mass, 100.0]
+        total_row = ['TOTAL', total_mass * scale, 100.0]
 
         gpwg_row = None
         if self._gpwg_mass is not None:
-            delta = self._gpwg_mass - total_mass
+            gpwg_scaled = self._gpwg_mass * scale
+            delta = gpwg_scaled - total_mass * scale
             sign = '+' if delta >= 0 else ''
-            gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.3f})",
-                        self._gpwg_mass, '']
+            gpwg_row = [f"GPWG Total (\u0394: {sign}{delta:.1f})",
+                        gpwg_scaled, '']
 
         export_data = {
             'headers': headers,
