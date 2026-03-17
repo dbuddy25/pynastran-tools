@@ -869,10 +869,8 @@ REQUIREMENTS
     def _get_group_type(self, key):
         """Return the type label for a group key (handles custom groups)."""
         if key in self._custom_groups:
-            types = {self._key_type(k) for k in self._custom_groups[key]}
-            if len(types) == 1:
-                return types.pop()
-            return 'Mixed'
+            types = sorted({self._key_type(k) for k in self._custom_groups[key]})
+            return ' / '.join(types)
         if key == 'Other':
             return ''
         return self._key_type(key)
