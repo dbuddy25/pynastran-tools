@@ -134,6 +134,105 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
     ws.freeze_panes = f'A{data_start}'
 
 
+# ---------------------------------------------------------- EID Range Dialog
+
+class EIDRangeDialog(ctk.CTkToplevel):
+    """Dialog for defining EID ranges to split mass elements into groups."""
+
+    def __init__(self, parent, existing_ranges, eid_info, on_apply):
+        super().__init__(parent)
+        self.title("Mass Element EID Ranges")
+        self.geometry("500x400")
+        self.transient(parent)
+        self.grab_set()
+
+        self._ranges = dict(existing_ranges)  # {name: (lo, hi)}
+        self._on_apply = on_apply
+
+        # Info label
+        ctk.CTkLabel(self, text=eid_info, text_color="gray").pack(
+            padx=10, pady=(10, 5))
+
+        # Input row
+        input_frame = ctk.CTkFrame(self, fg_color="transparent")
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ctk.CTkLabel(input_frame, text="Name:").pack(side=tk.LEFT)
+        self._name_var = tk.StringVar()
+        ctk.CTkEntry(input_frame, textvariable=self._name_var,
+                     width=140).pack(side=tk.LEFT, padx=(4, 10))
+
+        ctk.CTkLabel(input_frame, text="EID range:").pack(side=tk.LEFT)
+        self._lo_var = tk.StringVar()
+        ctk.CTkEntry(input_frame, textvariable=self._lo_var,
+                     width=70).pack(side=tk.LEFT, padx=(4, 0))
+        ctk.CTkLabel(input_frame, text="\u2013").pack(side=tk.LEFT, padx=2)
+        self._hi_var = tk.StringVar()
+        ctk.CTkEntry(input_frame, textvariable=self._hi_var,
+                     width=70).pack(side=tk.LEFT)
+
+        ctk.CTkButton(input_frame, text="Add", width=60,
+                      command=self._add_range).pack(side=tk.LEFT, padx=(10, 0))
+
+        # List of existing ranges
+        self._listbox = tk.Listbox(
+            self, bg="#2b2b2b", fg="#dce4ee", selectbackground="#1f6aa5",
+            font=("Consolas", 11), activestyle="none")
+        self._listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self._refresh_list()
+
+        # Bottom buttons
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        ctk.CTkButton(btn_frame, text="Delete Selected", width=120,
+                      command=self._delete_selected).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_frame, text="Apply", width=80,
+                      command=self._apply).pack(side=tk.RIGHT)
+        ctk.CTkButton(btn_frame, text="Cancel", width=80,
+                      command=self.destroy).pack(side=tk.RIGHT, padx=(0, 5))
+
+    def _refresh_list(self):
+        self._listbox.delete(0, tk.END)
+        for name, (lo, hi) in self._ranges.items():
+            self._listbox.insert(tk.END, f"{name}  [{lo}\u2013{hi}]")
+
+    def _add_range(self):
+        name = self._name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Name required", "Enter a group name.",
+                                   parent=self)
+            return
+        try:
+            lo = int(self._lo_var.get())
+            hi = int(self._hi_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid range",
+                                   "Enter integer EID values.",
+                                   parent=self)
+            return
+        if lo > hi:
+            lo, hi = hi, lo
+
+        self._ranges[name] = (lo, hi)
+        self._name_var.set('')
+        self._lo_var.set('')
+        self._hi_var.set('')
+        self._refresh_list()
+
+    def _delete_selected(self):
+        sel = self._listbox.curselection()
+        if not sel:
+            return
+        keys = list(self._ranges.keys())
+        del self._ranges[keys[sel[0]]]
+        self._refresh_list()
+
+    def _apply(self):
+        self._on_apply(self._ranges)
+        self.destroy()
+
+
 # ---------------------------------------------------------------- GUI module
 
 class MassBreakdownModule:
@@ -163,12 +262,18 @@ class MassBreakdownModule:
         # DMIG mass from M2GG case control
         self._dmig_mass = {}       # {"M2GG: MPART1 (x1.03)": float, ...}
 
+        # Per-EID mass for mass elements (for ID range grouping)
+        self._mass_elem_by_eid = {}  # {eid: float}
+
         # GPWG from OP2
         self._gpwg_mass = None     # total GPWG mass (float) or None
 
         # Custom group merges
         self._custom_groups = {}       # {name: set(keys)}
         self._show_ungrouped = True
+
+        # EID range groups for mass elements
+        self._eid_range_groups = {}    # {name: (start, end)}
 
         # Editable column names (name row)
         self._column_names = {}        # {key: display_name}
@@ -264,6 +369,13 @@ REQUIREMENTS
             command=self._manage_groups)
         self._manage_btn.pack(side=tk.LEFT, padx=(5, 0))
         self._manage_btn.configure(state=tk.DISABLED)
+
+        # EID Ranges button (for splitting mass elements)
+        self._eid_range_btn = ctk.CTkButton(
+            toolbar, text="EID Ranges\u2026", width=100,
+            command=self._manage_eid_ranges)
+        self._eid_range_btn.pack(side=tk.LEFT, padx=(5, 0))
+        self._eid_range_btn.configure(state=tk.DISABLED)
 
         # Separator
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
@@ -403,11 +515,13 @@ REQUIREMENTS
         return result
 
     @staticmethod
-    def _extract_model_mass(model, seid, mass_by_key, count_by_key, pid_names):
+    def _extract_model_mass(model, seid, mass_by_key, count_by_key,
+                            pid_names, mass_elem_by_eid):
         """Extract per-element mass from a single BDF model.
 
         Populates mass_by_key and count_by_key with string keys like
         "PID 5" (residual) or "SE10:PID 5" (superelement).
+        Also populates mass_elem_by_eid with per-EID mass for mass elements.
         """
         prefix = f"SE{seid}:" if seid else ""
 
@@ -458,6 +572,7 @@ REQUIREMENTS
 
             mass_by_key[key] = mass_by_key.get(key, 0.0) + m
             count_by_key[key] = count_by_key.get(key, 0) + 1
+            mass_elem_by_eid[eid] = m
 
     @staticmethod
     def _extract_dmig_mass(model):
@@ -567,7 +682,7 @@ REQUIREMENTS
 
             (mass_by_key, count_by_key, pid_names,
              has_se, mass_by_file, count_by_file, file_order,
-             dmig_mass) = result
+             dmig_mass, mass_elem_by_eid) = result
 
             self._bdf_path = path
             self._mass_by_key = mass_by_key
@@ -578,14 +693,17 @@ REQUIREMENTS
             self._count_by_file = count_by_file
             self._file_order = file_order
             self._dmig_mass = dmig_mass
+            self._mass_elem_by_eid = mass_elem_by_eid
             self._bdf_loaded = True
 
             self._manage_btn.configure(state=tk.NORMAL)
+            self._eid_range_btn.configure(state=tk.NORMAL)
 
-            # Reset custom groups
+            # Reset custom groups and EID ranges
             self._custom_groups = {}
             self._show_ungrouped = True
             self._column_names = {}
+            self._eid_range_groups = {}
 
             n_groups = len(mass_by_key) + len(dmig_mass)
             total_mass = sum(mass_by_key.values()) + sum(dmig_mass.values())
@@ -605,7 +723,8 @@ REQUIREMENTS
         """Background worker — extract mass data from BDF.
 
         Returns (mass_by_key, count_by_key, pid_names, has_superelements,
-                 mass_by_file, count_by_file, file_order, dmig_mass).
+                 mass_by_file, count_by_file, file_order, dmig_mass,
+                 mass_elem_by_eid).
         """
         from bdf_utils import IncludeFileParser, make_model
 
@@ -615,12 +734,14 @@ REQUIREMENTS
         mass_by_key = {}
         count_by_key = {}
         pid_names = {}
+        mass_elem_by_eid = {}
 
         # Residual structure
         self._extract_model_mass(model, seid=0,
                                  mass_by_key=mass_by_key,
                                  count_by_key=count_by_key,
-                                 pid_names=pid_names)
+                                 pid_names=pid_names,
+                                 mass_elem_by_eid=mass_elem_by_eid)
 
         # Superelements
         has_se = False
@@ -635,7 +756,8 @@ REQUIREMENTS
             self._extract_model_mass(se_model, seid=seid,
                                      mass_by_key=mass_by_key,
                                      count_by_key=count_by_key,
-                                     pid_names=pid_names)
+                                     pid_names=pid_names,
+                                     mass_elem_by_eid=mass_elem_by_eid)
 
         # DMIG mass from M2GG case control
         dmig_mass = self._extract_dmig_mass(model)
@@ -646,6 +768,8 @@ REQUIREMENTS
         if wtmass != 1.0:
             for key in mass_by_key:
                 mass_by_key[key] *= wtmass
+            for eid in mass_elem_by_eid:
+                mass_elem_by_eid[eid] *= wtmass
 
         # Include file mapping (residual only)
         mass_by_file = {}
@@ -706,7 +830,8 @@ REQUIREMENTS
                 mass_by_file[key] *= wtmass
 
         return (mass_by_key, count_by_key, pid_names, has_se,
-                mass_by_file, count_by_file, file_order, dmig_mass)
+                mass_by_file, count_by_file, file_order, dmig_mass,
+                mass_elem_by_eid)
 
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
@@ -792,6 +917,28 @@ REQUIREMENTS
         else:
             raw_groups = dict(self._mass_by_key)
 
+        # Split "Mass Elements" by EID ranges (if any defined)
+        if self._eid_range_groups and self._mass_elem_by_eid:
+            claimed = set()
+            for range_name, (eid_lo, eid_hi) in self._eid_range_groups.items():
+                range_mass = 0.0
+                for eid, m in self._mass_elem_by_eid.items():
+                    if eid_lo <= eid <= eid_hi and eid not in claimed:
+                        range_mass += m
+                        claimed.add(eid)
+                if range_mass > 0:
+                    raw_groups[range_name] = range_mass
+
+            # Subtract claimed mass from "Mass Elements" bucket
+            claimed_total = sum(self._mass_elem_by_eid[e]
+                                for e in claimed
+                                if e in self._mass_elem_by_eid)
+            me_key = 'Mass Elements'
+            if me_key in raw_groups:
+                raw_groups[me_key] -= claimed_total
+                if raw_groups[me_key] < 1e-20:
+                    del raw_groups[me_key]
+
         # Append DMIG mass groups (appear in both grouping modes)
         for label, mass in self._dmig_mass.items():
             raw_groups[label] = mass
@@ -871,6 +1018,8 @@ REQUIREMENTS
         if key in self._custom_groups:
             types = sorted({self._key_type(k) for k in self._custom_groups[key]})
             return ' / '.join(types)
+        if key in self._eid_range_groups:
+            return 'Residual'
         if key == 'Other':
             return ''
         return self._key_type(key)
@@ -1046,6 +1195,34 @@ REQUIREMENTS
         """Callback from ManageGroupsDialog."""
         self._custom_groups = {k: set(v) for k, v in groups.items()}
         self._show_ungrouped = show_ungrouped
+        self._refresh_table()
+
+    # ---------------------------------------------------------- EID ranges
+    def _manage_eid_ranges(self):
+        """Open dialog to define EID ranges for mass element grouping."""
+        if not self._bdf_loaded:
+            messagebox.showinfo("No Data", "Load a BDF file first.")
+            return
+
+        n_mass = len(self._mass_elem_by_eid)
+        if n_mass == 0:
+            messagebox.showinfo("No Mass Elements",
+                                "This model has no mass elements to split.")
+            return
+
+        eids = sorted(self._mass_elem_by_eid.keys())
+        eid_min, eid_max = eids[0], eids[-1]
+
+        EIDRangeDialog(
+            self.frame.winfo_toplevel(),
+            existing_ranges=dict(self._eid_range_groups),
+            eid_info=f"{n_mass} mass elements (EID {eid_min}\u2013{eid_max})",
+            on_apply=self._on_eid_ranges_applied,
+        )
+
+    def _on_eid_ranges_applied(self, ranges):
+        """Callback from EIDRangeDialog."""
+        self._eid_range_groups = dict(ranges)
         self._refresh_table()
 
     # ------------------------------------------------------------ export
