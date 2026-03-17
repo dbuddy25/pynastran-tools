@@ -413,8 +413,10 @@ REQUIREMENTS
         """Extract mass from DMIG matrices referenced by M2GG case control.
 
         Parses M2GG entries from the case control deck, retrieves each
-        referenced DMIG matrix, and sums diagonal translational DOF entries
-        (components 1,2,3) to compute per-matrix mass.
+        referenced DMIG matrix, and computes total mass via rigid body
+        translation: m = {1}^T [M_dd] {1} for each translational direction,
+        then averages across directions. This correctly handles condensed
+        superelement mass matrices with off-diagonal coupling terms.
 
         Returns dict {display_label: mass} for each M2GG term, e.g.
         {"MPART1 (x1.03)": 45.23, "MPART2 (x1.06)": 38.71}.
@@ -462,21 +464,24 @@ REQUIREMENTS
             except Exception:
                 continue
 
-            # Sum diagonal entries at translational DOFs (1, 2, 3)
-            dof_mass = 0.0
-            n_trans_dofs = 0
-            for row_idx, gc_pair in rows.items():
-                grid, comp = gc_pair
-                if comp in (1, 2, 3):
-                    dof_mass += matrix[row_idx, row_idx]
-                    n_trans_dofs += 1
+            # Compute total mass via rigid body translation:
+            # For each translational DOF direction d, collect all row/col
+            # indices with that component, extract the submatrix, and sum
+            # all entries: m_d = {1}^T [M_dd] {1}
+            dir_masses = []
+            for comp in (1, 2, 3):
+                indices = [idx for idx, (g, c) in rows.items() if c == comp]
+                if not indices:
+                    continue
+                ix = np.array(indices)
+                sub = matrix[np.ix_(ix, ix)]
+                dir_masses.append(float(sub.sum()))
 
-            # Each node contributes mass on 3 translational DOFs;
-            # divide by 3 to get physical mass
-            if n_trans_dofs > 0:
-                node_mass = dof_mass / 3.0
-            else:
+            if not dir_masses:
                 continue
+
+            # Average across available directions (should be nearly equal)
+            node_mass = sum(dir_masses) / len(dir_masses)
 
             scaled_mass = scale * node_mass
             if abs(scaled_mass) < 1e-20:

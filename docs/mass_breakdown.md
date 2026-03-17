@@ -108,8 +108,8 @@ SUBCASE 1
 The tool:
 1. Parses each `scale * matrix_name` term from M2GG
 2. Retrieves the DMIG matrix from the BDF
-3. Sums diagonal entries at translational DOFs (components 1, 2, 3)
-4. Divides by 3 (each node's mass appears on all 3 translational DOFs)
+3. For each translational direction (X, Y, Z), extracts the DOF submatrix and computes total mass via rigid body translation: `m = {1}^T [M] {1}` — this correctly accounts for off-diagonal coupling in condensed SE mass matrices
+4. Averages the three directional masses (should be nearly identical)
 5. Applies the scale factor
 
 Each matrix appears as its own group:
