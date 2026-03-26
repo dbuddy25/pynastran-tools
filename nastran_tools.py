@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(_root, 'postprocessing'))
 
 from mass_scale import MassScaleTool
 from renumber_includes import RenumberIncludesTool
+from thermal_cte import ThermalCteTool
 
 # MeffModule depends on numpy/scipy — lazy import with fallback
 _meff_available = True
@@ -99,6 +100,7 @@ class Sidebar(ctk.CTkFrame):
         self._add_section("Pre-Processing")
         self._add_tool("mass_scale", "Mass Scale")
         self._add_tool("renumber", "Renumber")
+        self._add_tool("thermal_cte", "Thermal CTE")
 
         # Post-Processing section
         self._add_section("Post-Processing")
@@ -175,6 +177,7 @@ class NastranToolsApp(ctk.CTk):
 
         self._tools['mass_scale'] = MassScaleTool(self._content)
         self._tools['renumber'] = RenumberIncludesTool(self._content)
+        self._tools['thermal_cte'] = ThermalCteTool(self._content)
 
         if _meff_available:
             meff = MeffModule(self._content)
