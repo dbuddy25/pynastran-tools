@@ -123,8 +123,8 @@ def _show_equation_popup(parent, values=None):
         # Result
         ax.text(
             0.5, 0.13,
-            r'$Y_{RMS} = %.6g \;\mathrm{%s}$'
-            r'$\qquad 5\sigma = %.6g \;\mathrm{%s}$'
+            r'$Y_{RMS} = %.2e \;\mathrm{%s}$'
+            r'$\qquad 5\sigma = %.2e \;\mathrm{%s}$'
             % (y_rms, unit_label, 5.0 * y_rms, unit_label),
             fontsize=14, color='black',
             ha='center', va='center',
