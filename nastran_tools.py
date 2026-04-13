@@ -25,6 +25,7 @@ if not hasattr(np, 'in1d'):
 _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_root, 'preprocessing'))
 sys.path.insert(0, os.path.join(_root, 'postprocessing'))
+sys.path.insert(0, os.path.join(_root, 'calculators'))
 
 from mass_scale import MassScaleTool
 from renumber_includes import RenumberIncludesTool
@@ -57,6 +58,8 @@ try:
     from modules.mass_breakdown import MassBreakdownModule
 except Exception:
     _mass_breakdown_available = False
+
+from miles_equation import MilesEquationTool
 
 
 __version__ = "0.1.4"
@@ -108,6 +111,10 @@ class Sidebar(ctk.CTkFrame):
         self._add_tool("energy", "ESE Breakdown")
         self._add_tool("cbush", "CBUSH Forces")
         self._add_tool("mass_breakdown", "Mass Breakdown")
+
+        # Hand Calcs section
+        self._add_section("Hand Calcs")
+        self._add_tool("miles", "Miles Eq — RMS Disp")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -202,6 +209,8 @@ class NastranToolsApp(ctk.CTk):
             self._tools['mass_breakdown'] = mass_bd.frame
         else:
             self._sidebar.disable_tool("mass_breakdown")
+
+        self._tools['miles'] = MilesEquationTool(self._content)
 
         self._active_tool = None
 
