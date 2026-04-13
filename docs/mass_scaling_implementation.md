@@ -4,7 +4,7 @@ GUI tool available standalone or in the unified app.
 
 ```
 pip install customtkinter tksheet
-python nastran_tools.py          # unified app (Pre-Processing > Mass Scale)
+python structures_tools.py          # unified app (Pre-Processing > Mass Scale)
 python preprocessing/mass_scale.py  # standalone
 ```
 

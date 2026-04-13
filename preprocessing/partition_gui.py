@@ -173,7 +173,7 @@ class PartitionTool(ctk.CTkFrame):
 
     def _show_guide(self):
         try:
-            from nastran_tools import show_guide
+            from structures_tools import show_guide
         except ImportError:
             # Fallback: simple messagebox
             messagebox.showinfo("BDF Partitioner Guide", _GUIDE_TEXT)

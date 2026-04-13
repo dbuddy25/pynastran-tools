@@ -439,7 +439,7 @@ REQUIREMENTS
     # ---------------------------------------------------------- Guide
     def _show_guide(self):
         try:
-            from nastran_tools import show_guide
+            from structures_tools import show_guide
         except ImportError:
             return
         show_guide(self.frame.winfo_toplevel(), "Mass Breakdown Guide",

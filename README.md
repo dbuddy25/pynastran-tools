@@ -6,12 +6,12 @@ Python GUI and CLI tools for Nastran FEA model manipulation, built on [pyNastran
 
 ```bash
 pip install -r requirements.txt
-python nastran_tools.py
+python structures_tools.py
 ```
 
 ## Tools
 
-### Unified GUI (`nastran_tools.py`)
+### Unified GUI (`structures_tools.py`)
 
 Single-window application with sidebar navigation grouping all tools:
 
@@ -57,7 +57,7 @@ pip install -r requirements.txt
 ## Project Structure
 
 ```
-├── nastran_tools.py                # Unified GUI entry point (sidebar navigation)
+├── structures_tools.py                # Unified GUI entry point (sidebar navigation)
 ├── preprocessing/
 │   ├── __init__.py
 │   ├── bdf_utils.py                # Shared utilities (IncludeFileParser, CARD_ENTITY_MAP, make_model)

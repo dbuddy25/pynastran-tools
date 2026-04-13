@@ -31,7 +31,7 @@ pyinstaller --noconfirm --windowed --name "NastranTools" ^
     --hidden-import scipy.linalg ^
     --hidden-import numpy ^
     --collect-all customtkinter ^
-    nastran_tools.py
+    structures_tools.py
 ```
 
 ### What the flags do
@@ -73,7 +73,7 @@ pyinstaller --noconfirm --windowed --onefile --name "NastranTools" ^
     --hidden-import scipy.linalg ^
     --hidden-import numpy ^
     --collect-all customtkinter ^
-    nastran_tools.py
+    structures_tools.py
 ```
 
 ## Troubleshooting

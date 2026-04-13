@@ -25,7 +25,7 @@ A standalone Python GUI (CustomTkinter + tksheet) that:
 ## Usage
 
 ```
-python nastran_tools.py                  # unified app (Pre-Processing > Renumber)
+python structures_tools.py                  # unified app (Pre-Processing > Renumber)
 python preprocessing/renumber_includes.py  # standalone
 ```
 

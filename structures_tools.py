@@ -10,7 +10,7 @@ Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Mass Breakdown (BDF mass breakdown by group with GPWG validation)
 
 Usage:
-    python nastran_tools.py
+    python structures_tools.py
 """
 import os
 import sys
@@ -156,8 +156,8 @@ class Sidebar(ctk.CTkFrame):
             self._buttons[key].configure(state=tk.DISABLED)
 
 
-class NastranToolsApp(ctk.CTk):
-    """Unified Nastran tools application with sidebar navigation."""
+class StructuresToolsApp(ctk.CTk):
+    """Unified structural analysis tools application with sidebar navigation."""
 
     def __init__(self):
         super().__init__()
@@ -175,11 +175,11 @@ class NastranToolsApp(ctk.CTk):
         self._content = ctk.CTkFrame(self)
         self._content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        # Intro page
+        self._intro = self._build_intro()
+        self._intro.pack(fill=tk.BOTH, expand=True)
+
         # Create tool modules
-        # NOTE: Every tool should include a "?" guide button in its toolbar
-        # that calls show_guide() with tool-specific help text. See existing
-        # tools for the pattern (_GUIDE_TEXT class var + _show_guide method
-        # with lazy import to avoid circular dependency).
         self._tools = {}
 
         self._tools['mass_scale'] = MassScaleTool(self._content)
@@ -214,11 +214,53 @@ class NastranToolsApp(ctk.CTk):
 
         self._active_tool = None
 
-        # Show first tool by default
-        self._sidebar.set_active('mass_scale')
+    def _build_intro(self):
+        """Create the landing page shown on startup."""
+        frame = ctk.CTkFrame(self._content)
+
+        # Vertical centering spacer
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_rowconfigure(6, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame, text="Structures Tools",
+            font=ctk.CTkFont(size=28, weight="bold"),
+        ).grid(row=1, column=0, pady=(0, 4))
+
+        ctk.CTkLabel(
+            frame, text=f"v{__version__}",
+            font=ctk.CTkFont(size=14),
+            text_color="gray",
+        ).grid(row=2, column=0, pady=(0, 30))
+
+        categories = (
+            "Pre-Processing — Mass Scale, Renumber, Thermal CTE",
+            "Post-Processing — MEFFMASS, ESE Breakdown, CBUSH Forces, Mass Breakdown",
+            "Hand Calcs — Miles Equation",
+        )
+        for i, cat in enumerate(categories):
+            ctk.CTkLabel(
+                frame, text=cat,
+                font=ctk.CTkFont(size=13),
+            ).grid(row=3 + i, column=0, pady=2)
+
+        ctk.CTkLabel(
+            frame, text="Select a tool from the sidebar to get started.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray",
+        ).grid(row=3 + len(categories), column=0, pady=(20, 0))
+
+        return frame
 
     def _switch_tool(self, key):
         """Hide the current tool frame and show the selected one."""
+        # Hide intro page on first tool selection
+        if self._intro is not None:
+            self._intro.pack_forget()
+            self._intro.destroy()
+            self._intro = None
+
         if self._active_tool is not None:
             self._active_tool.pack_forget()
 
@@ -231,7 +273,7 @@ class NastranToolsApp(ctk.CTk):
 def main():
     import logging
     logging.getLogger("customtkinter").setLevel(logging.ERROR)
-    app = NastranToolsApp()
+    app = StructuresToolsApp()
     app.mainloop()
 
 

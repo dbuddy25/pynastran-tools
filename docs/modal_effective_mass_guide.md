@@ -50,7 +50,7 @@ Produces a single-sheet workbook titled "Effective Mass Fractions" with dark blu
 
 ## GUI usage
 
-The MEFF Viewer is available in the unified GUI (`python nastran_tools.py`, under Post-Processing) or as a standalone module. The toolbar provides:
+The MEFF Viewer is available in the unified GUI (`python structures_tools.py`, under Post-Processing) or as a standalone module. The toolbar provides:
 
 1. **Open OP2...** — load an OP2 file
 2. **Threshold** — highlight fraction cells at or above this value
@@ -74,4 +74,4 @@ If MEFFMASS data is missing from the OP2, the script prints an error with this i
 
 ## Source
 
-See `postprocessing/modal_effective_mass.py` (CLI) and `postprocessing/modules/meff.py` (GUI module + shared logic). The unified GUI is `nastran_tools.py`.
+See `postprocessing/modal_effective_mass.py` (CLI) and `postprocessing/modules/meff.py` (GUI module + shared logic). The unified GUI is `structures_tools.py`.

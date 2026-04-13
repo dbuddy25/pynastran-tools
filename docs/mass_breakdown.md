@@ -23,7 +23,7 @@ Python 3.9 or later.
 Launch from the unified GUI under Post-Processing:
 
 ```
-python nastran_tools.py
+python structures_tools.py
 ```
 
 Or run standalone:
@@ -198,4 +198,4 @@ Click **Export to Excel** to save a formatted .xlsx workbook with:
 
 ## Source
 
-See `postprocessing/modules/mass_breakdown.py` (GUI module). The unified GUI is `nastran_tools.py`.
+See `postprocessing/modules/mass_breakdown.py` (GUI module). The unified GUI is `structures_tools.py`.

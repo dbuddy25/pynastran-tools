@@ -1765,7 +1765,7 @@ OPTIONS
     def _show_guide(self):
         """Open the guide dialog (lazy import to avoid circular dependency)."""
         try:
-            from nastran_tools import show_guide
+            from structures_tools import show_guide
         except ImportError:
             return
         show_guide(self.winfo_toplevel(), "Renumber Includes Guide",

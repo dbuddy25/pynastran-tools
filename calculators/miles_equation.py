@@ -412,7 +412,7 @@ class MilesEquationTool(ctk.CTkFrame):
 
     def _show_guide(self):
         try:
-            from nastran_tools import show_guide
+            from structures_tools import show_guide
         except ImportError:
             from tkinter import messagebox
             messagebox.showinfo("Guide", _GUIDE_TEXT,

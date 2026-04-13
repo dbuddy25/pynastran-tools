@@ -269,7 +269,7 @@ NOTES
 
     def _show_guide(self):
         try:
-            from nastran_tools import show_guide
+            from structures_tools import show_guide
         except ImportError:
             return
         show_guide(self.winfo_toplevel(), "Thermal CTE Guide", self._GUIDE_TEXT)
