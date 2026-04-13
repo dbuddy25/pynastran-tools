@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nastran Tools — unified GUI application.
+"""Structures Tools — unified GUI application.
 
 Sidebar-navigated host for Pre-Processing and Post-Processing tools:
   - Mass Scale (BDF mass scaling by include file)
@@ -62,7 +62,7 @@ except Exception:
 from miles_equation import MilesEquationTool
 
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 
 
 def show_guide(parent, title, text):
@@ -95,7 +95,7 @@ class Sidebar(ctk.CTkFrame):
 
         # App title
         ctk.CTkLabel(
-            self, text="Nastran Tools",
+            self, text="Structures Tools",
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(padx=12, pady=(16, 12))
 
@@ -161,7 +161,7 @@ class NastranToolsApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title(f"Nastran Tools v{__version__}")
+        self.title(f"Structures Tools v{__version__}")
         self.geometry("1400x800")
         self.minsize(1000, 600)
 
