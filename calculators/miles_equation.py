@@ -51,7 +51,7 @@ INPUTS
 
 OUTPUTS
   Y_rms       RMS displacement (in selected units)
-  3σ Disp     Peak displacement = 3 × Y_rms
+  5σ Disp     Peak displacement = 5 × Y_rms
 
 DAMPING INPUT
   Enter either Q (transmissibility) or ζ (critical damping ratio).
@@ -61,10 +61,112 @@ DAMPING INPUT
 NOTES
   • Miles' Equation assumes a flat (white noise) input spectrum.
     For shaped spectra it may underpredict the response.
-  • The 3σ displacement is conservative for design purposes.
+  • The 5σ displacement is conservative for design purposes.
   • This form of the equation converts ASD from G²/Hz to
     (length/s²)²/Hz internally using the gravity constant.
 """
+
+
+def _show_equation_popup(parent, values=None):
+    """Show the Miles displacement equation rendered with matplotlib.
+
+    If *values* is provided (dict with fn, Q, asd, g, unit_label, y_rms),
+    the popup shows the general equation plus the substituted calculation.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    has_values = values is not None
+
+    win = tk.Toplevel(parent)
+    win.title("Miles' Equation — RMS Displacement")
+    win.resizable(False, False)
+    win.transient(parent)
+
+    height = 4.0 if has_values else 2.2
+    fig, ax = plt.subplots(figsize=(7, height), dpi=120)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+    ax.axis('off')
+
+    if has_values:
+        # General equation at top
+        ax.text(
+            0.5, 0.82,
+            r'$Y_{RMS} = \sqrt{\dfrac{Q \;\cdot\; ASD \;\cdot\; g^{\,2}}'
+            r'{32\,\pi^{3}\, f_n^{\,3}}}$',
+            fontsize=20, color='black',
+            ha='center', va='center',
+            transform=ax.transAxes,
+        )
+
+        # Substituted values
+        fn = values['fn']
+        Q = values['Q']
+        asd = values['asd']
+        g = values['g']
+        y_rms = values['y_rms']
+        unit_label = values['unit_label']
+
+        ax.text(
+            0.5, 0.45,
+            r'$= \sqrt{\dfrac{%.2f \;\times\; %.4g \;\times\; %.4g^{\,2}}'
+            r'{32\,\pi^{3} \times\; %.4g^{\,3}}}$'
+            % (Q, asd, g, fn),
+            fontsize=18, color='black',
+            ha='center', va='center',
+            transform=ax.transAxes,
+        )
+
+        # Result
+        ax.text(
+            0.5, 0.13,
+            r'$Y_{RMS} = %.6g \;\mathrm{%s}$'
+            r'$\qquad 5\sigma = %.6g \;\mathrm{%s}$'
+            % (y_rms, unit_label, 5.0 * y_rms, unit_label),
+            fontsize=14, color='black',
+            ha='center', va='center',
+            transform=ax.transAxes,
+        )
+    else:
+        # Static equation only
+        ax.text(
+            0.5, 0.55,
+            r'$Y_{RMS} = \sqrt{\dfrac{Q \;\cdot\; ASD \;\cdot\; g^{\,2}}'
+            r'{32\,\pi^{3}\, f_n^{\,3}}}$',
+            fontsize=22, color='black',
+            ha='center', va='center',
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.5, 0.08,
+            r'$ASD$ in $\mathrm{G}^2/\mathrm{Hz}$'
+            r'$\qquad g = 386.1\;\mathrm{in/s}^2$  or'
+            r'  $9.807\;\mathrm{m/s}^2$',
+            fontsize=10, color='gray',
+            ha='center', va='center',
+            transform=ax.transAxes,
+        )
+
+    fig.tight_layout(pad=0.3)
+
+    canvas = FigureCanvasTkAgg(fig, master=win)
+    canvas.draw()
+    canvas.get_tk_widget().pack()
+
+    tk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 8))
+
+    # Center on parent
+    win.update_idletasks()
+    pw = parent.winfo_width()
+    ph = parent.winfo_height()
+    px = parent.winfo_rootx()
+    py = parent.winfo_rooty()
+    ww = win.winfo_width()
+    wh = win.winfo_height()
+    win.geometry(f'+{px + (pw - ww) // 2}+{py + (ph - wh) // 2}')
 
 
 class MilesEquationTool(ctk.CTkFrame):
@@ -72,6 +174,7 @@ class MilesEquationTool(ctk.CTkFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._last_values = None  # populated after a successful calculation
         self._build_ui()
 
     def _build_ui(self):
@@ -97,6 +200,11 @@ class MilesEquationTool(ctk.CTkFrame):
         ctk.CTkButton(
             toolbar, text="Calculate", width=100,
             command=self._calculate,
+        ).pack(side=tk.RIGHT, padx=(0, 5))
+
+        ctk.CTkButton(
+            toolbar, text="Show Equation", width=120,
+            command=self._show_equation,
         ).pack(side=tk.RIGHT, padx=(0, 5))
 
         # Main content
@@ -187,7 +295,7 @@ class MilesEquationTool(ctk.CTkFrame):
         self._result_labels = {}
         result_defs = [
             ("Y_rms",    "Y_rms:"),
-            ("3sigma_Y", "3\u03c3 Disp:"),
+            ("5sigma_Y", "5\u03c3 Disp:"),
             ("Q_out",    "Q:"),
             ("zeta_out", "\u03b6:"),
         ]
@@ -207,16 +315,6 @@ class MilesEquationTool(ctk.CTkFrame):
         # Bottom padding
         ctk.CTkLabel(results_frame, text="").grid(
             row=3, column=0, pady=(0, 6))
-
-        # Equation display
-        eq_frame = ctk.CTkFrame(body)
-        eq_frame.pack(fill=tk.X)
-        ctk.CTkLabel(
-            eq_frame,
-            text="Y_rms = \u221a( Q \u00b7 ASD \u00b7 g\u00b2 / (32\u03c0\u00b3 \u00b7 fn\u00b3) )",
-            font=ctk.CTkFont(family="Courier", size=14),
-            text_color="gray",
-        ).pack(padx=10, pady=10)
 
         # Focus first field
         fn_entry.focus_set()
@@ -280,17 +378,27 @@ class MilesEquationTool(ctk.CTkFrame):
         numerator = Q * asd * g ** 2
         denominator = 32.0 * math.pi ** 3 * fn ** 3
         y_rms = math.sqrt(numerator / denominator)
-        three_sigma_y = 3.0 * y_rms
+        five_sigma_y = 5.0 * y_rms
+
+        # Store for equation popup
+        self._last_values = {
+            'fn': fn, 'Q': Q, 'asd': asd,
+            'g': g, 'unit_label': unit_label, 'y_rms': y_rms,
+        }
 
         # Update results
         self._result_labels["Y_rms"].configure(
             text=f"{y_rms:.6g} {unit_label}")
-        self._result_labels["3sigma_Y"].configure(
-            text=f"{three_sigma_y:.6g} {unit_label}")
+        self._result_labels["5sigma_Y"].configure(
+            text=f"{five_sigma_y:.6g} {unit_label}")
         self._result_labels["Q_out"].configure(text=f"{Q:.2f}")
         self._result_labels["zeta_out"].configure(text=f"{zeta:.4f}")
 
+    def _show_equation(self):
+        _show_equation_popup(self.winfo_toplevel(), self._last_values)
+
     def _clear(self):
+        self._last_values = None
         for var in (self._fn_var, self._asd_var, self._q_var,
                     self._zeta_var):
             var.set("")
