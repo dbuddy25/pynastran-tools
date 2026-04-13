@@ -112,7 +112,7 @@ def _show_equation_popup(parent, values=None):
 
         ax.text(
             0.5, 0.45,
-            r'$= \sqrt{\dfrac{%.2f \;\times\; %.4g \;\times\; %.4g^{\,2}}'
+            r'$= \sqrt{\dfrac{%.4g \;\times\; %.4g \;\times\; %.4g^{\,2}}'
             r'{32\,\pi^{3} \times\; %.4g^{\,3}}}$'
             % (Q, asd, g, fn),
             fontsize=18, color='black',
