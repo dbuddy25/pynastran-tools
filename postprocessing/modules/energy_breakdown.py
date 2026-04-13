@@ -4,6 +4,8 @@ Reads element strain energy (ESE%) from an OP2 file and displays
 per-mode percentages grouped by include file or property ID.
 """
 import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -32,14 +34,14 @@ def make_energy_styles():
         'bold_font': Font(bold=True),
         'red_font': Font(color="FF0000"),
         'bold_red_font': Font(bold=True, color="FF0000"),
-        'num1': '0.0',
-        'num2': '0.00',
+        'num1': '0',
+        'num2': '0',
     }
 
 
 def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
                        title=None):
-    """Write an energy breakdown sheet to an openpyxl worksheet.
+    """Write an energy breakdown sheet to an openpyxl worksheet starting at B2.
 
     data keys:
       'headers'     — main header labels (group names or PID labels)
@@ -54,35 +56,37 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
     table = data['table']
     total_cols = len(headers)
 
-    cur_row = 0
+    # Content starts at B2 (row 2, column 2)
+    r0, c0 = 1, 1
+    cur_row = r0
 
-    # Row 1: custom title (only when title provided)
+    # Custom title row (only when title provided)
     if title:
         cur_row += 1
-        cell = ws.cell(row=cur_row, column=1, value=title)
+        cell = ws.cell(row=cur_row, column=1 + c0, value=title)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
         cell.alignment = s['center']
-        ws.merge_cells(start_row=cur_row, start_column=1,
-                       end_row=cur_row, end_column=total_cols)
-        for ci in range(2, total_cols + 1):
+        ws.merge_cells(start_row=cur_row, start_column=1 + c0,
+                       end_row=cur_row, end_column=total_cols + c0)
+        for ci in range(2 + c0, total_cols + 1 + c0):
             ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
     # OP2 filename row
     cur_row += 1
     name_text = op2_name if op2_name else ""
-    cell = ws.cell(row=cur_row, column=1, value=name_text)
+    cell = ws.cell(row=cur_row, column=1 + c0, value=name_text)
     cell.font = s['white_bold']
     cell.fill = s['dark_fill']
     cell.alignment = s['center']
-    ws.merge_cells(start_row=cur_row, start_column=1,
-                   end_row=cur_row, end_column=total_cols)
-    for ci in range(2, total_cols + 1):
+    ws.merge_cells(start_row=cur_row, start_column=1 + c0,
+                   end_row=cur_row, end_column=total_cols + c0)
+    for ci in range(2 + c0, total_cols + 1 + c0):
         ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
 
     # Main headers row (group names)
     cur_row += 1
-    for ci, h in enumerate(headers, 1):
+    for ci, h in enumerate(headers, 1 + c0):
         cell = ws.cell(row=cur_row, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
@@ -93,7 +97,7 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
     if sub_headers:
         cur_row += 1
         sub_header_row = cur_row
-        for ci, h in enumerate(sub_headers, 1):
+        for ci, h in enumerate(sub_headers, 1 + c0):
             cell = ws.cell(row=cur_row, column=ci, value=h)
             cell.font = s['sub_font']
             cell.fill = s['mid_fill']
@@ -105,7 +109,7 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
     for i, row_data in enumerate(table):
         row = i + data_start
         for ci, val in enumerate(row_data):
-            cell = ws.cell(row=row, column=ci + 1, value=val)
+            cell = ws.cell(row=row, column=ci + 1 + c0, value=val)
             cell.alignment = s['center']
             if ci == 0:
                 pass  # Mode number
@@ -123,14 +127,63 @@ def write_energy_sheet(ws, data, styles, op2_name=None, threshold=5.0,
                         cell.font = s['bold_red_font'] if val >= threshold else s['red_font']
             cell.border = s['cell_border']
 
-    # Equal column widths
+    # Column widths
     col_width = 14
-    ws.column_dimensions['A'].width = 7
-    ws.column_dimensions['B'].width = 12
-    for ci in range(3, total_cols + 1):
+    ws.column_dimensions['A'].width = 2
+    ws.column_dimensions['B'].width = 7
+    ws.column_dimensions['C'].width = 12
+    for ci in range(3 + c0, total_cols + 1 + c0):
         ws.column_dimensions[get_column_letter(ci)].width = col_width
 
-    ws.freeze_panes = f'A{data_start}'
+    ws.freeze_panes = f'B{data_start}'
+    ws.sheet_view.showGridLines = False
+
+
+# ---------------------------------------------------------- post-export dialog
+
+def _open_path(path):
+    """Open a file or directory with the platform default handler."""
+    if sys.platform == 'darwin':
+        subprocess.Popen(['open', path])
+    elif sys.platform == 'win32':
+        os.startfile(path)
+    else:
+        subprocess.Popen(['xdg-open', path])
+
+
+class _ExportDoneDialog(tk.Toplevel):
+    """Modal dialog shown after a successful Excel export."""
+
+    def __init__(self, parent, message, file_path):
+        super().__init__(parent)
+        self.title("Exported")
+        self.resizable(False, False)
+        self._file_path = file_path
+
+        tk.Label(self, text=message, justify='left').pack(
+            padx=16, pady=(16, 8))
+
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(pady=(0, 16))
+
+        tk.Button(btn_frame, text="Open File",
+                  command=self._open_file).pack(side='left', padx=4)
+        tk.Button(btn_frame, text="Open Folder",
+                  command=self._open_folder).pack(side='left', padx=4)
+        tk.Button(btn_frame, text="Close",
+                  command=self.destroy).pack(side='left', padx=4)
+
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _open_file(self):
+        _open_path(self._file_path)
+        self.destroy()
+
+    def _open_folder(self):
+        _open_path(os.path.dirname(self._file_path))
+        self.destroy()
 
 
 # --------------------------------------------------------- Manage Groups Dialog
@@ -531,7 +584,7 @@ REQUIREMENTS
             side=tk.LEFT, padx=6)
 
         # Title field
-        ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkLabel(toolbar, text="Assembly or Part Name:").pack(side=tk.LEFT, padx=(0, 2))
         ctk.CTkEntry(toolbar, textvariable=self._title_var, width=160).pack(
             side=tk.LEFT, padx=(0, 4))
 
@@ -1203,7 +1256,8 @@ REQUIREMENTS
         labels, group_data = self._aggregate_by_group()
         nmodes = len(self._modes)
         threshold = self._get_threshold()
-        title = self._title_var.get().strip() or None
+        raw_title = self._title_var.get().strip()
+        title = (raw_title + " %ESE Summary") if raw_title else None
         op2_name = os.path.basename(self._op2_path) if self._op2_path else None
 
         # Build export headers — names row + PIDs/filenames row (hideable)
@@ -1246,7 +1300,9 @@ REQUIREMENTS
 
         try:
             wb.save(path)
-            messagebox.showinfo("Exported", f"Saved to:\n{path}")
+            _ExportDoneDialog(
+                self.frame.winfo_toplevel(),
+                f"Saved to:\n{path}", path)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
 

@@ -4,6 +4,8 @@ Reads EFMFACS from an OP2 and displays per-mode fractions with
 cumulative sums for each direction (Tx-Rz).
 """
 import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -46,20 +48,20 @@ def make_meff_styles():
         'cell_border': Border(bottom=Side(style='thin', color="B4C6E7")),
         'bold_font': Font(bold=True),
         'num2': '0.00',
-        'num1': '0.0',
+        'num1': '0',
     }
 
 
 def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1,
                             title=None):
-    """Write a single-file MEFFMASS fraction sheet.
+    """Write a single-file MEFFMASS fraction sheet starting at cell B2.
 
     When title is provided:
-      Row 1 = custom title, Row 2 = OP2 filename, Row 3 = direction headers,
-      Row 4 = sub-headers, Row 5+ = data.
+      Row 2 = custom title, Row 3 = OP2 filename, Row 4 = direction headers,
+      Row 5 = sub-headers, Row 6+ = data.
     When title is None:
-      Row 1 = OP2 filename, Row 2 = direction headers, Row 3 = sub-headers,
-      Row 4+ = data.
+      Row 2 = OP2 filename, Row 3 = direction headers, Row 4 = sub-headers,
+      Row 5+ = data.
     """
     from openpyxl.utils import get_column_letter
 
@@ -72,37 +74,39 @@ def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1,
         sub.extend(['Frac', 'Sum'])
     total_cols = len(sub)
 
+    # Content starts at B2 (row 2, column 2)
+    r0, c0 = 1, 1
     row_offset = 1 if title else 0
 
     # Row 1: custom title (only when title provided)
     if title:
-        cell = ws.cell(row=1, column=1, value=title)
+        cell = ws.cell(row=1 + r0, column=1 + c0, value=title)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
         cell.alignment = s['center']
-        ws.merge_cells(start_row=1, start_column=1,
-                       end_row=1, end_column=total_cols)
-        for ci in range(2, total_cols + 1):
-            ws.cell(row=1, column=ci).fill = s['dark_fill']
+        ws.merge_cells(start_row=1 + r0, start_column=1 + c0,
+                       end_row=1 + r0, end_column=total_cols + c0)
+        for ci in range(2 + c0, total_cols + 1 + c0):
+            ws.cell(row=1 + r0, column=ci).fill = s['dark_fill']
 
     # OP2 filename row
-    name_row = 1 + row_offset
+    name_row = 1 + row_offset + r0
     name_text = op2_name if op2_name else ""
-    cell = ws.cell(row=name_row, column=1, value=name_text)
+    cell = ws.cell(row=name_row, column=1 + c0, value=name_text)
     cell.font = s['white_bold']
     cell.fill = s['dark_fill']
     cell.alignment = s['center']
-    ws.merge_cells(start_row=name_row, start_column=1,
-                   end_row=name_row, end_column=total_cols)
-    for ci in range(2, total_cols + 1):
+    ws.merge_cells(start_row=name_row, start_column=1 + c0,
+                   end_row=name_row, end_column=total_cols + c0)
+    for ci in range(2 + c0, total_cols + 1 + c0):
         ws.cell(row=name_row, column=ci).fill = s['dark_fill']
 
     # Direction group headers row
-    dir_row = 2 + row_offset
-    ws.cell(row=dir_row, column=1, value="").fill = s['dark_fill']
-    ws.cell(row=dir_row, column=2, value="").fill = s['dark_fill']
+    dir_row = 2 + row_offset + r0
+    ws.cell(row=dir_row, column=1 + c0, value="").fill = s['dark_fill']
+    ws.cell(row=dir_row, column=2 + c0, value="").fill = s['dark_fill']
     for idx, d in enumerate(DIRECTIONS):
-        c1, c2 = 3 + idx * 2, 4 + idx * 2
+        c1, c2 = 3 + idx * 2 + c0, 4 + idx * 2 + c0
         cell = ws.cell(row=dir_row, column=c1, value=d)
         cell.font = s['white_bold']
         cell.fill = s['dark_fill']
@@ -112,40 +116,89 @@ def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1,
         ws.cell(row=dir_row, column=c2).fill = s['dark_fill']
 
     # Sub-headers row
-    sub_row = 3 + row_offset
-    for ci, h in enumerate(sub, 1):
+    sub_row = 3 + row_offset + r0
+    for ci, h in enumerate(sub, 1 + c0):
         cell = ws.cell(row=sub_row, column=ci, value=h)
         cell.font = s['sub_font']
         cell.fill = s['mid_fill']
         cell.alignment = s['center']
 
     # Data rows
-    data_start = 4 + row_offset
+    data_start = 4 + row_offset + r0
     for i in range(len(modes)):
         row = i + data_start
-        ws.cell(row=row, column=1, value=int(modes[i])).alignment = s['center']
-        c = ws.cell(row=row, column=2, value=float(freqs[i]))
+        ws.cell(row=row, column=1 + c0, value=int(modes[i])).alignment = s['center']
+        c = ws.cell(row=row, column=2 + c0, value=float(freqs[i]))
         c.number_format = s['num1']
         c.alignment = s['center']
         for j in range(6):
-            fc = ws.cell(row=row, column=3 + j * 2, value=float(frac[i, j]))
+            fc = ws.cell(row=row, column=3 + j * 2 + c0, value=float(frac[i, j]))
             fc.number_format = s['num2']
             fc.alignment = s['center']
             if frac[i, j] >= threshold:
                 fc.font = s['bold_font']
-            sc = ws.cell(row=row, column=4 + j * 2, value=float(cumsum[i, j]))
+            sc = ws.cell(row=row, column=4 + j * 2 + c0, value=float(cumsum[i, j]))
             sc.number_format = s['num2']
             sc.alignment = s['center']
-        for ci in range(1, total_cols + 1):
+        for ci in range(1 + c0, total_cols + 1 + c0):
             ws.cell(row=row, column=ci).border = s['cell_border']
 
     # Column widths
-    ws.column_dimensions['A'].width = 7
-    ws.column_dimensions['B'].width = 12
-    for ci in range(3, total_cols + 1):
+    ws.column_dimensions['A'].width = 2
+    ws.column_dimensions['B'].width = 7
+    ws.column_dimensions['C'].width = 12
+    for ci in range(3 + c0, total_cols + 1 + c0):
         ws.column_dimensions[get_column_letter(ci)].width = 9
     freeze_row = data_start
-    ws.freeze_panes = f'A{freeze_row}'
+    ws.freeze_panes = f'B{freeze_row}'
+    ws.sheet_view.showGridLines = False
+
+
+# ---------------------------------------------------------- post-export dialog
+
+def _open_path(path):
+    """Open a file or directory with the platform default handler."""
+    if sys.platform == 'darwin':
+        subprocess.Popen(['open', path])
+    elif sys.platform == 'win32':
+        os.startfile(path)
+    else:
+        subprocess.Popen(['xdg-open', path])
+
+
+class _ExportDoneDialog(tk.Toplevel):
+    """Modal dialog shown after a successful Excel export."""
+
+    def __init__(self, parent, message, file_path):
+        super().__init__(parent)
+        self.title("Exported")
+        self.resizable(False, False)
+        self._file_path = file_path
+
+        tk.Label(self, text=message, justify='left').pack(
+            padx=16, pady=(16, 8))
+
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(pady=(0, 16))
+
+        tk.Button(btn_frame, text="Open File",
+                  command=self._open_file).pack(side='left', padx=4)
+        tk.Button(btn_frame, text="Open Folder",
+                  command=self._open_folder).pack(side='left', padx=4)
+        tk.Button(btn_frame, text="Close",
+                  command=self.destroy).pack(side='left', padx=4)
+
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _open_file(self):
+        _open_path(self._file_path)
+        self.destroy()
+
+    def _open_folder(self):
+        _open_path(os.path.dirname(self._file_path))
+        self.destroy()
 
 
 # ---------------------------------------------------------------- GUI module
@@ -210,7 +263,7 @@ REQUIREMENTS
         self._op2_btn.pack(side=tk.LEFT)
 
         # Title field
-        ctk.CTkLabel(toolbar, text="Title:").pack(side=tk.LEFT, padx=(10, 2))
+        ctk.CTkLabel(toolbar, text="Assembly or Part Name:").pack(side=tk.LEFT, padx=(10, 2))
         ctk.CTkEntry(toolbar, textvariable=self._title_var, width=200).pack(
             side=tk.LEFT, padx=(0, 4))
 
@@ -441,7 +494,8 @@ REQUIREMENTS
 
         name_a = os.path.basename(self._op2_path) if self._op2_path else None
         threshold = self._get_threshold()
-        title = self._title_var.get().strip() or None
+        raw_title = self._title_var.get().strip()
+        title = (raw_title + " Modal Effective Mass Summary") if raw_title else None
 
         wb = Workbook()
         styles = make_meff_styles()
@@ -453,7 +507,9 @@ REQUIREMENTS
 
         try:
             wb.save(path)
-            messagebox.showinfo("Exported", f"Saved to:\n{path}")
+            _ExportDoneDialog(
+                self.frame.winfo_toplevel(),
+                f"Saved to:\n{path}", path)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
 
