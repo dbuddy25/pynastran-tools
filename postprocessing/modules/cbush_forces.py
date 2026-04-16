@@ -851,10 +851,10 @@ REQUIREMENTS
 
     def _build_bdf_mappings(self, bdf_path):
         """Build pid_names and eid_to_pid mappings from BDF."""
-        from bdf_utils import make_model
+        from bdf_utils import make_model, read_bdf_safe
 
         model = make_model()
-        model.read_bdf(bdf_path)
+        read_bdf_safe(model, bdf_path)
 
         # Extract comment names from property cards
         self._pid_names = {}

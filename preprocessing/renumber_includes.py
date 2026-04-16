@@ -29,12 +29,12 @@ from pyNastran.bdf.bdf import BDF
 try:
     from bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        RENUMBER_TYPES, make_model, extract_card_info,
+        RENUMBER_TYPES, make_model, extract_card_info, read_bdf_safe,
     )
 except ImportError:
     from preprocessing.bdf_utils import (
         IncludeFileParser, CARD_ENTITY_MAP, ENTITY_TYPES, ENTITY_LABELS,
-        RENUMBER_TYPES, make_model, extract_card_info,
+        RENUMBER_TYPES, make_model, extract_card_info, read_bdf_safe,
     )
 
 # Cards that pyNastran may not support — disable to avoid parse errors.
@@ -284,14 +284,14 @@ class Validator:
 
         try:
             model = BDF(mode='nx')
-            model.read_bdf(output_path)
+            read_bdf_safe(model, output_path)
         except Exception as exc:
             errors.append(f"Could not re-read output file: {exc}")
             return warnings, errors
 
         try:
             orig = BDF(mode='nx')
-            orig.read_bdf(original_path)
+            read_bdf_safe(orig, original_path)
         except Exception as exc:
             warnings.append(f"Could not re-read original for comparison: {exc}")
             return warnings, errors
@@ -2033,7 +2033,7 @@ OPTIONS
             # 2. Read model with pyNastran
             self._log_msg("Reading model with pyNastran\u2026")
             model = make_model(_CARDS_TO_SKIP)
-            model.read_bdf(self._bdf_path)
+            read_bdf_safe(model, self._bdf_path)
 
             # 3. Renumber cards
             self._log_msg("Renumbering cards\u2026")

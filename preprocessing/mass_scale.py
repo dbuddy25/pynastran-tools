@@ -23,10 +23,10 @@ if not hasattr(np, 'in1d'):
 from tksheet import Sheet
 
 try:
-    from bdf_utils import IncludeFileParser, make_model, extract_card_info
+    from bdf_utils import IncludeFileParser, make_model, extract_card_info, read_bdf_safe
 except ImportError:
     from preprocessing.bdf_utils import (
-        IncludeFileParser, make_model, extract_card_info,
+        IncludeFileParser, make_model, extract_card_info, read_bdf_safe,
     )
 
 GroupInfo = namedtuple('GroupInfo', [
@@ -440,7 +440,7 @@ with a table of all files, scales, and entity counts.\
 
         try:
             model = make_model(_CARDS_TO_SKIP)
-            model.read_bdf(path)
+            read_bdf_safe(model, path)
             model.cross_reference()
         except Exception:
             import traceback

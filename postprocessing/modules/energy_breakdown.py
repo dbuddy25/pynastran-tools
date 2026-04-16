@@ -883,7 +883,7 @@ REQUIREMENTS
 
     def _build_mappings(self, bdf_path):
         """Build eid→pid, eid→mid, eid→file mappings from BDF."""
-        from bdf_utils import IncludeFileParser, make_model
+        from bdf_utils import IncludeFileParser, make_model, read_bdf_safe
 
         # Parse include structure for file mapping
         parser = IncludeFileParser()
@@ -913,7 +913,7 @@ REQUIREMENTS
 
         # Read BDF model for PID/MID mappings
         model = make_model()
-        model.read_bdf(bdf_path)
+        read_bdf_safe(model, bdf_path)
 
         # Extract comment names from property cards
         self._pid_names = {}

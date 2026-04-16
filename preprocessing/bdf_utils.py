@@ -9,8 +9,10 @@ Provides:
 import os
 import re
 from collections import defaultdict
+from contextlib import contextmanager
 
 from pyNastran.bdf.bdf import BDF
+import pyNastran.bdf.bdf_interface.pybdf as _pybdf
 
 
 # ── Card name → entity type mapping ──────────────────────────────────────────
@@ -107,6 +109,56 @@ def make_model(cards_to_skip=None):
                     for card in cards_to_skip:
                         parser.pop(card, None)
     return model
+
+
+# ── Nested include path fix ──────────────────────────────────────────────────
+
+@contextmanager
+def fix_nested_includes():
+    """Patch pyNastran to resolve nested INCLUDE paths relative to their parent file.
+
+    pyNastran v1.4 resolves all INCLUDE paths relative to the top-level BDF,
+    not the file containing the INCLUDE statement. This patches the resolution
+    to fall back to the containing file's directory when default resolution fails.
+    """
+    orig_gif = _pybdf.get_include_filename
+    orig_update = _pybdf.BDFInputPy._update_include
+    _include_dirs = []
+
+    def patched_update(self, lines, nlines, ilines,
+                       include_lines, bdf_filename2, i, j, ifile,
+                       make_ilines=False):
+        _include_dirs.append(os.path.dirname(os.path.abspath(bdf_filename2)))
+        return orig_update(self, lines, nlines, ilines,
+                           include_lines, bdf_filename2, i, j, ifile,
+                           make_ilines)
+
+    def patched_gif(include_lines, include_dir=''):
+        filename = orig_gif(include_lines, include_dir=include_dir)
+        if os.path.isfile(filename):
+            return filename
+        for dir_path in reversed(_include_dirs):
+            try:
+                alt = orig_gif(include_lines, include_dir=dir_path)
+                if os.path.isfile(alt):
+                    return alt
+            except Exception:
+                continue
+        return filename  # return original path (will raise IOError in caller)
+
+    _pybdf.get_include_filename = patched_gif
+    _pybdf.BDFInputPy._update_include = patched_update
+    try:
+        yield
+    finally:
+        _pybdf.get_include_filename = orig_gif
+        _pybdf.BDFInputPy._update_include = orig_update
+
+
+def read_bdf_safe(model, bdf_path, **kwargs):
+    """Read a BDF with correct nested INCLUDE path resolution."""
+    with fix_nested_includes():
+        model.read_bdf(bdf_path, **kwargs)
 
 
 # ── Card line parsing ─────────────────────────────────────────────────────────

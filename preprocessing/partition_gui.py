@@ -20,14 +20,14 @@ if not hasattr(np, 'in1d'):
 from tksheet import Sheet
 
 try:
-    from bdf_utils import make_model
+    from bdf_utils import make_model, read_bdf_safe
     from partition_bdf import (
         partition_model, merge_parts, write_partition,
         build_pyvista_mesh, show_partition_preview,
         _CARDS_TO_SKIP,
     )
 except ImportError:
-    from preprocessing.bdf_utils import make_model
+    from preprocessing.bdf_utils import make_model, read_bdf_safe
     from preprocessing.partition_bdf import (
         partition_model, merge_parts, write_partition,
         build_pyvista_mesh, show_partition_preview,
@@ -266,7 +266,7 @@ class PartitionTool(ctk.CTkFrame):
 
         def _work():
             model = make_model(_CARDS_TO_SKIP)
-            model.read_bdf(path)
+            read_bdf_safe(model, path)
             model.cross_reference()
             result = partition_model(model)
             return model, result

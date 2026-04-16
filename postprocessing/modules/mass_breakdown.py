@@ -726,10 +726,10 @@ REQUIREMENTS
                  mass_by_file, count_by_file, file_order, dmig_mass,
                  mass_elem_by_eid).
         """
-        from bdf_utils import IncludeFileParser, make_model
+        from bdf_utils import IncludeFileParser, make_model, read_bdf_safe
 
         model = make_model()
-        model.read_bdf(bdf_path, xref=True)
+        read_bdf_safe(model, bdf_path, xref=True)
 
         mass_by_key = {}
         count_by_key = {}
