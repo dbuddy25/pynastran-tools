@@ -215,6 +215,7 @@ class IncludeFileParser:
         self.file_ids = {}           # filepath -> {entity_type: set(ids)}
         self.file_passthrough = {}   # filepath -> list of raw lines for unrecognized cards
         self.all_files = []          # ordered list of filepaths (main first)
+        self.dmig_origins = {}       # dmig_name -> filepath (first occurrence)
 
     def parse(self, main_path):
         """Parse the main BDF and all includes, building file_ids map."""
@@ -223,6 +224,7 @@ class IncludeFileParser:
         self.file_ids = {}
         self.file_passthrough = {}
         self.all_files = []
+        self.dmig_origins = {}
         self._parse_file(main_path, is_main=True)
 
     def _parse_file(self, filepath, is_main=False):
@@ -260,7 +262,8 @@ class IncludeFileParser:
                 past_exec = True
                 i += 1
                 continue
-            if not in_bulk and upper.startswith('BEGIN') and 'BULK' in upper:
+            if not in_bulk and upper.startswith('BEGIN') and (
+                    'BULK' in upper or 'SUPER' in upper):
                 in_bulk = True
                 i += 1
                 continue
@@ -283,6 +286,12 @@ class IncludeFileParser:
                     # Continuation line — include if previous card was passthrough
                     if in_passthrough_card:
                         self.file_passthrough[filepath].append(line)
+                elif card_name == 'DMIG':
+                    name = self._extract_dmig_name(stripped)
+                    if name and name not in self.dmig_origins:
+                        self.dmig_origins[name] = filepath
+                    in_passthrough_card = True
+                    self.file_passthrough[filepath].append(line)
                 elif card_name and CARD_ENTITY_MAP.get(card_name) is not None:
                     in_passthrough_card = False
                     self._classify_card(filepath, [line])
@@ -333,6 +342,15 @@ class IncludeFileParser:
                 self.file_ids[filepath][entity_type].add(card_id)
         except (ValueError, TypeError):
             pass
+
+    @staticmethod
+    def _extract_dmig_name(stripped_line):
+        """Extract DMIG matrix name (field 2) from a DMIG card line."""
+        if ',' in stripped_line:
+            parts = stripped_line.split(',')
+            return parts[1].strip().upper() if len(parts) > 1 else None
+        name = stripped_line[8:16].strip().upper() if len(stripped_line) > 8 else None
+        return name or None
 
     def _resolve_include(self, inc_path, base_dir):
         """Resolve an include path relative to the base directory."""

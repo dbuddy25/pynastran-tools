@@ -36,7 +36,7 @@ def make_mass_styles():
     }
 
 
-def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
+def write_mass_sheet(ws, data, styles, bdf_name=None, title=None, wtmass=None):
     """Write a mass breakdown sheet to an openpyxl worksheet.
 
     data keys:
@@ -70,6 +70,23 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None):
     cur_row += 1
     name_text = bdf_name if bdf_name else ""
     cell = ws.cell(row=cur_row, column=1, value=name_text)
+    cell.font = s['white_bold']
+    cell.fill = s['dark_fill']
+    cell.alignment = s['center']
+    ws.merge_cells(start_row=cur_row, start_column=1,
+                   end_row=cur_row, end_column=total_cols)
+    for ci in range(2, total_cols + 1):
+        ws.cell(row=cur_row, column=ci).fill = s['dark_fill']
+
+    # WTMASS row (always present so header rows stay at fixed positions)
+    cur_row += 1
+    if wtmass is not None and abs(wtmass - 1.0) < 1e-9:
+        wtmass_text = f"PARAM,WTMASS = {wtmass} (default)"
+    elif wtmass is not None:
+        wtmass_text = f"PARAM,WTMASS = {wtmass:g}"
+    else:
+        wtmass_text = ""
+    cell = ws.cell(row=cur_row, column=1, value=wtmass_text)
     cell.font = s['white_bold']
     cell.fill = s['dark_fill']
     cell.alignment = s['center']
@@ -254,10 +271,13 @@ class MassBreakdownModule:
         self._has_superelements = False
         self._bdf_loaded = False
 
-        # Include file mapping (residual only)
+        # Include file mapping
         self._mass_by_file = {}    # {rel_path: float}
         self._count_by_file = {}
         self._file_order = []
+        self._file_types = {}      # {rel_path: set of type strings}
+        self._dmig_name_to_file = {}  # {dmig_name: rel_path}
+        self._wtmass = 1.0
 
         # DMIG mass from M2GG case control
         self._dmig_mass = {}       # {"M2GG: MPART1 (x1.03)": float, ...}
@@ -682,7 +702,8 @@ REQUIREMENTS
 
             (mass_by_key, count_by_key, pid_names,
              has_se, mass_by_file, count_by_file, file_order,
-             dmig_mass, mass_elem_by_eid) = result
+             dmig_mass, mass_elem_by_eid,
+             wtmass, dmig_name_to_file, file_types) = result
 
             self._bdf_path = path
             self._mass_by_key = mass_by_key
@@ -694,6 +715,9 @@ REQUIREMENTS
             self._file_order = file_order
             self._dmig_mass = dmig_mass
             self._mass_elem_by_eid = mass_elem_by_eid
+            self._wtmass = wtmass
+            self._dmig_name_to_file = dmig_name_to_file
+            self._file_types = file_types
             self._bdf_loaded = True
 
             self._manage_btn.configure(state=tk.NORMAL)
@@ -707,8 +731,11 @@ REQUIREMENTS
 
             n_groups = len(mass_by_key) + len(dmig_mass)
             total_mass = sum(mass_by_key.values()) + sum(dmig_mass.values())
+            wtmass_str = (f"WTMASS={wtmass:g}"
+                          if abs(wtmass - 1.0) > 1e-9 else "WTMASS=1.0")
             status = (f"BDF: {os.path.basename(path)} "
-                      f"({n_groups} groups, total mass: {total_mass:.1f})")
+                      f"({n_groups} groups, total mass: {total_mass:.1f})  |  "
+                      f"{wtmass_str}")
             if dmig_mass:
                 status += f"  [{len(dmig_mass)} M2GG]"
             if self._op2_path:
@@ -724,7 +751,7 @@ REQUIREMENTS
 
         Returns (mass_by_key, count_by_key, pid_names, has_superelements,
                  mass_by_file, count_by_file, file_order, dmig_mass,
-                 mass_elem_by_eid).
+                 mass_elem_by_eid, wtmass, dmig_name_to_file, file_types).
         """
         from bdf_utils import IncludeFileParser, make_model, read_bdf_safe
 
@@ -771,16 +798,17 @@ REQUIREMENTS
             for eid in mass_elem_by_eid:
                 mass_elem_by_eid[eid] *= wtmass
 
-        # Include file mapping (residual only)
+        # Include file mapping
         mass_by_file = {}
         count_by_file = {}
         file_order = []
+        file_types = {}  # {rel: set of type strings}
 
         parser = IncludeFileParser()
         parser.parse(bdf_path)
         main_dir = os.path.dirname(os.path.abspath(bdf_path))
 
-        # Build eid→file mapping
+        # Build eid→file mapping (now includes Part SE elements via BEGIN SUPER)
         eid_to_file = {}
         for filepath, ids_by_type in parser.file_ids.items():
             eids = ids_by_type.get('eid', set())
@@ -798,7 +826,21 @@ REQUIREMENTS
                 rel = os.path.basename(fp)
             file_order.append(rel)
 
-        # Accumulate mass per include file
+        # Build DMIG name→file mapping
+        dmig_name_to_file = {}
+        for name, fp in parser.dmig_origins.items():
+            try:
+                rel = os.path.relpath(fp, main_dir)
+            except ValueError:
+                rel = os.path.basename(fp)
+            dmig_name_to_file[name] = rel
+
+        def _add_to_file(rel, m, type_label):
+            mass_by_file[rel] = mass_by_file.get(rel, 0.0) + m
+            count_by_file[rel] = count_by_file.get(rel, 0) + 1
+            file_types.setdefault(rel, set()).add(type_label)
+
+        # Accumulate residual element mass per include file
         for eid, elem in model.elements.items():
             rel = eid_to_file.get(eid)
             if rel is None:
@@ -807,31 +849,47 @@ REQUIREMENTS
                 m = elem.Mass()
             except Exception:
                 m = 0.0
-            mass_by_file[rel] = mass_by_file.get(rel, 0.0) + m
-            count_by_file[rel] = count_by_file.get(rel, 0) + 1
+            _add_to_file(rel, m, 'Residual')
 
         for eid, elem in model.masses.items():
             rel = eid_to_file.get(eid)
             if rel is None:
                 continue
             try:
-                if elem.type == 'CONM2':
-                    m = elem.mass
-                else:
-                    m = elem.Mass()
+                m = elem.mass if elem.type == 'CONM2' else elem.Mass()
             except Exception:
                 m = 0.0
-            mass_by_file[rel] = mass_by_file.get(rel, 0.0) + m
-            count_by_file[rel] = count_by_file.get(rel, 0) + 1
+            _add_to_file(rel, m, 'Residual')
 
-        # Apply WTMASS to include-file masses too
+        # Accumulate Part SE element mass per include file
+        for _se_key, se_model in se_models.items():
+            for eid, elem in se_model.elements.items():
+                rel = eid_to_file.get(eid)
+                if rel is None:
+                    continue
+                try:
+                    m = elem.Mass()
+                except Exception:
+                    m = 0.0
+                _add_to_file(rel, m, 'Part SE')
+            for eid, elem in se_model.masses.items():
+                rel = eid_to_file.get(eid)
+                if rel is None:
+                    continue
+                try:
+                    m = elem.mass if elem.type == 'CONM2' else elem.Mass()
+                except Exception:
+                    m = 0.0
+                _add_to_file(rel, m, 'Part SE')
+
+        # Apply WTMASS to include-file masses so they match GPWG / DMIG units
         if wtmass != 1.0:
             for key in mass_by_file:
                 mass_by_file[key] *= wtmass
 
         return (mass_by_key, count_by_key, pid_names, has_se,
                 mass_by_file, count_by_file, file_order, dmig_mass,
-                mass_elem_by_eid)
+                mass_elem_by_eid, wtmass, dmig_name_to_file, file_types)
 
     # ---------------------------------------------------------- OP2 loading
     def _open_op2(self):
@@ -868,8 +926,11 @@ REQUIREMENTS
             if self._bdf_path:
                 n_groups = len(self._mass_by_key)
                 total_mass = sum(self._mass_by_key.values())
+                wtmass_str = (f"WTMASS={self._wtmass:g}"
+                              if abs(self._wtmass - 1.0) > 1e-9 else "WTMASS=1.0")
                 status += (f"BDF: {os.path.basename(self._bdf_path)} "
-                           f"({n_groups} groups, total mass: {total_mass:.1f})  |  ")
+                           f"({n_groups} groups, total mass: {total_mass:.1f})  |  "
+                           f"{wtmass_str}  |  ")
             status += f"OP2: {os.path.basename(path)} (GPWG: {gpwg_mass:.1f})"
             self._status_label.configure(text=status,
                                          text_color=("gray10", "gray90"))
@@ -939,9 +1000,21 @@ REQUIREMENTS
                 if raw_groups[me_key] < 1e-20:
                     del raw_groups[me_key]
 
-        # Append DMIG mass groups (appear in both grouping modes)
-        for label, mass in self._dmig_mass.items():
-            raw_groups[label] = mass
+        # Append DMIG mass — in "Include File" mode, bucket under the file
+        # that defines the DMIG card; fall back to own label if unknown
+        if group_by == "Include File":
+            for label, mass in self._dmig_mass.items():
+                name_match = re.match(r'M2GG:\s+(\S+)', label)
+                dmig_name = name_match.group(1) if name_match else None
+                rel = self._dmig_name_to_file.get(dmig_name) if dmig_name else None
+                if rel:
+                    raw_groups[rel] = raw_groups.get(rel, 0.0) + mass
+                    self._file_types.setdefault(rel, set()).add('External SE')
+                else:
+                    raw_groups[label] = mass
+        else:
+            for label, mass in self._dmig_mass.items():
+                raw_groups[label] = mass
 
         # Apply custom group merges
         if self._custom_groups:
@@ -1022,6 +1095,10 @@ REQUIREMENTS
             return 'Residual'
         if key == 'Other':
             return ''
+        # For include-file keys, report mixed types from _file_types
+        if key in self._file_types:
+            types = sorted(self._file_types[key])
+            return types[0] if len(types) == 1 else ' / '.join(types)
         return self._key_type(key)
 
     def _get_display_name(self, key):
@@ -1303,7 +1380,7 @@ REQUIREMENTS
         ws = wb.active
         ws.title = "Mass Breakdown"
         write_mass_sheet(ws, export_data, styles, bdf_name=bdf_name,
-                         title=title)
+                         title=title, wtmass=self._wtmass)
 
         try:
             wb.save(path)
