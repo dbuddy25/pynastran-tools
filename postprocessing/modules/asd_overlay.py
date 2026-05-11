@@ -441,14 +441,41 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             n['checked'].set(state)
         self._refresh_plot()
 
-    # ── RMS helper ───────────────────────────────────────────────────────────
+    # ── RMS helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _grms_loglog(freqs, asd):
+        """Area under an ASD curve using analytical log-log segment integration.
+
+        ASD data lies on straight lines in log-log space (power-law segments).
+        Integrating each segment analytically per the FEMCI method is more
+        accurate than linear trapz, especially for steep rolloffs.
+
+        For each segment [fl, fh] with values [al, ah]:
+          b = log(ah/al) / log(fh/fl)        (slope exponent)
+          b ≠ -1:  A = (ah*fh - al*fl) / (b+1)
+          b = -1:  A = al * fl * ln(fh/fl)   (L'Hôpital limit)
+        """
+        area = 0.0
+        for i in range(len(freqs) - 1):
+            fl, fh = float(freqs[i]), float(freqs[i + 1])
+            al, ah = float(asd[i]), float(asd[i + 1])
+            if fl <= 0 or fh <= 0 or al <= 0 or ah <= 0:
+                continue
+            log_f = np.log(fh / fl)
+            b = np.log(ah / al) / log_f if log_f != 0 else 0.0
+            if abs(b + 1.0) < 1e-6:
+                area += al * fl * log_f
+            else:
+                area += (ah * fh - al * fl) / (b + 1.0)
+        return area
 
     @staticmethod
     def _get_rms_g(op2, subcase, nid, idof, freqs, psd_curve_g2hz, unit_factor):
         """Return RMS in g for one node/DOF curve.
 
-        Prefers the Nastran RMS acceleration table; falls back to trapz
-        integration of the supplied psd_curve_g2hz array.
+        Prefers the Nastran RMS acceleration table (matches F06 GRMS output).
+        Falls back to analytical log-log segment integration per FEMCI.
         """
         try:
             rms_dict = op2.op2_results.rms.accelerations
@@ -462,7 +489,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                     return rms_native / unit_factor
         except Exception:
             pass
-        return float(np.sqrt(np.trapz(psd_curve_g2hz, freqs)))
+        area = AsdOverlayModule._grms_loglog(freqs, psd_curve_g2hz)
+        return float(np.sqrt(area))
 
     # ── Plot ─────────────────────────────────────────────────────────────────
 
