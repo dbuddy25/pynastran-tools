@@ -192,14 +192,20 @@ class ManageGroupsDialog(ctk.CTkToplevel):
     """Dialog for creating/editing custom group merges."""
 
     def __init__(self, parent, available_ids, existing_groups, show_ungrouped,
-                 on_apply, id_labels=None):
+                 on_apply, id_labels=None, id_order=None):
         super().__init__(parent)
         self.title("Manage Groups")
         self.geometry("600x450")
         self.resizable(True, True)
         self.transient(parent)
 
-        self._available_ids = sorted(available_ids)
+        available_set = set(available_ids)
+        if id_order is not None:
+            ordered = [x for x in id_order if x in available_set]
+            remaining = sorted(available_set - set(ordered))
+            self._available_ids = ordered + remaining
+        else:
+            self._available_ids = sorted(available_ids)
         self._id_labels = id_labels or {}
         self._groups = {k: set(v) for k, v in existing_groups.items()}
         self._show_ungrouped = tk.BooleanVar(value=show_ungrouped)
@@ -1216,6 +1222,7 @@ REQUIREMENTS
                 else:
                     id_labels[gid] = f"PID {gid}"
 
+        id_order = self._file_order if group_by != "Property ID" else None
         ManageGroupsDialog(
             self.frame.winfo_toplevel(),
             available_ids=available,
@@ -1223,6 +1230,7 @@ REQUIREMENTS
             show_ungrouped=self._show_ungrouped,
             on_apply=self._on_groups_applied,
             id_labels=id_labels,
+            id_order=id_order,
         )
 
     def _on_groups_applied(self, groups, show_ungrouped):
