@@ -70,8 +70,6 @@ from miles_equation import MilesEquationTool
 
 
 from _version import __version__
-from _build import __build__
-__display_version__ = f"{__version__}+{__build__}"
 
 
 def show_guide(parent, title, text):
@@ -171,7 +169,7 @@ class StructuresToolsApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title(f"Structures Tools v{__display_version__}")
+        self.title(f"Structures Tools v{__version__}")
         self.geometry("1400x800")
         self.minsize(1000, 600)
 
