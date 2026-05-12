@@ -99,12 +99,23 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._unit_var = [ctk.StringVar(value="in/s²"), ctk.StringVar(value="in/s²")]
         self._sc_var = [tk.StringVar(value="(none)"), tk.StringVar(value="(none)")]
         self._sc_menu = [None, None]
+        self._mode_var = [ctk.StringVar(value="PSD (RANDOM)"),
+                          ctk.StringVar(value="PSD (RANDOM)")]
+        self._frf_row = [None, None]
+        self._input_asd_btn = [None, None]
+        self._input_asd_label = [None, None]
 
         self._build_ui()
 
     @staticmethod
     def _empty_slot():
-        return {"op2": None, "path": None, "subcase": None}
+        return {
+            "op2": None, "path": None, "subcase": None,
+            "mode": "PSD",
+            "input_asd_path": None,
+            "input_asd_freqs": None,
+            "input_asd_g2hz": None,
+        }
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -145,8 +156,33 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 command=lambda _v, idx=i: self._on_sc_select(idx),
                 width=120,
             )
-            scmenu.pack(side=tk.LEFT)
+            scmenu.pack(side=tk.LEFT, padx=(0, 12))
             self._sc_menu[i] = scmenu
+
+            ctk.CTkLabel(row, text="Mode:").pack(side=tk.LEFT, padx=(0, 2))
+            ctk.CTkOptionMenu(
+                row, variable=self._mode_var[i],
+                values=["PSD (RANDOM)", "FRF + Input ASD"],
+                command=lambda _v, idx=i: self._on_mode_change(idx),
+                width=140,
+            ).pack(side=tk.LEFT)
+
+            # FRF subrow — hidden until mode is switched
+            frf_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+            self._frf_row[i] = frf_row
+            asd_btn = ctk.CTkButton(
+                frf_row, text="Load Input ASD…", width=140,
+                command=lambda idx=i: self._load_input_asd(idx),
+            )
+            asd_btn.pack(side=tk.LEFT, padx=(0, 6))
+            self._input_asd_btn[i] = asd_btn
+            asd_lbl = ctk.CTkLabel(frf_row, text="(no file)", text_color="gray",
+                                   anchor=tk.W, width=200)
+            asd_lbl.pack(side=tk.LEFT, padx=(0, 12))
+            self._input_asd_label[i] = asd_lbl
+            ctk.CTkLabel(frf_row, text="Assumes unit-g base input.",
+                         text_color="gray",
+                         font=ctk.CTkFont(size=11, slant="italic")).pack(side=tk.LEFT)
 
         # ── DOF row ──────────────────────────────────────────────────────────
         dof_row = ctk.CTkFrame(toolbar, fg_color="transparent")
@@ -291,22 +327,37 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 self._status_label.configure(text="Load failed", text_color="red")
                 return
 
-            psd_dict = op2.op2_results.psd.accelerations
-            if not psd_dict:
-                messagebox.showwarning(
-                    "No PSD Data",
-                    f"OP2 {tag} contains no PSD acceleration results.\n\n"
-                    "Ensure the deck includes:\n"
-                    "  RANDOM = <sid>\n"
-                    "  ACCELERATION(PLOT) = ALL")
-                self._file_label[slot_idx].configure(
-                    text="(no PSD data)", text_color="orange")
-                return
+            mode = self._op2_slots[slot_idx]['mode']
+
+            if mode == "PSD":
+                result_dict = op2.op2_results.psd.accelerations
+                if not result_dict:
+                    messagebox.showwarning(
+                        "No PSD Data",
+                        f"OP2 {tag} contains no PSD acceleration results.\n\n"
+                        "Ensure the deck includes:\n"
+                        "  RANDOM = <sid>\n"
+                        "  ACCELERATION(PLOT) = ALL")
+                    self._file_label[slot_idx].configure(
+                        text="(no PSD data)", text_color="orange")
+                    return
+            else:  # FRF + Input ASD
+                result_dict = op2.accelerations
+                if not result_dict:
+                    messagebox.showwarning(
+                        "No FRF Data",
+                        f"OP2 {tag} contains no acceleration results.\n\n"
+                        "Ensure the deck includes:\n"
+                        "  ACCELERATION(PLOT) = ALL\n"
+                        "(Run SOL 111 without RANDOM for FRF mode.)")
+                    self._file_label[slot_idx].configure(
+                        text="(no FRF data)", text_color="orange")
+                    return
 
             self._op2_slots[slot_idx]['op2'] = op2
             self._op2_slots[slot_idx]['path'] = path
 
-            subcases = sorted(psd_dict.keys())
+            subcases = sorted(result_dict.keys())
             sc_strs = [str(s) for s in subcases]
             self._sc_menu[slot_idx].configure(values=sc_strs)
             self._sc_var[slot_idx].set(sc_strs[0])
@@ -325,6 +376,70 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     def _on_sc_select(self, slot_idx):
         val = self._sc_var[slot_idx].get()
         self._op2_slots[slot_idx]['subcase'] = int(val) if val != "(none)" else None
+        self._refresh_plot()
+
+    def _on_mode_change(self, slot_idx):
+        mode_label = self._mode_var[slot_idx].get()
+        mode = "FRF" if mode_label == "FRF + Input ASD" else "PSD"
+        self._op2_slots[slot_idx]['mode'] = mode
+        if mode == "FRF":
+            self._frf_row[slot_idx].pack(fill=tk.X, pady=1)
+        else:
+            self._frf_row[slot_idx].pack_forget()
+        # Clear stale OP2 data — the loaded OP2 may be wrong type for the new mode
+        self._op2_slots[slot_idx]['op2'] = None
+        self._op2_slots[slot_idx]['subcase'] = None
+        self._sc_var[slot_idx].set("(none)")
+        self._sc_menu[slot_idx].configure(values=["(none)"])
+        self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
+        self._refresh_plot()
+
+    def _load_input_asd(self, slot_idx):
+        path = filedialog.askopenfilename(
+            title="Load Input ASD",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        if not path:
+            return
+
+        freqs, asds = [], []
+        try:
+            with open(path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or line.startswith('$'):
+                        continue
+                    parts = line.replace(',', ' ').split()
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        freqs.append(float(parts[0]))
+                        asds.append(float(parts[1]))
+                    except ValueError:
+                        continue
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc))
+            return
+
+        if len(freqs) < 2:
+            messagebox.showerror("Load Error",
+                                 "Need at least 2 frequency points.")
+            return
+
+        freqs_arr = np.array(freqs)
+        asds_arr = np.array(asds)
+        order = np.argsort(freqs_arr)
+        freqs_arr, asds_arr = freqs_arr[order], asds_arr[order]
+
+        slot = self._op2_slots[slot_idx]
+        slot['input_asd_path'] = path
+        slot['input_asd_freqs'] = freqs_arr
+        slot['input_asd_g2hz'] = asds_arr
+
+        self._input_asd_label[slot_idx].configure(
+            text=f"{os.path.basename(path)} "
+                 f"({len(freqs_arr)} pts, "
+                 f"{freqs_arr[0]:.1f}–{freqs_arr[-1]:.1f} Hz)",
+            text_color=("gray10", "gray90"))
         self._refresh_plot()
 
     # ── Node management ──────────────────────────────────────────────────────
@@ -471,6 +586,61 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         return area
 
     @staticmethod
+    def _interp_input_asd_to_grid(slot, op2_freqs):
+        """Log-log interpolate slot's input ASD onto op2_freqs. Out-of-range → 0."""
+        f_in = slot['input_asd_freqs']
+        a_in = slot['input_asd_g2hz']
+        result = np.zeros(len(op2_freqs))
+        for i, f in enumerate(op2_freqs):
+            if f < f_in[0] or f > f_in[-1]:
+                result[i] = 0.0
+                continue
+            idx = int(np.searchsorted(f_in, f, side='right')) - 1
+            idx = min(idx, len(f_in) - 2)
+            fl, fh = f_in[idx], f_in[idx + 1]
+            al, ah = a_in[idx], a_in[idx + 1]
+            if fl <= 0 or fh <= 0 or al <= 0 or ah <= 0 or fl == fh:
+                result[i] = al
+            else:
+                b = np.log(ah / al) / np.log(fh / fl)
+                result[i] = al * (f / fl) ** b
+        return result
+
+    def _get_response_psd(self, slot_idx, subcase, nid, idof, unit_factor):
+        """Return (freqs, psd_g2hz) for one node/DOF, handling PSD and FRF modes."""
+        slot = self._op2_slots[slot_idx]
+        op2 = slot['op2']
+
+        if slot['mode'] == "PSD":
+            psd_dict = op2.op2_results.psd.accelerations
+            if subcase not in psd_dict:
+                return None, None
+            psd_tbl = psd_dict[subcase]
+            freqs = psd_tbl._times
+            op2_nids = psd_tbl.node_gridtype[:, 0]
+            hits = np.where(op2_nids == nid)[0]
+            if not len(hits):
+                return None, None
+            raw_psd = psd_tbl.data[:, hits[0], idof]
+            return freqs, raw_psd / (unit_factor ** 2)
+        else:  # FRF + Input ASD
+            if slot['input_asd_freqs'] is None:
+                return None, None
+            if not op2.accelerations or subcase not in op2.accelerations:
+                return None, None
+            frf_tbl = op2.accelerations[subcase]
+            freqs = frf_tbl._times
+            op2_nids = frf_tbl.node_gridtype[:, 0]
+            hits = np.where(op2_nids == nid)[0]
+            if not len(hits):
+                return None, None
+            H_native = frf_tbl.data[:, hits[0], idof]   # complex
+            H_g = H_native / unit_factor                 # g per g_input
+            H_mag2 = H_g.real ** 2 + H_g.imag ** 2      # dimensionless
+            S_in = self._interp_input_asd_to_grid(slot, freqs)
+            return freqs, H_mag2 * S_in
+
+    @staticmethod
     def _get_rms_g(op2, subcase, nid, idof, freqs, psd_curve_g2hz, unit_factor):
         """Return RMS in g for one node/DOF curve.
 
@@ -508,15 +678,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             if op2 is None or subcase is None:
                 continue
 
-            psd_dict = op2.op2_results.psd.accelerations
-            if subcase not in psd_dict:
-                continue
-
-            psd_tbl = psd_dict[subcase]
-            freqs = psd_tbl._times
-            op2_nids = psd_tbl.node_gridtype[:, 0]
             unit_factor = self.UNIT_FACTORS[self._unit_var[slot_idx].get()]
-            conv = unit_factor ** 2
             tag = _SLOT_TAGS[slot_idx]
             color = _SLOT_COLORS[slot_idx]
             ls = _SLOT_LINES[slot_idx]
@@ -525,13 +687,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 if not node['checked'].get():
                     continue
                 nid = node['id']
-                hits = np.where(op2_nids == nid)[0]
-                if not len(hits):
-                    continue
 
-                inode = hits[0]
-                raw_psd = psd_tbl.data[:, inode, idof]
-                psd_g2hz = raw_psd / conv
+                freqs, psd_g2hz = self._get_response_psd(
+                    slot_idx, subcase, nid, idof, unit_factor)
+                if freqs is None:
+                    continue
 
                 rms_g = self._get_rms_g(
                     op2, subcase, nid, idof, freqs, psd_g2hz, unit_factor)
