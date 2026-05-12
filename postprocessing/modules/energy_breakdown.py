@@ -210,6 +210,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._groups = {k: set(v) for k, v in existing_groups.items()}
         self._show_ungrouped = tk.BooleanVar(value=show_ungrouped)
         self._on_apply = on_apply
+        self._editing_key = None
 
         self._build_ui()
 
@@ -250,8 +251,11 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._name_var = tk.StringVar()
         ctk.CTkEntry(mid, textvariable=self._name_var, width=140).pack()
 
-        ctk.CTkButton(mid, text="Create Group \u2192", width=140,
-                      command=self._create_group).pack(pady=(10, 2))
+        ctk.CTkButton(mid, text="Save Group \u2192", width=140,
+                      command=self._save_group).pack(pady=(10, 2))
+        ctk.CTkButton(mid, text="Clear", width=140,
+                      fg_color="gray50",
+                      command=self._clear_form).pack(pady=2)
         ctk.CTkButton(mid, text="Delete Group", width=140,
                       fg_color="firebrick",
                       command=self._delete_group).pack(pady=2)
@@ -279,6 +283,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                                          selectbackground=lb_sel_bg,
                                          selectforeground="white")
         self._group_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._group_listbox.bind("<<ListboxSelect>>", self._on_group_select)
         self._refresh_group_list()
 
         # Reorder buttons
@@ -321,7 +326,27 @@ class ManageGroupsDialog(ctk.CTkToplevel):
             else:
                 self._id_listbox.itemconfig(i, fg=fg_available)
 
-    def _create_group(self):
+    def _on_group_select(self, event):
+        sel = self._group_listbox.curselection()
+        if not sel:
+            return
+        keys = list(self._groups.keys())
+        name = keys[sel[0]]
+        self._editing_key = name
+        self._name_var.set(name)
+
+        members = self._groups[name]
+        self._id_listbox.selection_clear(0, tk.END)
+        first_idx = None
+        for i, id_val in enumerate(self._available_ids):
+            if id_val in members:
+                self._id_listbox.selection_set(i)
+                if first_idx is None:
+                    first_idx = i
+        if first_idx is not None:
+            self._id_listbox.see(first_idx)
+
+    def _save_group(self):
         name = self._name_var.get().strip()
         if not name:
             messagebox.showwarning("No Name", "Enter a group name.",
@@ -335,20 +360,44 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                                    parent=self)
             return
 
-        ids = set()
-        for idx in sel:
-            ids.add(self._available_ids[idx])
+        ids = {self._available_ids[idx] for idx in sel}
 
-        if name in self._groups:
-            if not messagebox.askyesno(
-                    "Overwrite Group",
-                    f"Group '{name}' already exists. Overwrite it?",
-                    parent=self):
-                return
+        if self._editing_key is None:
+            # Create-new path
+            if name in self._groups:
+                if not messagebox.askyesno(
+                        "Overwrite Group",
+                        f"Group '{name}' already exists. Overwrite it?",
+                        parent=self):
+                    return
+            self._groups[name] = ids
+        else:
+            # Edit-existing path
+            if name == self._editing_key:
+                self._groups[name] = ids
+            else:
+                # Rename — preserve order; handle collision with another group
+                if name in self._groups and name != self._editing_key:
+                    if not messagebox.askyesno(
+                            "Overwrite Group",
+                            f"Group '{name}' already exists. Merge into it?",
+                            parent=self):
+                        return
+                self._groups = {
+                    (name if k == self._editing_key else k):
+                    (ids if k == self._editing_key else v)
+                    for k, v in self._groups.items()
+                    if k != name or k == self._editing_key
+                }
 
-        self._groups[name] = ids
-        self._name_var.set('')
+        self._clear_form()
         self._refresh_group_list()
+
+    def _clear_form(self):
+        self._editing_key = None
+        self._name_var.set('')
+        self._id_listbox.selection_clear(0, tk.END)
+        self._group_listbox.selection_clear(0, tk.END)
 
     def _delete_group(self):
         sel = self._group_listbox.curselection()
@@ -357,6 +406,8 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         group_names = list(self._groups.keys())
         name = group_names[sel[0]]
         del self._groups[name]
+        if self._editing_key == name:
+            self._clear_form()
         self._refresh_group_list()
 
     def _move_up(self):
@@ -369,6 +420,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._groups = {k: self._groups[k] for k in keys}
         self._refresh_group_list()
         self._group_listbox.selection_set(idx - 1)
+        self._on_group_select(None)
 
     def _move_down(self):
         sel = self._group_listbox.curselection()
@@ -380,6 +432,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._groups = {k: self._groups[k] for k in keys}
         self._refresh_group_list()
         self._group_listbox.selection_set(idx + 1)
+        self._on_group_select(None)
 
     def _import_csv(self):
         """Import groups from a CSV file (Group Name, ID Start, ID End)."""
