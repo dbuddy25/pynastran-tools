@@ -367,20 +367,19 @@ class ManageJointsDialog(ctk.CTkToplevel):
     """Dialog for creating/editing joint definitions (property groups)."""
 
     def __init__(self, parent, available_pids, existing_joints, on_apply,
-                 id_labels=None):
+                 id_labels=None, bdf_path=None):
         super().__init__(parent)
         self.title("Manage Joints")
-        self.geometry("600x400")
+        self.geometry("600x450")
         self.resizable(True, True)
         self.transient(parent)
 
         self._available_pids = sorted(available_pids)
         self._id_labels = id_labels or {}
-        # Preserve insertion order
-        self._joints = {}
-        for k, v in existing_joints.items():
-            self._joints[k] = set(v)
+        self._joints = {k: set(v) for k, v in existing_joints.items()}
         self._on_apply = on_apply
+        self._editing_key = None
+        self._bdf_path = bdf_path
 
         self._build_ui()
 
@@ -417,11 +416,24 @@ class ManageJointsDialog(ctk.CTkToplevel):
         self._name_var = tk.StringVar()
         ctk.CTkEntry(mid, textvariable=self._name_var, width=130).pack()
 
-        ctk.CTkButton(mid, text="Create Joint \u2192", width=130,
-                      command=self._create_joint).pack(pady=(10, 2))
+        ctk.CTkButton(mid, text="Save Joint \u2192", width=130,
+                      command=self._save_joint).pack(pady=(10, 2))
+        ctk.CTkButton(mid, text="Clear", width=130,
+                      fg_color="gray50",
+                      command=self._clear_form).pack(pady=2)
         ctk.CTkButton(mid, text="Delete Joint", width=130,
                       fg_color="firebrick",
                       command=self._delete_joint).pack(pady=2)
+
+        ctk.CTkButton(mid, text="Import CSV\u2026", width=130,
+                      command=self._import_csv).pack(pady=(12, 2))
+        ctk.CTkButton(mid, text="Export Template\u2026", width=130,
+                      command=self._export_template).pack(pady=2)
+
+        ctk.CTkButton(mid, text="Save Joints\u2026", width=130,
+                      command=self._save_joints_json).pack(pady=(12, 2))
+        ctk.CTkButton(mid, text="Load Joints\u2026", width=130,
+                      command=self._load_joints_json).pack(pady=2)
 
         # Right: existing joints
         right = ctk.CTkFrame(main)
@@ -434,7 +446,15 @@ class ManageJointsDialog(ctk.CTkToplevel):
                                          selectbackground=lb_sel_bg,
                                          selectforeground="white")
         self._joint_listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._joint_listbox.bind("<<ListboxSelect>>", self._on_joint_select)
         self._refresh_joint_list()
+
+        reorder = ctk.CTkFrame(right, fg_color="transparent")
+        reorder.pack(fill=tk.X, pady=(4, 0))
+        ctk.CTkButton(reorder, text="\u25b2 Up", width=60,
+                      command=self._move_up).pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(reorder, text="\u25bc Down", width=60,
+                      command=self._move_down).pack(side=tk.LEFT)
 
         # Bottom buttons
         bottom = ctk.CTkFrame(self, fg_color="transparent")
@@ -466,11 +486,30 @@ class ManageJointsDialog(ctk.CTkToplevel):
             else:
                 self._pid_listbox.itemconfig(i, fg=fg_available)
 
-    def _create_joint(self):
+    def _on_joint_select(self, event):
+        sel = self._joint_listbox.curselection()
+        if not sel:
+            return
+        keys = list(self._joints.keys())
+        name = keys[sel[0]]
+        self._editing_key = name
+        self._name_var.set(name)
+
+        members = self._joints[name]
+        self._pid_listbox.selection_clear(0, tk.END)
+        first_idx = None
+        for i, pid in enumerate(self._available_pids):
+            if pid in members:
+                self._pid_listbox.selection_set(i)
+                if first_idx is None:
+                    first_idx = i
+        if first_idx is not None:
+            self._pid_listbox.see(first_idx)
+
+    def _save_joint(self):
         name = self._name_var.get().strip()
         if not name:
-            messagebox.showwarning("No Name", "Enter a joint name.",
-                                   parent=self)
+            messagebox.showwarning("No Name", "Enter a joint name.", parent=self)
             return
         sel = self._pid_listbox.curselection()
         if not sel:
@@ -479,15 +518,40 @@ class ManageJointsDialog(ctk.CTkToplevel):
                                    parent=self)
             return
         pids = {self._available_pids[i] for i in sel}
-        if name in self._joints:
-            if not messagebox.askyesno(
-                    "Overwrite Joint",
-                    f"Joint '{name}' already exists. Overwrite it?",
-                    parent=self):
-                return
-        self._joints[name] = pids
-        self._name_var.set('')
+
+        if self._editing_key is None:
+            if name in self._joints:
+                if not messagebox.askyesno(
+                        "Overwrite Joint",
+                        f"Joint '{name}' already exists. Overwrite it?",
+                        parent=self):
+                    return
+            self._joints[name] = pids
+        else:
+            if name == self._editing_key:
+                self._joints[name] = pids
+            else:
+                if name in self._joints and name != self._editing_key:
+                    if not messagebox.askyesno(
+                            "Overwrite Joint",
+                            f"Joint '{name}' already exists. Merge into it?",
+                            parent=self):
+                        return
+                self._joints = {
+                    (name if k == self._editing_key else k):
+                    (pids if k == self._editing_key else v)
+                    for k, v in self._joints.items()
+                    if k != name or k == self._editing_key
+                }
+
+        self._clear_form()
         self._refresh_joint_list()
+
+    def _clear_form(self):
+        self._editing_key = None
+        self._name_var.set('')
+        self._pid_listbox.selection_clear(0, tk.END)
+        self._joint_listbox.selection_clear(0, tk.END)
 
     def _delete_joint(self):
         sel = self._joint_listbox.curselection()
@@ -495,6 +559,192 @@ class ManageJointsDialog(ctk.CTkToplevel):
             return
         name = list(self._joints.keys())[sel[0]]
         del self._joints[name]
+        if self._editing_key == name:
+            self._clear_form()
+        self._refresh_joint_list()
+
+    def _move_up(self):
+        sel = self._joint_listbox.curselection()
+        if not sel or sel[0] == 0:
+            return
+        idx = sel[0]
+        keys = list(self._joints.keys())
+        keys[idx - 1], keys[idx] = keys[idx], keys[idx - 1]
+        self._joints = {k: self._joints[k] for k in keys}
+        self._refresh_joint_list()
+        self._joint_listbox.selection_set(idx - 1)
+        self._on_joint_select(None)
+
+    def _move_down(self):
+        sel = self._joint_listbox.curselection()
+        if not sel or sel[0] >= len(self._joints) - 1:
+            return
+        idx = sel[0]
+        keys = list(self._joints.keys())
+        keys[idx], keys[idx + 1] = keys[idx + 1], keys[idx]
+        self._joints = {k: self._joints[k] for k in keys}
+        self._refresh_joint_list()
+        self._joint_listbox.selection_set(idx + 1)
+        self._on_joint_select(None)
+
+    def _import_csv(self):
+        import csv
+        path = filedialog.askopenfilename(
+            title="Import Joints CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        available_set = set(self._available_pids)
+        try:
+            with open(path, newline='', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if header and header[0].strip().lower() in ('joint name',
+                                                             'joint_name',
+                                                             'name'):
+                    pass
+                else:
+                    if header:
+                        self._process_csv_row(header, available_set)
+                for row in reader:
+                    self._process_csv_row(row, available_set)
+        except Exception as exc:
+            messagebox.showerror("Import Error", str(exc), parent=self)
+            return
+        self._refresh_joint_list()
+
+    def _process_csv_row(self, row, available_set):
+        if len(row) < 3:
+            return
+        name = row[0].strip()
+        if not name:
+            return
+        all_pids = set()
+        i = 1
+        while i + 1 < len(row):
+            try:
+                id_start = int(row[i])
+                id_end = int(row[i + 1])
+            except (ValueError, TypeError):
+                i += 2
+                continue
+            if id_start > id_end:
+                id_start, id_end = id_end, id_start
+            all_pids.update(j for j in range(id_start, id_end + 1)
+                            if j in available_set)
+            i += 2
+        if not all_pids:
+            return
+        if name in self._joints:
+            self._joints[name].update(all_pids)
+        else:
+            self._joints[name] = all_pids
+
+    def _export_template(self):
+        import csv, os
+        path = filedialog.asksaveasfilename(
+            title="Export Joints Template",
+            defaultextension='.csv',
+            filetypes=[("CSV files", "*.csv")],
+            parent=self)
+        if not path:
+            return
+        try:
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Joint Name', 'ID Start', 'ID End'])
+                for pid in self._available_pids:
+                    writer.writerow(['', pid, pid])
+            messagebox.showinfo("Exported", f"Template saved to:\n{path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc), parent=self)
+
+    def _save_joints_json(self):
+        import json, os
+        initial_dir = os.path.dirname(self._bdf_path) if self._bdf_path else None
+        initial_file = (
+            os.path.splitext(os.path.basename(self._bdf_path))[0] + ".cbush_joints.json"
+            if self._bdf_path else "joints.cbush_joints.json"
+        )
+        path = filedialog.asksaveasfilename(
+            title="Save Joints",
+            defaultextension=".json",
+            initialdir=initial_dir,
+            initialfile=initial_file,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        payload = {
+            "format": "cbush_joints",
+            "version": 1,
+            "joints": [
+                {"name": name, "ids": sorted(pids)}
+                for name, pids in self._joints.items()
+            ],
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            messagebox.showinfo("Saved", f"Joints saved to:\n{path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Save Error", str(exc), parent=self)
+
+    def _load_joints_json(self):
+        import json, os
+        initial_dir = os.path.dirname(self._bdf_path) if self._bdf_path else None
+        path = filedialog.askopenfilename(
+            title="Load Joints",
+            initialdir=initial_dir,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc), parent=self)
+            return
+        if data.get("format") != "cbush_joints":
+            messagebox.showerror("Load Error",
+                                 "File is not a cbush_joints JSON.", parent=self)
+            return
+        available_set = set(self._available_pids)
+        new_joints = {}
+        skipped_ids = []
+        skipped_joints = []
+        for entry in data.get("joints", []):
+            name = entry.get("name", "").strip()
+            if not name:
+                continue
+            pids = set()
+            for pid in entry.get("ids", []):
+                if pid in available_set:
+                    pids.add(pid)
+                else:
+                    skipped_ids.append(pid)
+            if pids:
+                new_joints[name] = pids
+            else:
+                skipped_joints.append(name)
+        if skipped_ids or skipped_joints:
+            msg_parts = []
+            if skipped_ids:
+                preview = ", ".join(str(x) for x in skipped_ids[:5])
+                if len(skipped_ids) > 5:
+                    preview += f"\u2026 ({len(skipped_ids)} total)"
+                msg_parts.append(f"{len(skipped_ids)} PID(s) not found: {preview}")
+            if skipped_joints:
+                msg_parts.append(
+                    f"{len(skipped_joints)} empty joint(s) skipped: "
+                    + ", ".join(f"'{g}'" for g in skipped_joints[:3])
+                    + ("\u2026" if len(skipped_joints) > 3 else "")
+                )
+            messagebox.showwarning("Partial Load", "\n".join(msg_parts), parent=self)
+        self._joints = new_joints
+        self._clear_form()
         self._refresh_joint_list()
 
     def _apply(self):
@@ -1119,6 +1369,7 @@ REQUIREMENTS
             {n: self._joints[n] for n in self._joint_order if n in self._joints},
             self._on_joints_apply,
             id_labels=id_labels,
+            bdf_path=self._bdf_path,
         )
 
     def _on_joints_apply(self, joints):
