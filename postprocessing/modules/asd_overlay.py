@@ -610,38 +610,44 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         return result
 
     def _get_response_psd(self, slot_idx, subcase, nid, idof, unit_factor):
-        """Return (freqs, psd_g2hz) for one node/DOF, handling PSD and FRF modes."""
+        """Return (freqs, data, is_psd) for one node/DOF.
+
+        is_psd=True  → data is g²/Hz (ASD); compute GRMS, label accordingly.
+        is_psd=False → data is g/g (FRF magnitude); skip GRMS.
+        Returns (None, None, None) when the node/subcase is unavailable.
+        """
         slot = self._op2_slots[slot_idx]
         op2 = slot['op2']
 
         if slot['mode'] == "PSD":
             psd_dict = op2.op2_results.psd.accelerations
             if subcase not in psd_dict:
-                return None, None
+                return None, None, None
             psd_tbl = psd_dict[subcase]
             freqs = psd_tbl._times
             op2_nids = psd_tbl.node_gridtype[:, 0]
             hits = np.where(op2_nids == nid)[0]
             if not len(hits):
-                return None, None
+                return None, None, None
             raw_psd = psd_tbl.data[:, hits[0], idof]
-            return freqs, raw_psd / (unit_factor ** 2)
-        else:  # FRF + Input ASD
-            if slot['input_asd_freqs'] is None:
-                return None, None
+            return freqs, raw_psd / (unit_factor ** 2), True
+        else:  # FRF
             if not op2.accelerations or subcase not in op2.accelerations:
-                return None, None
+                return None, None, None
             frf_tbl = op2.accelerations[subcase]
             freqs = frf_tbl._times
             op2_nids = frf_tbl.node_gridtype[:, 0]
             hits = np.where(op2_nids == nid)[0]
             if not len(hits):
-                return None, None
+                return None, None, None
             H_native = frf_tbl.data[:, hits[0], idof]   # complex
             H_g = H_native / unit_factor                 # g per g_input
-            H_mag2 = H_g.real ** 2 + H_g.imag ** 2      # dimensionless
-            S_in = self._interp_input_asd_to_grid(slot, freqs)
-            return freqs, H_mag2 * S_in
+            if slot['input_asd_freqs'] is not None:
+                H_mag2 = H_g.real ** 2 + H_g.imag ** 2
+                S_in = self._interp_input_asd_to_grid(slot, freqs)
+                return freqs, H_mag2 * S_in, True
+            else:
+                return freqs, np.abs(H_g), False
 
     @staticmethod
     def _get_rms_g(op2, subcase, nid, idof, freqs, psd_curve_g2hz, unit_factor):
@@ -674,6 +680,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
         idof = self.DOF_LABELS.index(self._dof_var.get())
         has_curves = False
+        has_psd = False
+        has_frf_mag = False
 
         for slot_idx, slot in self._op2_slots.items():
             op2 = slot['op2']
@@ -691,20 +699,31 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                     continue
                 nid = node['id']
 
-                freqs, psd_g2hz = self._get_response_psd(
+                freqs, data, is_psd = self._get_response_psd(
                     slot_idx, subcase, nid, idof, unit_factor)
                 if freqs is None:
                     continue
 
-                rms_g = self._get_rms_g(
-                    op2, subcase, nid, idof, freqs, psd_g2hz, unit_factor)
+                if is_psd:
+                    rms_g = self._get_rms_g(
+                        op2, subcase, nid, idof, freqs, data, unit_factor)
+                    label = f"{tag}: {node['label']}  (RMS = {rms_g:.3g} g)"
+                    has_psd = True
+                else:
+                    label = f"{tag}: {node['label']}  (FRF magnitude)"
+                    has_frf_mag = True
 
-                label = f"{tag}: {node['label']}  (RMS = {rms_g:.3g} g)"
-                ax.loglog(freqs, psd_g2hz, label=label, color=color, linestyle=ls)
+                ax.loglog(freqs, data, label=label, color=color, linestyle=ls)
                 has_curves = True
 
         ax.set_xlabel("Frequency (Hz)", color=_TEXT_COLOR)
-        ax.set_ylabel("ASD (g²/Hz)", color=_TEXT_COLOR)
+        if has_psd and has_frf_mag:
+            ylabel = "ASD (g²/Hz) / FRF (g/g)"
+        elif has_frf_mag:
+            ylabel = "FRF Magnitude (g/g)"
+        else:
+            ylabel = "ASD (g²/Hz)"
+        ax.set_ylabel(ylabel, color=_TEXT_COLOR)
         ax.tick_params(colors=_TEXT_COLOR, which="both")
         for spine in ax.spines.values():
             spine.set_edgecolor(_SPINE_COLOR)
