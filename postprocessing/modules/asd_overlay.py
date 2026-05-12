@@ -327,32 +327,35 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 self._status_label.configure(text="Load failed", text_color="red")
                 return
 
-            mode = self._op2_slots[slot_idx]['mode']
+            # Auto-detect: PSD takes priority (RANDOM runs may also have complex acc)
+            psd_dict = op2.op2_results.psd.accelerations
+            frf_dict = op2.accelerations
+            if psd_dict:
+                mode = "PSD"
+                result_dict = psd_dict
+            elif frf_dict:
+                mode = "FRF"
+                result_dict = frf_dict
+            else:
+                messagebox.showwarning(
+                    "No Acceleration Data",
+                    f"OP2 {tag} contains no acceleration results.\n\n"
+                    "Ensure the deck includes:\n"
+                    "  ACCELERATION(PLOT) = ALL\n\n"
+                    "For PSD output also add:\n"
+                    "  RANDOM = <sid>")
+                self._file_label[slot_idx].configure(
+                    text="(no data)", text_color="orange")
+                return
 
-            if mode == "PSD":
-                result_dict = op2.op2_results.psd.accelerations
-                if not result_dict:
-                    messagebox.showwarning(
-                        "No PSD Data",
-                        f"OP2 {tag} contains no PSD acceleration results.\n\n"
-                        "Ensure the deck includes:\n"
-                        "  RANDOM = <sid>\n"
-                        "  ACCELERATION(PLOT) = ALL")
-                    self._file_label[slot_idx].configure(
-                        text="(no PSD data)", text_color="orange")
-                    return
-            else:  # FRF + Input ASD
-                result_dict = op2.accelerations
-                if not result_dict:
-                    messagebox.showwarning(
-                        "No FRF Data",
-                        f"OP2 {tag} contains no acceleration results.\n\n"
-                        "Ensure the deck includes:\n"
-                        "  ACCELERATION(PLOT) = ALL\n"
-                        "(Run SOL 111 without RANDOM for FRF mode.)")
-                    self._file_label[slot_idx].configure(
-                        text="(no FRF data)", text_color="orange")
-                    return
+            # Sync mode to what was detected
+            self._op2_slots[slot_idx]['mode'] = mode
+            mode_label = "PSD (RANDOM)" if mode == "PSD" else "FRF + Input ASD"
+            self._mode_var[slot_idx].set(mode_label)
+            if mode == "FRF":
+                self._frf_row[slot_idx].pack(fill=tk.X, pady=1)
+            else:
+                self._frf_row[slot_idx].pack_forget()
 
             self._op2_slots[slot_idx]['op2'] = op2
             self._op2_slots[slot_idx]['path'] = path
