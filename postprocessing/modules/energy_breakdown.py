@@ -996,6 +996,13 @@ REQUIREMENTS
         for eid, pct in self._ese_by_eid.items():
             gid = mapping.get(eid)
             if gid is not None:
+                # For Include File grouping, only count elements that also have
+                # a property mapping.  Rigid elements (RBE2/RBE3) and property-
+                # less mass elements (CONM2) live in _eid_to_file but not
+                # _eid_to_pid; if Nastran reports non-zero ESE for them (common
+                # with DMIG models) they inflate the file total above 100 %.
+                if group_by == "Include File" and eid not in self._eid_to_pid:
+                    continue
                 if gid not in raw_groups:
                     raw_groups[gid] = np.zeros(nmodes)
                 raw_groups[gid] += pct
@@ -1008,7 +1015,8 @@ REQUIREMENTS
             for group_name, member_ids in self._custom_groups.items():
                 merged = np.zeros(nmodes)
                 for gid in member_ids:
-                    if gid in raw_groups:
+                    # Guard against the same file appearing in multiple groups.
+                    if gid in raw_groups and gid not in consumed_ids:
                         merged += raw_groups[gid]
                         consumed_ids.add(gid)
                 merged_groups[group_name] = merged
