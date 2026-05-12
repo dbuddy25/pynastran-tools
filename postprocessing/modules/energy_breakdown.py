@@ -192,7 +192,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
     """Dialog for creating/editing custom group merges."""
 
     def __init__(self, parent, available_ids, existing_groups, show_ungrouped,
-                 on_apply, id_labels=None, id_order=None):
+                 on_apply, id_labels=None, id_order=None, bdf_path=None):
         super().__init__(parent)
         self.title("Manage Groups")
         self.geometry("600x450")
@@ -211,6 +211,7 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self._show_ungrouped = tk.BooleanVar(value=show_ungrouped)
         self._on_apply = on_apply
         self._editing_key = None
+        self._bdf_path = bdf_path
 
         self._build_ui()
 
@@ -269,6 +270,11 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                       command=self._import_csv).pack(pady=(20, 2))
         ctk.CTkButton(mid, text="Export Template\u2026", width=140,
                       command=self._export_template).pack(pady=2)
+
+        ctk.CTkButton(mid, text="Save Groups\u2026", width=140,
+                      command=self._save_groups_json).pack(pady=(12, 2))
+        ctk.CTkButton(mid, text="Load Groups\u2026", width=140,
+                      command=self._load_groups_json).pack(pady=2)
 
         # Right: existing groups
         right = ctk.CTkFrame(main)
@@ -519,6 +525,122 @@ class ManageGroupsDialog(ctk.CTkToplevel):
                                 parent=self)
         except Exception as exc:
             messagebox.showerror("Export Error", str(exc), parent=self)
+
+    def _infer_mode(self):
+        ids = self._available_ids or (
+            [next(iter(next(iter(self._groups.values()))))]
+            if self._groups else []
+        )
+        if ids and isinstance(ids[0], str):
+            return "include_file"
+        return "property_id"
+
+    def _save_groups_json(self):
+        import json, os
+        initial_dir = os.path.dirname(self._bdf_path) if self._bdf_path else None
+        initial_file = (
+            os.path.splitext(os.path.basename(self._bdf_path))[0] + ".ese_groups.json"
+            if self._bdf_path else "groups.ese_groups.json"
+        )
+        path = filedialog.asksaveasfilename(
+            title="Save Groups",
+            defaultextension=".json",
+            initialdir=initial_dir,
+            initialfile=initial_file,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        payload = {
+            "format": "ese_groups",
+            "version": 1,
+            "mode": self._infer_mode(),
+            "show_ungrouped": self._show_ungrouped.get(),
+            "groups": [
+                {"name": name, "ids": sorted(ids, key=str)}
+                for name, ids in self._groups.items()
+            ],
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            messagebox.showinfo("Saved", f"Groups saved to:\n{path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Save Error", str(exc), parent=self)
+
+    def _load_groups_json(self):
+        import json, os
+        initial_dir = os.path.dirname(self._bdf_path) if self._bdf_path else None
+        path = filedialog.askopenfilename(
+            title="Load Groups",
+            initialdir=initial_dir,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc), parent=self)
+            return
+
+        if data.get("format") != "ese_groups":
+            messagebox.showerror("Load Error",
+                                 "File is not an ese_groups JSON.", parent=self)
+            return
+
+        file_mode = data.get("mode", "unknown")
+        current_mode = self._infer_mode()
+        if file_mode != "unknown" and file_mode != current_mode:
+            mode_label = {"include_file": "Include File",
+                          "property_id": "Property ID"}.get
+            messagebox.showerror(
+                "Mode Mismatch",
+                f"Groups file is for '{mode_label(file_mode, file_mode)}' mode "
+                f"but the dialog is in '{mode_label(current_mode, current_mode)}' mode.",
+                parent=self)
+            return
+
+        available_set = set(self._available_ids)
+        new_groups = {}
+        skipped_ids = []
+        skipped_groups = []
+        for entry in data.get("groups", []):
+            name = entry.get("name", "").strip()
+            if not name:
+                continue
+            ids = set()
+            for id_val in entry.get("ids", []):
+                if id_val in available_set:
+                    ids.add(id_val)
+                else:
+                    skipped_ids.append(id_val)
+            if ids:
+                new_groups[name] = ids
+            else:
+                skipped_groups.append(name)
+
+        if skipped_ids or skipped_groups:
+            msg_parts = []
+            if skipped_ids:
+                preview = ", ".join(str(x) for x in skipped_ids[:5])
+                if len(skipped_ids) > 5:
+                    preview += f"… ({len(skipped_ids)} total)"
+                msg_parts.append(f"{len(skipped_ids)} ID(s) not found: {preview}")
+            if skipped_groups:
+                msg_parts.append(
+                    f"{len(skipped_groups)} empty group(s) skipped: "
+                    + ", ".join(f"'{g}'" for g in skipped_groups[:3])
+                    + ("…" if len(skipped_groups) > 3 else "")
+                )
+            messagebox.showwarning("Partial Load", "\n".join(msg_parts), parent=self)
+
+        self._groups = new_groups
+        if "show_ungrouped" in data:
+            self._show_ungrouped.set(data["show_ungrouped"])
+        self._clear_form()
+        self._refresh_group_list()
 
     def _apply(self):
         self._on_apply(self._groups, self._show_ungrouped.get())
@@ -1292,6 +1414,7 @@ REQUIREMENTS
             on_apply=self._on_groups_applied,
             id_labels=id_labels,
             id_order=id_order,
+            bdf_path=self._bdf_path,
         )
 
     def _on_groups_applied(self, groups, show_ungrouped):
