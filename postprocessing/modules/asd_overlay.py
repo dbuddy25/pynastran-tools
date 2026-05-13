@@ -150,6 +150,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._input_asd_label = [None, None]
         self._plot_theme = "dark"
         self._theme_btn = None
+        self._view_mode_var = ctk.StringVar(value="Manual")
+        self._cycle_index = 0
+        self._prev_btn = None
+        self._next_btn = None
+        self._cycle_label = None
 
         self._build_ui()
 
@@ -174,11 +179,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             row = ctk.CTkFrame(toolbar, fg_color="transparent")
             row.pack(fill=tk.X, pady=1)
 
-            color = _SLOT_COLORS[i]
             btn = ctk.CTkButton(
                 row, text=f"Open OP2 {tag}…", width=120,
                 command=lambda idx=i: self._open_op2(idx),
-                fg_color=color,
             )
             btn.pack(side=tk.LEFT, padx=(0, 6))
             self._open_btn[i] = btn
@@ -254,6 +257,35 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._status_label = ctk.CTkLabel(
             dof_row, text="Open an OP2 to begin", text_color="gray")
         self._status_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        # ── Cycle / View row ─────────────────────────────────────────────────
+        view_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        view_row.pack(fill=tk.X, pady=(2, 0))
+
+        ctk.CTkLabel(view_row, text="View:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkOptionMenu(
+            view_row, variable=self._view_mode_var,
+            values=["Manual", "All grids, cycle DOF",
+                    "One grid, cycle DOF×grid", "One grid all DOFs, cycle grid"],
+            command=self._on_view_mode_change,
+            width=200,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self._prev_btn = ctk.CTkButton(
+            view_row, text="◀ Prev", width=70, state=tk.DISABLED,
+            command=lambda: self._step_cycle(-1),
+        )
+        self._prev_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._cycle_label = ctk.CTkLabel(view_row, text="", text_color="gray",
+                                         width=260, anchor=tk.W)
+        self._cycle_label.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._next_btn = ctk.CTkButton(
+            view_row, text="Next ▶", width=70, state=tk.DISABLED,
+            command=lambda: self._step_cycle(1),
+        )
+        self._next_btn.pack(side=tk.LEFT)
 
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -733,6 +765,68 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         area = AsdOverlayModule._grms_loglog(freqs, psd_curve_g2hz)
         return float(np.sqrt(area))
 
+    # ── Cycle helpers ────────────────────────────────────────────────────────
+
+    def _get_plot_frames(self):
+        """Return (frames, descs) for the current view mode.
+
+        frames[i] is a list of (nid, label, idof) to draw together.
+        descs[i]  is a short string for the cycle counter label.
+        """
+        checked = [(n['id'], n['label']) for n in self._nodes if n['checked'].get()]
+        cur_dof = self.DOF_LABELS.index(self._dof_var.get())
+        mode = self._view_mode_var.get()
+
+        if mode == "Manual":
+            return [[(nid, lbl, cur_dof) for nid, lbl in checked]], [""]
+
+        if mode == "All grids, cycle DOF":
+            return (
+                [[(nid, lbl, d) for nid, lbl in checked] for d in range(3)],
+                [self.DOF_LABELS[d] for d in range(3)],
+            )
+
+        if mode == "One grid, cycle DOF×grid":
+            frames, descs = [], []
+            for nid, lbl in checked:
+                for d in range(3):
+                    frames.append([(nid, lbl, d)])
+                    descs.append(f"Node {nid} {lbl} — {self.DOF_LABELS[d]}")
+            return frames, descs
+
+        if mode == "One grid all DOFs, cycle grid":
+            return (
+                [[(nid, lbl, d) for d in range(3)] for nid, lbl in checked],
+                [f"Node {nid} {lbl}" for nid, lbl in checked],
+            )
+
+        return [[(nid, lbl, cur_dof) for nid, lbl in checked]], [""]
+
+    def _update_cycle_controls(self, frames, descs):
+        """Sync Prev/Next button states and counter label to current cycle position."""
+        mode = self._view_mode_var.get()
+        n = len(frames)
+        i = self._cycle_index
+
+        if mode == "Manual" or n <= 1:
+            self._cycle_label.configure(text="")
+            self._prev_btn.configure(state=tk.DISABLED)
+            self._next_btn.configure(state=tk.DISABLED)
+            return
+
+        desc = descs[i] if i < len(descs) else ""
+        self._cycle_label.configure(text=f"{i + 1} of {n}: {desc}")
+        self._prev_btn.configure(state=tk.NORMAL if i > 0 else tk.DISABLED)
+        self._next_btn.configure(state=tk.NORMAL if i < n - 1 else tk.DISABLED)
+
+    def _on_view_mode_change(self, _val=None):
+        self._cycle_index = 0
+        self._refresh_plot()
+
+    def _step_cycle(self, delta):
+        self._cycle_index += delta
+        self._refresh_plot()
+
     # ── Plot ─────────────────────────────────────────────────────────────────
 
     def _refresh_plot(self):
@@ -741,7 +835,22 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ax.clear()
         ax.set_facecolor(t["plot_bg"])
 
-        idof = self.DOF_LABELS.index(self._dof_var.get())
+        frames, descs = self._get_plot_frames()
+        if not frames:
+            frames, descs = [[]], [""]
+        self._cycle_index = max(0, min(self._cycle_index, len(frames) - 1))
+        curves = frames[self._cycle_index]
+
+        view_mode = self._view_mode_var.get()
+        # Color by DOF when showing all 3 DOFs for one grid per frame
+        color_by_dof = (view_mode == "One grid all DOFs, cycle grid")
+
+        # Sync DOF dropdown to the active DOF when cycling single-DOF modes
+        if view_mode in ("All grids, cycle DOF", "One grid, cycle DOF×grid"):
+            if curves:
+                active_dof = curves[0][2]
+                self._dof_var.set(self.DOF_LABELS[active_dof])
+
         has_curves = False
         has_psd = False
         has_frf_mag = False
@@ -756,11 +865,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             tag = _SLOT_TAGS[slot_idx]
             ls = _SLOT_LINES[slot_idx]
 
-            for node_idx, node in enumerate(self._nodes):
-                if not node['checked'].get():
-                    continue
-                nid = node['id']
-                color = _NODE_COLORS[node_idx % len(_NODE_COLORS)]
+            for curve_idx, (nid, lbl, idof) in enumerate(curves):
+                color = (_NODE_COLORS[idof % len(_NODE_COLORS)] if color_by_dof
+                         else _NODE_COLORS[curve_idx % len(_NODE_COLORS)])
 
                 freqs, data, is_psd = self._get_response_psd(
                     slot_idx, subcase, nid, idof, unit_factor)
@@ -770,10 +877,14 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 if is_psd:
                     rms_g = self._get_rms_g(
                         op2, subcase, nid, idof, freqs, data, unit_factor)
-                    label = f"{tag}: {node['label']}  (RMS = {rms_g:.3g} g)"
+                    dof_suffix = (f" {self.DOF_LABELS[idof]}" if color_by_dof
+                                  else "")
+                    label = f"{tag}: {lbl}{dof_suffix}  (RMS = {rms_g:.3g} g)"
                     has_psd = True
                 else:
-                    label = f"{tag}: {node['label']}  (FRF magnitude)"
+                    dof_suffix = (f" {self.DOF_LABELS[idof]}" if color_by_dof
+                                  else "")
+                    label = f"{tag}: {lbl}{dof_suffix}  (FRF magnitude)"
                     has_frf_mag = True
 
                 ax.loglog(freqs, data, label=label, color=color, linestyle=ls)
@@ -804,3 +915,4 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                     ha="center", va="center", color="gray", fontsize=10)
 
         self._canvas.draw_idle()
+        self._update_cycle_controls(frames, descs)
