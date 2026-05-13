@@ -19,6 +19,32 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
+def _sc_int(key):
+    """Normalize a pyNastran result dict key to a plain integer subcase ID."""
+    return int(key[0]) if isinstance(key, tuple) else int(key)
+
+
+def _unique_subcases(result_dict):
+    """Return sorted unique integer subcase IDs from a pyNastran result dict."""
+    seen, out = set(), []
+    for key in sorted(result_dict.keys(), key=_sc_int):
+        sc = _sc_int(key)
+        if sc not in seen:
+            seen.add(sc)
+            out.append(sc)
+    return out
+
+
+def _lookup_subcase(result_dict, subcase_int):
+    """Fetch a result table by integer subcase ID regardless of key format."""
+    if subcase_int in result_dict:
+        return result_dict[subcase_int]
+    for key, val in result_dict.items():
+        if _sc_int(key) == subcase_int:
+            return val
+    return None
+
+
 _NODE_COLORS = (
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
     "#9467bd", "#8c564b", "#e377c2", "#bcbd22",
@@ -364,7 +390,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             self._op2_slots[slot_idx]['op2'] = op2
             self._op2_slots[slot_idx]['path'] = path
 
-            subcases = sorted(result_dict.keys())
+            subcases = _unique_subcases(result_dict)
             sc_strs = [str(s) for s in subcases]
             self._sc_menu[slot_idx].configure(values=sc_strs)
             self._sc_var[slot_idx].set(sc_strs[0])
@@ -382,7 +408,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
     def _on_sc_select(self, slot_idx):
         val = self._sc_var[slot_idx].get()
-        self._op2_slots[slot_idx]['subcase'] = int(val) if val != "(none)" else None
+        try:
+            self._op2_slots[slot_idx]['subcase'] = int(val) if val != "(none)" else None
+        except ValueError:
+            self._op2_slots[slot_idx]['subcase'] = None
         self._refresh_plot()
 
     def _on_mode_change(self, slot_idx):
@@ -624,10 +653,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         op2 = slot['op2']
 
         if slot['mode'] == "PSD":
-            psd_dict = op2.op2_results.psd.accelerations
-            if subcase not in psd_dict:
+            psd_tbl = _lookup_subcase(op2.op2_results.psd.accelerations, subcase)
+            if psd_tbl is None:
                 return None, None, None
-            psd_tbl = psd_dict[subcase]
             freqs = psd_tbl._times
             op2_nids = psd_tbl.node_gridtype[:, 0]
             hits = np.where(op2_nids == nid)[0]
@@ -636,9 +664,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             raw_psd = psd_tbl.data[:, hits[0], idof]
             return freqs, raw_psd / (unit_factor ** 2), True
         else:  # FRF
-            if not op2.accelerations or subcase not in op2.accelerations:
+            if not op2.accelerations:
                 return None, None, None
-            frf_tbl = op2.accelerations[subcase]
+            frf_tbl = _lookup_subcase(op2.accelerations, subcase)
+            if frf_tbl is None:
+                return None, None, None
             freqs = frf_tbl._times
             op2_nids = frf_tbl.node_gridtype[:, 0]
             hits = np.where(op2_nids == nid)[0]
@@ -661,13 +691,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         Falls back to analytical log-log segment integration per FEMCI.
         """
         try:
-            rms_dict = op2.op2_results.rms.accelerations
-            if subcase in rms_dict:
-                rms_tbl = rms_dict[subcase]
+            rms_tbl = _lookup_subcase(op2.op2_results.rms.accelerations, subcase)
+            if rms_tbl is not None:
                 nids_arr = rms_tbl.node_gridtype[:, 0]
                 hits = np.where(nids_arr == nid)[0]
                 if len(hits):
-                    # data shape: (1, nnodes, 6) — single RMS value per node/DOF
                     rms_native = float(rms_tbl.data[0, hits[0], idof])
                     return rms_native / unit_factor
         except Exception:
