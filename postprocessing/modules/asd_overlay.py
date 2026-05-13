@@ -471,6 +471,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         )
         self._theme_btn.pack(side=tk.RIGHT, padx=4, pady=2)
 
+        ctk.CTkButton(
+            plot_header, text="Copy Figure", width=100,
+            command=self._copy_figure,
+        ).pack(side=tk.RIGHT, padx=(0, 4), pady=2)
+
         self._fig = Figure(figsize=(8, 5), dpi=100, facecolor=_DARK_BG)
         self._ax = self._fig.add_subplot(111)
 
@@ -492,6 +497,48 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._theme_btn.configure(
             text="☀ Light" if self._plot_theme == "dark" else "☾ Dark")
         self._refresh_plot()
+
+    def _copy_figure(self):
+        import io, os, tempfile, subprocess
+        buf = io.BytesIO()
+        try:
+            self._fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+                              facecolor=self._fig.get_facecolor())
+        except Exception as exc:
+            messagebox.showerror("Copy Error", f"Could not render figure:\n{exc}")
+            return
+        buf.seek(0)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                f.write(buf.getvalue())
+                tmp = f.name
+            if os.name == 'nt':
+                ps = (
+                    'Add-Type -Assembly System.Windows.Forms;'
+                    '[Windows.Forms.Clipboard]::SetImage('
+                    f'[System.Drawing.Image]::FromFile("{tmp}"))'
+                )
+                subprocess.run(['powershell', '-Command', ps], check=True)
+            elif os.uname().sysname == 'Darwin':
+                subprocess.run(
+                    ['osascript', '-e',
+                     f'set the clipboard to '
+                     f'(read (POSIX file "{tmp}") as «class PNGf»)'],
+                    check=True)
+            else:
+                subprocess.run(
+                    ['xclip', '-selection', 'clipboard',
+                     '-t', 'image/png', '-i', tmp],
+                    check=True)
+        except Exception as exc:
+            messagebox.showerror("Copy Error", str(exc))
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     def _draw_empty_axes(self):
         t = _THEMES[self._plot_theme]
