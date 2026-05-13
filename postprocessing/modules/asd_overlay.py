@@ -19,7 +19,11 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
-_SLOT_COLORS = ("#1f77b4", "#d62728")   # blue-A, red-B
+_NODE_COLORS = (
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+    "#9467bd", "#8c564b", "#e377c2", "#bcbd22",
+    "#17becf", "#7f7f7f",
+)
 _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 
@@ -691,13 +695,13 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
             unit_factor = self.UNIT_FACTORS[self._unit_var[slot_idx].get()]
             tag = _SLOT_TAGS[slot_idx]
-            color = _SLOT_COLORS[slot_idx]
             ls = _SLOT_LINES[slot_idx]
 
-            for node in self._nodes:
+            for node_idx, node in enumerate(self._nodes):
                 if not node['checked'].get():
                     continue
                 nid = node['id']
+                color = _NODE_COLORS[node_idx % len(_NODE_COLORS)]
 
                 freqs, data, is_psd = self._get_response_psd(
                     slot_idx, subcase, nid, idof, unit_factor)
