@@ -502,7 +502,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         import io, os, tempfile, subprocess
         buf = io.BytesIO()
         try:
-            self._fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+            self._fig.savefig(buf, format='png', dpi=200, bbox_inches='tight',
                               facecolor=self._fig.get_facecolor())
         except Exception as exc:
             messagebox.showerror("Copy Error", f"Could not render figure:\n{exc}")
