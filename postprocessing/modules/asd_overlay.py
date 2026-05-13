@@ -1660,11 +1660,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             if is_cum:
                 ref_plot = self._cumulative_grms_loglog(ref['freqs'], ref['g2hz'])
                 final = float(ref_plot[-1]) if len(ref_plot) else 0.0
-                ref_label = f"[Ref] {rname}  (final GRMS = {final:.3g} g)"
+                ref_label = f"{rname}  (final GRMS = {final:.3g} g)"
             else:
                 ref_plot = ref['g2hz']
                 grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
-                ref_label = f"[Ref] {rname}  (GRMS = {grms:.3g} g)"
+                ref_label = f"{rname}  (GRMS = {grms:.3g} g)"
             ax.plot(ref['freqs'], ref_plot, label=ref_label, color=color,
                     linestyle="-", linewidth=2.0, alpha=0.65)
             has_curves = True
