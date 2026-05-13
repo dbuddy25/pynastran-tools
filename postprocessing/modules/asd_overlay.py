@@ -161,6 +161,14 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._suppress_env_trace = False
         self._title_var.trace_add("write", self._on_title_var_write)
         self._env_var.trace_add("write", self._on_env_var_write)
+        self._cum_rms_var = tk.BooleanVar(value=False)
+        self._cum_rms_axis = None
+        self._pick_peaks_mode = False
+        self._pick_btn = None
+        self._peak_label_style = ctk.StringVar(value="Freq only")
+        self._picked_peaks = []
+        self._last_drawn_curves = []
+        self._mpl_cid_click = None
 
         self._build_ui()
 
@@ -304,6 +312,32 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ctk.CTkEntry(title_row, textvariable=self._env_var, width=220,
                      placeholder_text="Auto-fills on file load").pack(side=tk.LEFT)
 
+        # ── Annotations row ──────────────────────────────────────────────────
+        annot_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        annot_row.pack(fill=tk.X, pady=(0, 4))
+
+        ctk.CTkCheckBox(annot_row, text="Cumulative RMS",
+                        variable=self._cum_rms_var,
+                        command=self._refresh_plot,
+                        ).pack(side=tk.LEFT, padx=(0, 14))
+
+        self._pick_btn = ctk.CTkButton(
+            annot_row, text="Pick Peaks", width=100,
+            command=self._toggle_pick_mode,
+        )
+        self._pick_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        ctk.CTkButton(annot_row, text="Clear Peaks", width=90,
+                      command=self._clear_peaks,
+                      ).pack(side=tk.LEFT, padx=(0, 14))
+
+        ctk.CTkLabel(annot_row, text="Label:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkOptionMenu(annot_row, variable=self._peak_label_style,
+                          values=["Freq only", "Freq + value"],
+                          command=lambda _: self._refresh_plot(),
+                          width=120,
+                          ).pack(side=tk.LEFT)
+
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -352,6 +386,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         toolbar_tk.pack(side=tk.BOTTOM, fill=tk.X)
         self._mpl_toolbar = NavigationToolbar2Tk(self._canvas, toolbar_tk)
         self._mpl_toolbar.update()
+
+        self._mpl_cid_click = self._canvas.mpl_connect(
+            "button_press_event", self._on_canvas_click)
 
         self._draw_empty_axes()
 
@@ -814,6 +851,30 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         return area
 
     @staticmethod
+    def _cumulative_grms_loglog(freqs, asd):
+        """Cumulative GRMS array using FEMCI log-log integration. cum[0] = 0.
+
+        Returns an array of the same length as freqs where each element is
+        sqrt(∫_{f_0}^{f_k} S(f) df) — GRMS accumulated from f_min up to f_k.
+        """
+        cum_area = np.zeros(len(freqs))
+        running = 0.0
+        for i in range(len(freqs) - 1):
+            fl, fh = float(freqs[i]), float(freqs[i + 1])
+            al, ah = float(asd[i]), float(asd[i + 1])
+            if fl <= 0 or fh <= 0 or al <= 0 or ah <= 0:
+                cum_area[i + 1] = running
+                continue
+            log_f = np.log(fh / fl)
+            b = np.log(ah / al) / log_f if log_f != 0 else 0.0
+            if abs(b + 1.0) < 1e-6:
+                running += al * fl * log_f
+            else:
+                running += (ah * fh - al * fl) / (b + 1.0)
+            cum_area[i + 1] = running
+        return np.sqrt(np.maximum(cum_area, 0.0))
+
+    @staticmethod
     def _interp_input_asd_to_grid(slot, op2_freqs):
         """Log-log interpolate slot's input ASD onto op2_freqs. Out-of-range → 0."""
         f_in = slot['input_asd_freqs']
@@ -957,9 +1018,76 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._cycle_index += delta
         self._refresh_plot()
 
+    # ── Peak picking ─────────────────────────────────────────────────────────
+
+    def _toggle_pick_mode(self):
+        self._pick_peaks_mode = not self._pick_peaks_mode
+        if self._pick_peaks_mode:
+            self._pick_btn.configure(fg_color=("#1f6aa5", "#1f6aa5"),
+                                     text="Pick Peaks (ON)")
+            self._canvas.get_tk_widget().configure(cursor="cross")
+        else:
+            self._pick_btn.configure(fg_color=("gray75", "gray25"),
+                                     text="Pick Peaks")
+            self._canvas.get_tk_widget().configure(cursor="")
+
+    def _clear_peaks(self):
+        self._picked_peaks.clear()
+        self._refresh_plot()
+
+    def _on_canvas_click(self, event):
+        if not self._pick_peaks_mode:
+            return
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+        if self._cum_rms_axis is not None and event.inaxes is self._cum_rms_axis:
+            return
+        if event.xdata <= 0 or event.ydata <= 0:
+            return
+
+        from scipy.signal import find_peaks
+
+        click_lx = np.log10(event.xdata)
+        click_ly = np.log10(event.ydata)
+
+        best = None  # (dist, slot_idx, nid, idof, freq, value)
+        for curve in self._last_drawn_curves:
+            if not curve["is_psd"]:
+                continue
+            freqs = curve["freqs"]
+            data = curve["data"]
+            peak_idx, _ = find_peaks(data)
+            if not len(peak_idx):
+                continue
+            for i in peak_idx:
+                f, v = float(freqs[i]), float(data[i])
+                if f <= 0 or v <= 0:
+                    continue
+                d = ((np.log10(f) - click_lx) ** 2
+                     + (np.log10(v) - click_ly) ** 2) ** 0.5
+                if best is None or d < best[0]:
+                    best = (d, curve["slot_idx"], curve["nid"],
+                            curve["idof"], f, v)
+
+        if best is None or best[0] > 0.5:
+            return
+        self._picked_peaks.append({
+            "slot_idx": best[1], "nid": best[2], "idof": best[3],
+            "freq": best[4], "value": best[5],
+        })
+        self._refresh_plot()
+
     # ── Plot ─────────────────────────────────────────────────────────────────
 
     def _refresh_plot(self):
+        # Clear twin axis from previous render before ax.clear()
+        if self._cum_rms_axis is not None:
+            try:
+                self._cum_rms_axis.remove()
+            except Exception:
+                pass
+            self._cum_rms_axis = None
+
         t = _THEMES[self._plot_theme]
         ax = self._ax
         ax.clear()
@@ -972,10 +1100,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         curves = frames[self._cycle_index]
 
         view_mode = self._view_mode_var.get()
-        # Color by DOF when showing all 3 DOFs for one grid per frame
         color_by_dof = (view_mode == "One grid all DOFs, cycle grid")
 
-        # Sync DOF dropdown to the active DOF when cycling single-DOF modes
         if view_mode in ("All grids, cycle DOF", "One grid, cycle DOF×grid"):
             if curves:
                 active_dof = curves[0][2]
@@ -984,6 +1110,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         has_curves = False
         has_psd = False
         has_frf_mag = False
+        self._last_drawn_curves = []
 
         for slot_idx, slot in self._op2_slots.items():
             op2 = slot['op2']
@@ -1019,6 +1146,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
                 ax.loglog(freqs, data, label=label, color=color, linestyle=ls)
                 has_curves = True
+                self._last_drawn_curves.append({
+                    "slot_idx": slot_idx, "nid": nid, "idof": idof,
+                    "freqs": np.asarray(freqs), "data": np.asarray(data),
+                    "is_psd": is_psd, "color": color,
+                })
 
         ax.set_xlabel("Frequency (Hz)", color=t["text"])
         if has_psd and has_frf_mag:
@@ -1043,6 +1175,44 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                     "No data — check OP2 loaded, nodes added, and boxes checked",
                     transform=ax.transAxes,
                     ha="center", va="center", color="gray", fontsize=10)
+
+        # ── Cumulative RMS overlay ────────────────────────────────────────────
+        psd_curves = [c for c in self._last_drawn_curves if c["is_psd"]]
+        if self._cum_rms_var.get() and psd_curves:
+            ax_cum = ax.twinx()
+            self._cum_rms_axis = ax_cum
+            ax_cum.set_yscale("linear")
+            for c in psd_curves:
+                cum = self._cumulative_grms_loglog(c["freqs"], c["data"])
+                ax_cum.plot(c["freqs"], cum, color=c["color"],
+                            linestyle=":", linewidth=1.2, alpha=0.85)
+            ax_cum.set_ylabel("Cumulative GRMS (g)", color=t["text"])
+            ax_cum.tick_params(colors=t["text"])
+            ax_cum.spines["right"].set_edgecolor(t["spine"])
+            ax_cum.yaxis.label.set_color(t["text"])
+
+        # ── Picked peak markers and labels ───────────────────────────────────
+        label_style = self._peak_label_style.get()
+        for pk in self._picked_peaks:
+            curve = next((c for c in self._last_drawn_curves
+                          if c["slot_idx"] == pk["slot_idx"]
+                          and c["nid"] == pk["nid"]
+                          and c["idof"] == pk["idof"]), None)
+            if curve is None:
+                continue
+            f, v = pk["freq"], pk["value"]
+            ax.plot([f], [v], marker="o", markersize=6,
+                    markerfacecolor=curve["color"],
+                    markeredgecolor=t["text"], linestyle="none", zorder=5)
+            if label_style == "Freq + value":
+                ann_text = f"{f:.0f} Hz\n{v:.3g} g²/Hz"
+            else:
+                ann_text = f"{f:.0f} Hz"
+            ax.annotate(ann_text, xy=(f, v),
+                        xytext=(6, 6), textcoords="offset points",
+                        color=t["text"], fontsize=9,
+                        bbox=dict(boxstyle="round,pad=0.2",
+                                  fc=t["legend_bg"], ec=t["spine"], alpha=0.85))
 
         # ── Title and environment ─────────────────────────────────────────────
         plot_title = self._title_var.get().strip()
