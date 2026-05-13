@@ -155,6 +155,12 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._prev_btn = None
         self._next_btn = None
         self._cycle_label = None
+        self._title_var = ctk.StringVar(value="")
+        self._env_var = ctk.StringVar(value="")
+        self._env_user_edited = False
+        self._suppress_env_trace = False
+        self._title_var.trace_add("write", self._on_title_var_write)
+        self._env_var.trace_add("write", self._on_env_var_write)
 
         self._build_ui()
 
@@ -287,12 +293,23 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         )
         self._next_btn.pack(side=tk.LEFT)
 
+        # ── Title / Environment row ───────────────────────────────────────────
+        title_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        title_row.pack(fill=tk.X, pady=(2, 4))
+
+        ctk.CTkLabel(title_row, text="Title:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkEntry(title_row, textvariable=self._title_var, width=280,
+                     placeholder_text="Plot title").pack(side=tk.LEFT, padx=(0, 16))
+        ctk.CTkLabel(title_row, text="Environment:").pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkEntry(title_row, textvariable=self._env_var, width=220,
+                     placeholder_text="Auto-fills on file load").pack(side=tk.LEFT)
+
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Left: node management panel
-        node_panel = ctk.CTkFrame(body, width=210)
+        node_panel = ctk.CTkFrame(body, width=240)
         node_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
         node_panel.pack_propagate(False)
 
@@ -305,8 +322,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         btn_row1.pack(fill=tk.X, padx=6)
         ctk.CTkButton(btn_row1, text="Add…", width=60,
                       command=self._add_nodes_dialog).pack(side=tk.LEFT)
-        ctk.CTkButton(btn_row1, text="CSV", width=50,
-                      command=self._load_csv).pack(side=tk.LEFT, padx=3)
+        ctk.CTkButton(btn_row1, text="Import", width=60,
+                      command=self._import_nodes).pack(side=tk.LEFT, padx=3)
         ctk.CTkButton(btn_row1, text="Clear", width=55,
                       command=self._clear_nodes).pack(side=tk.LEFT)
 
@@ -458,6 +475,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             self._sc_var[slot_idx].set(sc_strs[0])
             self._op2_slots[slot_idx]['subcase'] = subcases[0]
 
+            # PSD OP2 defines the environment; FRF OP2 alone does not
+            if mode == "PSD":
+                self._maybe_autofill_env(
+                    os.path.splitext(os.path.basename(path))[0])
+
             self._file_label[slot_idx].configure(
                 text=os.path.basename(path), text_color=("gray10", "gray90"))
             self._status_label.configure(
@@ -538,6 +560,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                  f"({len(freqs_arr)} pts, "
                  f"{freqs_arr[0]:.1f}–{freqs_arr[-1]:.1f} Hz)",
             text_color=("gray10", "gray90"))
+        self._maybe_autofill_env(os.path.splitext(os.path.basename(path))[0])
         self._refresh_plot()
 
     # ── Node management ──────────────────────────────────────────────────────
@@ -595,53 +618,108 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         if added:
             self._refresh_plot()
 
-    def _load_csv(self):
+    def _import_nodes(self):
         path = filedialog.askopenfilename(
-            title="Load Nodes CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            title="Import Nodes",
+            filetypes=[("Text files", "*.txt"),
+                       ("CSV files", "*.csv"),
+                       ("All files", "*.*")])
         if not path:
             return
+        ext = os.path.splitext(path)[1].lower()
         try:
-            with open(path, newline='', encoding='utf-8-sig') as f:
-                sample = f.read(4096)
-                f.seek(0)
-                try:
-                    dialect = csv.Sniffer().sniff(sample)
-                    has_header = csv.Sniffer().has_header(sample)
-                except csv.Error:
-                    dialect = csv.excel
-                    has_header = False
-                reader = csv.reader(f, dialect)
-                if has_header:
-                    next(reader, None)
-                lines = []
-                for row in reader:
-                    if not row:
-                        continue
-                    try:
-                        gid = int(str(row[0]).strip())
-                    except (ValueError, IndexError):
-                        continue
-                    label = row[1].strip() if len(row) > 1 and str(row[1]).strip() \
-                        else f"Node {gid}"
-                    lines.append(f"{gid},{label}")
+            if ext == '.csv':
+                text = self._read_csv_as_text(path)
+            else:
+                text = self._read_text_node_file(path)
         except Exception as exc:
-            messagebox.showerror("CSV Error", str(exc))
+            messagebox.showerror("Import Error", str(exc))
             return
-        self._parse_and_add_nodes("\n".join(lines))
+        self._parse_and_add_nodes(text)
+
+    @staticmethod
+    def _read_csv_as_text(path):
+        """Parse a CSV node file; return 'gid,label' lines joined by newline."""
+        with open(path, newline='', encoding='utf-8-sig') as f:
+            sample = f.read(4096)
+            f.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample)
+                has_header = csv.Sniffer().has_header(sample)
+            except csv.Error:
+                dialect = csv.excel
+                has_header = False
+            reader = csv.reader(f, dialect)
+            if has_header:
+                next(reader, None)
+            lines = []
+            for row in reader:
+                if not row:
+                    continue
+                try:
+                    gid = int(str(row[0]).strip())
+                except (ValueError, IndexError):
+                    continue
+                label = row[1].strip() if len(row) > 1 and str(row[1]).strip() \
+                    else ""
+                lines.append(f"{gid},{label}" if label else str(gid))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _read_text_node_file(path):
+        """Parse a loose-format text node file; return 'gid,label' lines.
+
+        Format: one node per line, grid ID first, optional label after
+        comma or whitespace. # and $ lines are comments. Blank lines skipped.
+        """
+        lines = []
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or line.startswith('$'):
+                    continue
+                parts = [p.strip() for p in line.split(',', 1)] if ',' in line \
+                    else line.split(None, 1)
+                try:
+                    gid = int(parts[0])
+                except (ValueError, IndexError):
+                    continue
+                label = parts[1].strip() if len(parts) > 1 and parts[1].strip() \
+                    else ""
+                lines.append(f"{gid},{label}" if label else str(gid))
+        return "\n".join(lines)
 
     def _add_node_row(self, gid, label):
         var = tk.BooleanVar(value=True)
+        gid_var = tk.StringVar(value=str(gid))
+        label_var = tk.StringVar(value=label)
+
         row_frame = ctk.CTkFrame(self._node_scroll, fg_color="transparent")
         row_frame.pack(fill=tk.X, pady=1)
-        ctk.CTkCheckBox(
-            row_frame,
-            text=f"{gid}  {label}",
-            variable=var,
-            command=self._refresh_plot,
-        ).pack(anchor=tk.W, padx=4)
-        self._nodes.append({"id": gid, "label": label,
-                             "checked": var, "row_frame": row_frame})
+
+        node = {"id": gid, "label": label,
+                "checked": var, "row_frame": row_frame,
+                "gid_var": gid_var, "label_var": label_var}
+        self._nodes.append(node)
+
+        ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
+                        command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
+
+        gid_entry = ctk.CTkEntry(row_frame, textvariable=gid_var, width=58)
+        gid_entry.pack(side=tk.LEFT, padx=(2, 2))
+        gid_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_gid(n))
+        gid_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_gid(n))
+
+        lbl_entry = ctk.CTkEntry(row_frame, textvariable=label_var, width=100)
+        lbl_entry.pack(side=tk.LEFT, padx=(0, 2))
+        lbl_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_label(n))
+        lbl_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_label(n))
+
+        ctk.CTkButton(row_frame, text="✕", width=22,
+                      command=lambda n=node: self._remove_node(n),
+                      fg_color="transparent", hover_color=("gray75", "gray30"),
+                      text_color=("gray40", "gray60"),
+                      ).pack(side=tk.LEFT)
 
     def _clear_nodes(self):
         for n in self._nodes:
@@ -652,6 +730,58 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     def _select_all(self, state):
         for n in self._nodes:
             n['checked'].set(state)
+        self._refresh_plot()
+
+    def _remove_node(self, node):
+        node['row_frame'].destroy()
+        self._nodes.remove(node)
+        self._refresh_plot()
+
+    def _commit_node_gid(self, node):
+        raw = node['gid_var'].get().strip()
+        try:
+            new_gid = int(raw)
+        except ValueError:
+            node['gid_var'].set(str(node['id']))
+            return
+        if new_gid == node['id']:
+            return
+        if any(n is not node and n['id'] == new_gid for n in self._nodes):
+            node['gid_var'].set(str(node['id']))
+            return
+        if node['label'] == f"Node {node['id']}":
+            node['label'] = f"Node {new_gid}"
+            node['label_var'].set(node['label'])
+        node['id'] = new_gid
+        self._refresh_plot()
+
+    def _commit_node_label(self, node):
+        new_label = node['label_var'].get().strip() or f"Node {node['id']}"
+        if new_label == node['label']:
+            return
+        node['label'] = new_label
+        node['label_var'].set(new_label)
+        self._refresh_plot()
+
+    # ── Title / Environment helpers ──────────────────────────────────────────
+
+    def _on_title_var_write(self, *_):
+        self._refresh_plot()
+
+    def _on_env_var_write(self, *_):
+        if self._suppress_env_trace:
+            return
+        self._env_user_edited = True
+        self._refresh_plot()
+
+    def _maybe_autofill_env(self, name):
+        if self._env_user_edited or not name:
+            return
+        self._suppress_env_trace = True
+        try:
+            self._env_var.set(name)
+        finally:
+            self._suppress_env_trace = False
         self._refresh_plot()
 
     # ── RMS helpers ──────────────────────────────────────────────────────────
@@ -913,6 +1043,23 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                     "No data — check OP2 loaded, nodes added, and boxes checked",
                     transform=ax.transAxes,
                     ha="center", va="center", color="gray", fontsize=10)
+
+        # ── Title and environment ─────────────────────────────────────────────
+        plot_title = self._title_var.get().strip()
+        env_name = self._env_var.get().strip()
+        ax.set_title(
+            plot_title or "",
+            color=t["text"],
+            fontsize=13,
+            weight="bold",
+            pad=20 if env_name else 6,
+        )
+        if env_name:
+            ax.text(0.5, 1.01, env_name,
+                    transform=ax.transAxes,
+                    ha="center", va="bottom",
+                    color=t["text"], fontsize=10,
+                    style="italic", alpha=0.75)
 
         self._canvas.draw_idle()
         self._update_cycle_controls(frames, descs)
