@@ -14,6 +14,15 @@ def bump_patch(version: str) -> str:
 
 
 def main() -> int:
+    # Skip if the tip commit is itself a version bump — prevents the infinite
+    # chain where each push creates a bump commit that then needs another push.
+    tip_msg = subprocess.run(
+        ["git", "log", "--format=%s", "-1", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if tip_msg.startswith("Bump version to"):
+        return 0
+
     text = VERSION_FILE.read_text()
     m = re.search(r'__version__\s*=\s*"([^"]+)"', text)
     if not m:
