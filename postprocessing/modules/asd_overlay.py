@@ -33,7 +33,7 @@ _SPINE_COLOR = "#505050"
 class AsdOverlayModule:
     name = "ASD Overlay"
 
-    DOF_LABELS = ("T1 (X)", "T2 (Y)", "T3 (Z)", "R1", "R2", "R3")
+    DOF_LABELS = ("T1 (X)", "T2 (Y)", "T3 (Z)")
     UNIT_OPTIONS = ("in/s²", "m/s²")
     UNIT_FACTORS = {"in/s²": 386.089, "m/s²": 9.80665}
 
