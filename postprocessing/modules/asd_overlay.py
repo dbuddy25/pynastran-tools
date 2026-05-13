@@ -54,10 +54,24 @@ _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 
 _DARK_BG = "#2b2b2b"
-_PLOT_BG = "#1e1e1e"
-_GRID_COLOR = "#3a3a3a"
-_TEXT_COLOR = "#c0c0c0"
-_SPINE_COLOR = "#505050"
+_THEMES = {
+    "dark": {
+        "fig_bg":    "#2b2b2b",
+        "plot_bg":   "#1e1e1e",
+        "grid":      "#3a3a3a",
+        "text":      "#c0c0c0",
+        "spine":     "#505050",
+        "legend_bg": "#383838",
+    },
+    "light": {
+        "fig_bg":    "#f5f5f5",
+        "plot_bg":   "white",
+        "grid":      "#cccccc",
+        "text":      "#222222",
+        "spine":     "#888888",
+        "legend_bg": "white",
+    },
+}
 
 
 class AsdOverlayModule:
@@ -134,6 +148,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._frf_row = [None, None]
         self._input_asd_btn = [None, None]
         self._input_asd_label = [None, None]
+        self._plot_theme = "dark"
+        self._theme_btn = None
 
         self._build_ui()
 
@@ -227,7 +243,13 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ctk.CTkButton(
             dof_row, text="?", width=30, font=ctk.CTkFont(weight="bold"),
             command=self._show_guide,
-        ).pack(side=tk.LEFT)
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self._theme_btn = ctk.CTkButton(
+            dof_row, text="☀ Light", width=80,
+            command=self._toggle_theme,
+        )
+        self._theme_btn.pack(side=tk.LEFT)
 
         self._status_label = ctk.CTkLabel(
             dof_row, text="Open an OP2 to begin", text_color="gray")
@@ -284,15 +306,23 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
         self._draw_empty_axes()
 
+    def _toggle_theme(self):
+        self._plot_theme = "light" if self._plot_theme == "dark" else "dark"
+        self._theme_btn.configure(
+            text="☀ Light" if self._plot_theme == "dark" else "☾ Dark")
+        self._refresh_plot()
+
     def _draw_empty_axes(self):
+        t = _THEMES[self._plot_theme]
         ax = self._ax
         ax.clear()
-        ax.set_facecolor(_PLOT_BG)
-        ax.set_xlabel("Frequency (Hz)", color=_TEXT_COLOR)
-        ax.set_ylabel("ASD (g²/Hz)", color=_TEXT_COLOR)
-        ax.tick_params(colors=_TEXT_COLOR, which="both")
+        ax.set_facecolor(t["plot_bg"])
+        ax.set_xlabel("Frequency (Hz)", color=t["text"])
+        ax.set_ylabel("ASD (g²/Hz)", color=t["text"])
+        ax.tick_params(colors=t["text"], which="both")
         for spine in ax.spines.values():
-            spine.set_edgecolor(_SPINE_COLOR)
+            spine.set_edgecolor(t["spine"])
+        self._fig.set_facecolor(t["fig_bg"])
         ax.text(0.5, 0.5, "Load an OP2 file and add nodes to begin",
                 transform=ax.transAxes,
                 ha="center", va="center", color="gray", fontsize=11)
@@ -706,9 +736,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     # ── Plot ─────────────────────────────────────────────────────────────────
 
     def _refresh_plot(self):
+        t = _THEMES[self._plot_theme]
         ax = self._ax
         ax.clear()
-        ax.set_facecolor(_PLOT_BG)
+        ax.set_facecolor(t["plot_bg"])
 
         idof = self.DOF_LABELS.index(self._dof_var.get())
         has_curves = False
@@ -748,24 +779,24 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 ax.loglog(freqs, data, label=label, color=color, linestyle=ls)
                 has_curves = True
 
-        ax.set_xlabel("Frequency (Hz)", color=_TEXT_COLOR)
+        ax.set_xlabel("Frequency (Hz)", color=t["text"])
         if has_psd and has_frf_mag:
             ylabel = "ASD (g²/Hz) / FRF (g/g)"
         elif has_frf_mag:
             ylabel = "FRF Magnitude (g/g)"
         else:
             ylabel = "ASD (g²/Hz)"
-        ax.set_ylabel(ylabel, color=_TEXT_COLOR)
-        ax.tick_params(colors=_TEXT_COLOR, which="both")
+        ax.set_ylabel(ylabel, color=t["text"])
+        ax.tick_params(colors=t["text"], which="both")
         for spine in ax.spines.values():
-            spine.set_edgecolor(_SPINE_COLOR)
-        ax.grid(True, which="both", alpha=0.25, color=_GRID_COLOR)
-        self._fig.set_facecolor(_DARK_BG)
+            spine.set_edgecolor(t["spine"])
+        ax.grid(True, which="both", alpha=0.3, color=t["grid"])
+        self._fig.set_facecolor(t["fig_bg"])
 
         if has_curves:
             ax.legend(loc="best", fontsize=8,
-                      facecolor="#383838", labelcolor=_TEXT_COLOR,
-                      edgecolor=_SPINE_COLOR)
+                      facecolor=t["legend_bg"], labelcolor=t["text"],
+                      edgecolor=t["spine"])
         else:
             ax.text(0.5, 0.5,
                     "No data — check OP2 loaded, nodes added, and boxes checked",
