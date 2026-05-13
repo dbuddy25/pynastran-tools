@@ -24,15 +24,24 @@ def _sc_int(key):
     return int(key[0]) if isinstance(key, tuple) else int(key)
 
 
-def _unique_subcases(result_dict):
-    """Return sorted unique integer subcase IDs from a pyNastran result dict."""
-    seen, out = set(), []
+def _subcase_options(result_dict):
+    """Return [(sc_id, display_label), ...] sorted by sc_id.
+
+    Pulls SUBTITLE then LABEL from the pyNastran table (CASE CONTROL cards).
+    Falls back to the bare integer string when neither is set.
+    """
+    seen = {}
     for key in sorted(result_dict.keys(), key=_sc_int):
         sc = _sc_int(key)
-        if sc not in seen:
-            seen.add(sc)
-            out.append(sc)
-    return out
+        if sc in seen:
+            continue
+        tbl = result_dict[key]
+        sub = (getattr(tbl, "subtitle", "") or "").strip()
+        lab = (getattr(tbl, "label", "") or "").strip()
+        hint = sub or lab
+        display = f"{sc} — {hint}" if hint else str(sc)
+        seen[sc] = display
+    return list(seen.items())
 
 
 def _lookup_subcase(result_dict, subcase_int):
@@ -205,6 +214,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     def _empty_slot():
         return {
             "op2": None, "path": None, "subcase": None,
+            "subcase_options": [],
             "mode": "PSD",
             "input_asd_path": None,
             "input_asd_freqs": None,
@@ -232,7 +242,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             self._open_btn[i] = btn
 
             lbl = ctk.CTkLabel(slot_grid, text="(no file)", text_color="gray",
-                               anchor=tk.W)
+                               anchor=tk.W, width=400)
             lbl.grid(row=i, column=1, sticky="ew", padx=(0, 8))
             self._file_label[i] = lbl
 
@@ -256,7 +266,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             scmenu = ctk.CTkOptionMenu(
                 slot_grid, variable=self._sc_var[i], values=["(none)"],
                 command=lambda _v, idx=i: self._on_sc_select(idx),
-                width=100,
+                width=180,
             )
             scmenu.grid(row=i, column=7, padx=(0, 10))
             self._sc_menu[i] = scmenu
@@ -321,7 +331,8 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ctk.CTkOptionMenu(
             view_row, variable=self._view_mode_var,
             values=["Manual", "All grids, cycle DOF",
-                    "One grid, cycle DOF×grid", "One grid all DOFs, cycle grid"],
+                    "One grid, cycle DOF×grid", "One grid all DOFs, cycle grid",
+                    "Cycle subcases"],
             command=self._on_view_mode_change,
             width=200,
         ).pack(side=tk.LEFT, padx=(0, 10))
@@ -389,6 +400,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                           command=lambda _: self._refresh_plot(),
                           width=120,
                           ).pack(side=tk.LEFT)
+
+        ctk.CTkButton(annot_row, text="Export Excel…", width=120,
+                      command=self._export_excel,
+                      ).pack(side=tk.LEFT, padx=(14, 0))
 
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -584,11 +599,12 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             self._op2_slots[slot_idx]['op2'] = op2
             self._op2_slots[slot_idx]['path'] = path
 
-            subcases = _unique_subcases(result_dict)
-            sc_strs = [str(s) for s in subcases]
+            sc_pairs = _subcase_options(result_dict)
+            sc_strs = [label for _sc, label in sc_pairs]
+            self._op2_slots[slot_idx]['subcase_options'] = sc_pairs
             self._sc_menu[slot_idx].configure(values=sc_strs)
             self._sc_var[slot_idx].set(sc_strs[0])
-            self._op2_slots[slot_idx]['subcase'] = subcases[0]
+            self._op2_slots[slot_idx]['subcase'] = sc_pairs[0][0]
 
             stem = os.path.splitext(os.path.basename(path))[0]
             self._maybe_autofill_name(slot_idx, stem)
@@ -599,7 +615,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 text=os.path.basename(path), text_color=("gray10", "gray90"))
             self._status_label.configure(
                 text=f"OP2 {tag}: {os.path.basename(path)} "
-                     f"({len(subcases)} subcase{'s' if len(subcases) != 1 else ''})",
+                     f"({len(sc_pairs)} subcase{'s' if len(sc_pairs) != 1 else ''})",
                 text_color=("gray10", "gray90"))
             self._refresh_plot()
 
@@ -608,8 +624,12 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     def _on_sc_select(self, slot_idx):
         val = self._sc_var[slot_idx].get()
         try:
-            self._op2_slots[slot_idx]['subcase'] = int(val) if val != "(none)" else None
-        except ValueError:
+            if val == "(none)":
+                self._op2_slots[slot_idx]['subcase'] = None
+            else:
+                # Display string is "42 — SUBTITLE" or just "42"
+                self._op2_slots[slot_idx]['subcase'] = int(val.split("—", 1)[0].strip())
+        except (ValueError, IndexError):
             self._op2_slots[slot_idx]['subcase'] = None
         self._refresh_plot()
 
@@ -623,6 +643,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             self._frf_row[slot_idx].pack_forget()
         self._op2_slots[slot_idx]['op2'] = None
         self._op2_slots[slot_idx]['subcase'] = None
+        self._op2_slots[slot_idx]['subcase_options'] = []
         self._sc_var[slot_idx].set("(none)")
         self._sc_menu[slot_idx].configure(values=["(none)"])
         self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
@@ -1117,6 +1138,23 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
     # ── Cycle helpers ────────────────────────────────────────────────────────
 
+    def _cycle_subcase_pool(self):
+        """Return [(sc_a_or_None, sc_b_or_None, desc), ...] for lock-step subcase cycling."""
+        a_opts = self._op2_slots[0].get('subcase_options', [])
+        b_opts = self._op2_slots[1].get('subcase_options', [])
+        n = max(len(a_opts), len(b_opts), 1)
+        out = []
+        for i in range(n):
+            sc_a = a_opts[i] if i < len(a_opts) else None
+            sc_b = b_opts[i] if i < len(b_opts) else None
+            parts = []
+            if sc_a:
+                parts.append(f"A: {sc_a[1]}")
+            if sc_b:
+                parts.append(f"B: {sc_b[1]}")
+            out.append((sc_a, sc_b, "  /  ".join(parts) or f"Frame {i + 1}"))
+        return out
+
     def _get_plot_frames(self):
         checked = [(n['id'], n['label']) for n in self._nodes if n['checked'].get()]
         cur_dof = self.DOF_LABELS.index(self._dof_var.get())
@@ -1144,6 +1182,16 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 [[(nid, lbl, d) for d in range(3)] for nid, lbl in checked],
                 [f"Node {nid} {lbl}" for nid, lbl in checked],
             )
+
+        if mode == "Cycle subcases":
+            pool = self._cycle_subcase_pool()
+            if not pool or (not self._op2_slots[0]['op2'] and
+                             not self._op2_slots[1]['op2']):
+                return [[(nid, lbl, cur_dof) for nid, lbl in checked]], [""]
+            frames = [[(nid, lbl, cur_dof) for nid, lbl in checked]
+                      for _ in pool]
+            descs = [desc for _a, _b, desc in pool]
+            return frames, descs
 
         return [[(nid, lbl, cur_dof) for nid, lbl in checked]], [""]
 
@@ -1235,6 +1283,275 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
     def _on_plot_mode_change(self, _val=None):
         self._refresh_plot()
 
+    # ── Excel export ─────────────────────────────────────────────────────────
+
+    def _suggested_export_name(self):
+        stem = self._title_var.get().strip() or self._env_var.get().strip() or "ASD_Overlay"
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in stem)
+        return f"{safe.strip()}.xlsx"
+
+    def _export_excel(self):
+        if not self._last_drawn_curves and not any(
+                r['checked'].get() for r in self._refs):
+            messagebox.showwarning("Nothing to export",
+                                   "Plot is empty — load OP2 data or references first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export ASD data to Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx")],
+            initialfile=self._suggested_export_name(),
+        )
+        if not path:
+            return
+        try:
+            self._write_excel(path)
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
+            return
+        self._show_export_done_dialog(path)
+
+    def _show_export_done_dialog(self, path):
+        import subprocess
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("Export complete")
+        dlg.geometry("340x130")
+        dlg.resizable(False, False)
+        dlg.transient(self.frame.winfo_toplevel())
+
+        ctk.CTkLabel(dlg, text=f"Saved: {os.path.basename(path)}",
+                     anchor=tk.W).pack(padx=14, pady=(14, 8), fill=tk.X)
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(padx=14, pady=(0, 14), fill=tk.X)
+
+        def _open_file():
+            try:
+                if os.name == 'nt':
+                    os.startfile(path)
+                elif os.uname().sysname == 'Darwin':
+                    subprocess.run(["open", path], check=False)
+                else:
+                    subprocess.run(["xdg-open", path], check=False)
+            except Exception:
+                pass
+            dlg.destroy()
+
+        def _open_folder():
+            folder = os.path.dirname(path)
+            try:
+                if os.name == 'nt':
+                    os.startfile(folder)
+                elif os.uname().sysname == 'Darwin':
+                    subprocess.run(["open", folder], check=False)
+                else:
+                    subprocess.run(["xdg-open", folder], check=False)
+            except Exception:
+                pass
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="Open File", command=_open_file,
+                      width=90).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(btn_row, text="Open Folder", command=_open_folder,
+                      width=100).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(btn_row, text="Close", command=dlg.destroy,
+                      width=70).pack(side=tk.LEFT)
+
+    def _build_sheet_blocks(self, is_cum):
+        """Build column blocks for data sheets. One block per slot, one per reference.
+
+        Each block: {'freq_label', 'freqs', 'columns': [{'label', 'values'}, ...]}
+        Curves within a slot all share the same freq vector.
+        """
+        blocks = []
+        by_slot = {}
+        for c in self._last_drawn_curves:
+            by_slot.setdefault(c['slot_idx'], []).append(c)
+
+        for slot_idx in sorted(by_slot):
+            curves = by_slot[slot_idx]
+            tag = _SLOT_TAGS[slot_idx]
+            name = self._name_var[slot_idx].get().strip() or tag
+            sc = self._op2_slots[slot_idx]['subcase']
+            freqs = curves[0]['freqs']
+            cols = []
+            for c in curves:
+                base = f"{name}: Node {c['nid']} {self.DOF_LABELS[c['idof']]}"
+                if c['is_psd']:
+                    unit = "Cumulative GRMS (g)" if is_cum else "ASD (g²/Hz)"
+                    vals = (self._cumulative_grms_loglog(c['freqs'], c['data'])
+                            if is_cum else c['data'])
+                else:
+                    if is_cum:
+                        continue  # skip FRF magnitude in cumulative sheet
+                    unit = "FRF magnitude (g/g)"
+                    vals = c['data']
+                cols.append({'label': f"{base}  [{unit}]",
+                             'values': np.asarray(vals)})
+            if cols:
+                blocks.append({
+                    'freq_label': f"Frequency (Hz) — {tag} (sc {sc})",
+                    'freqs': np.asarray(freqs),
+                    'columns': cols,
+                })
+
+        for ref in self._refs:
+            if not ref['checked'].get():
+                continue
+            rname = ref['name_var'].get().strip() or ref['name']
+            unit = "Cumulative GRMS (g)" if is_cum else "ASD (g²/Hz)"
+            vals = (self._cumulative_grms_loglog(ref['freqs'], ref['g2hz'])
+                    if is_cum else ref['g2hz'])
+            blocks.append({
+                'freq_label': f"Frequency (Hz) — [Ref] {rname}",
+                'freqs': np.asarray(ref['freqs']),
+                'columns': [{'label': f"[Ref] {rname}  [{unit}]",
+                              'values': np.asarray(vals)}],
+            })
+        return blocks
+
+    def _write_data_sheet(self, ws, blocks):
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+
+        if not blocks:
+            ws.cell(1, 1, "(no data)")
+            return
+
+        # Header row
+        col = 1
+        for block in blocks:
+            ws.cell(1, col, block['freq_label'])
+            for k, c in enumerate(block['columns']):
+                ws.cell(1, col + 1 + k, c['label'])
+            col += 1 + len(block['columns'])
+
+        # Data rows — pad shorter blocks with blanks
+        col = 1
+        for block in blocks:
+            for r, f in enumerate(block['freqs'], start=2):
+                ws.cell(r, col, float(f))
+                for k, c in enumerate(block['columns']):
+                    if r - 2 < len(c['values']):
+                        ws.cell(r, col + 1 + k, float(c['values'][r - 2]))
+            col += 1 + len(block['columns'])
+
+        bold = Font(bold=True)
+        for cell in ws[1]:
+            cell.font = bold
+        ws.freeze_panes = "A2"
+        for ci in range(1, col):
+            ws.column_dimensions[get_column_letter(ci)].width = 22
+
+    def _write_summary_sheet(self, ws):
+        import datetime
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+
+        bold = Font(bold=True)
+
+        def h(row, col, val):
+            c = ws.cell(row, col, val)
+            c.font = bold
+
+        def v(row, col, val):
+            ws.cell(row, col, val)
+
+        # Fixed preamble (rows 1–8)
+        h(1, 1, "ASD Overlay Export")
+        h(2, 1, "Title:"),       v(2, 2, self._title_var.get().strip())
+        h(3, 1, "Environment:"), v(3, 2, self._env_var.get().strip())
+        h(4, 1, "Plot mode:"),   v(4, 2, self._plot_mode_var.get())
+        h(5, 1, "Y-axis:"),      v(5, 2, self._yscale_var.get())
+        h(6, 1, "View mode:"),   v(6, 2, self._view_mode_var.get())
+        h(7, 1, "Exported:"),    v(7, 2, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # Row 8 intentionally blank
+
+        # Curve summary table
+        row = 9
+        for col, hdr in enumerate(["Slot", "Name", "OP2 file", "Subcase",
+                                    "Curve (Node / DOF)", "GRMS (g)"], start=1):
+            h(row, col, hdr)
+        row += 1
+
+        for c in self._last_drawn_curves:
+            slot = self._op2_slots[c['slot_idx']]
+            tag = _SLOT_TAGS[c['slot_idx']]
+            name = self._name_var[c['slot_idx']].get().strip() or tag
+            op2_file = os.path.basename(slot['path']) if slot['path'] else ""
+            sc = slot['subcase']
+            curve_lbl = f"Node {c['nid']} {self.DOF_LABELS[c['idof']]}"
+            if c['is_psd']:
+                rms = self._get_rms_g(
+                    slot['op2'], sc, c['nid'], c['idof'],
+                    c['freqs'], c['data'],
+                    self.UNIT_FACTORS[self._unit_var[c['slot_idx']].get()])
+                grms_str = f"{rms:.4g}"
+            else:
+                grms_str = "n/a (FRF)"
+            for col, val in enumerate([tag, name, op2_file, sc, curve_lbl, grms_str],
+                                       start=1):
+                ws.cell(row, col, val)
+            row += 1
+
+        # References
+        if any(r['checked'].get() for r in self._refs):
+            row += 1
+            h(row, 1, "[Ref] Name")
+            h(row, 2, "File")
+            h(row, 3, "Freq range")
+            h(row, 4, "GRMS (g)")
+            row += 1
+            for ref in self._refs:
+                if not ref['checked'].get():
+                    continue
+                rname = ref['name_var'].get().strip() or ref['name']
+                grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
+                freq_range = f"{ref['freqs'][0]:.1f}–{ref['freqs'][-1]:.1f} Hz"
+                for col, val in enumerate(
+                        [rname, os.path.basename(ref['path']), freq_range, f"{grms:.4g}"],
+                        start=1):
+                    ws.cell(row, col, val)
+                row += 1
+
+        # Picked peaks
+        row += 1
+        h(row, 1, "Picked Peaks")
+        row += 1
+        if self._picked_peaks:
+            for col, hdr in enumerate(["Slot", "Node", "DOF",
+                                        "Freq (Hz)", "Value (g²/Hz)"], start=1):
+                h(row, col, hdr)
+            row += 1
+            for pk in self._picked_peaks:
+                tag = _SLOT_TAGS[pk['slot_idx']]
+                for col, val in enumerate(
+                        [tag, pk['nid'], self.DOF_LABELS[pk['idof']],
+                         pk['freq'], pk['value']], start=1):
+                    ws.cell(row, col, val)
+                row += 1
+        else:
+            ws.cell(row, 1, "(none)")
+
+        for ci in range(1, 7):
+            ws.column_dimensions[get_column_letter(ci)].width = 20
+        ws.freeze_panes = "A9"
+
+    def _write_excel(self, path):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws_summary = wb.active
+        ws_summary.title = "Summary"
+        self._write_summary_sheet(ws_summary)
+
+        ws_asd = wb.create_sheet("ASD")
+        self._write_data_sheet(ws_asd, self._build_sheet_blocks(is_cum=False))
+
+        ws_cum = wb.create_sheet("Cumulative GRMS")
+        self._write_data_sheet(ws_cum, self._build_sheet_blocks(is_cum=True))
+
+        wb.save(path)
+
     # ── Plot ─────────────────────────────────────────────────────────────────
 
     def _refresh_plot(self):
@@ -1264,6 +1581,20 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 active_dof = curves[0][2]
                 self._dof_var.set(self.DOF_LABELS[active_dof])
 
+        # Subcase override for "Cycle subcases" mode
+        sc_override = {0: None, 1: None}  # None means use slot's current selection
+        if view_mode == "Cycle subcases":
+            pool = self._cycle_subcase_pool()
+            if pool and 0 <= self._cycle_index < len(pool):
+                sc_a, sc_b, _ = pool[self._cycle_index]
+                sc_override[0] = sc_a[0] if sc_a else "SKIP"
+                sc_override[1] = sc_b[0] if sc_b else "SKIP"
+                # Sync dropdowns so user sees the active subcase
+                if sc_a:
+                    self._sc_var[0].set(sc_a[1])
+                if sc_b:
+                    self._sc_var[1].set(sc_b[1])
+
         has_curves = False
         has_psd = False
         has_frf_mag = False
@@ -1271,7 +1602,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
         for slot_idx, slot in self._op2_slots.items():
             op2 = slot['op2']
-            subcase = slot['subcase']
+            ov = sc_override[slot_idx]
+            if ov == "SKIP":
+                continue
+            subcase = ov if ov is not None else slot['subcase']
             if op2 is None or subcase is None:
                 continue
 
