@@ -62,6 +62,80 @@ _NODE_COLORS = (
 _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 
+RESPONSE_TYPES = {
+    "Acceleration": {
+        "psd_attr": "accelerations",
+        "rms_attr": "accelerations",
+        "frf_attr": "accelerations",
+        "id_attr": "node_gridtype",
+        "entity_label": "Node",
+        "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
+        "unit_choices": ["g", "in/s²", "m/s²"],
+        "unit_factors": {"g": 1.0, "in/s²": 386.089, "m/s²": 9.80665},
+        "psd_units": "g²/Hz",
+        "rms_units": "g",
+        "frf_units": "g/g",
+        "input_label": "Input ASD",
+    },
+    "Velocity": {
+        "psd_attr": "velocities",
+        "rms_attr": "velocities",
+        "frf_attr": "velocities",
+        "id_attr": "node_gridtype",
+        "entity_label": "Node",
+        "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
+        "unit_choices": ["in/s", "mm/s", "m/s"],
+        "unit_factors": {"in/s": 1.0, "mm/s": 0.0393701, "m/s": 39.3701},
+        "psd_units": "(in/s)²/Hz",
+        "rms_units": "in/s",
+        "frf_units": "(in/s)/g",
+        "input_label": "Input PSD",
+    },
+    "Displacement": {
+        "psd_attr": "displacements",
+        "rms_attr": "displacements",
+        "frf_attr": "displacements",
+        "id_attr": "node_gridtype",
+        "entity_label": "Node",
+        "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
+        "unit_choices": ["in", "mm", "m"],
+        "unit_factors": {"in": 1.0, "mm": 0.0393701, "m": 39.3701},
+        "psd_units": "in²/Hz",
+        "rms_units": "in (RMS)",
+        "frf_units": "in/g",
+        "input_label": "Input PSD",
+    },
+    "SPC Force": {
+        "psd_attr": "spc_forces",
+        "rms_attr": "spc_forces",
+        "frf_attr": "spc_forces",
+        "id_attr": "node_gridtype",
+        "entity_label": "Node",
+        "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
+        "unit_choices": ["lbf", "N"],
+        "unit_factors": {"lbf": 1.0, "N": 0.224809},
+        "psd_units": "lbf²/Hz",
+        "rms_units": "lbf (RMS)",
+        "frf_units": "lbf/g",
+        "input_label": "Input PSD",
+    },
+    "CBUSH Force": {
+        "psd_attr": "cbush_force",
+        "rms_attr": "cbush_force",
+        "frf_attr": "cbush_force",
+        "id_attr": "element",
+        "entity_label": "Element",
+        "dof_labels": ("F1", "F2", "F3", "M1", "M2", "M3"),
+        "unit_choices": ["lbf", "N"],
+        "unit_factors": {"lbf": 1.0, "N": 0.224809},
+        "psd_units": "lbf²/Hz",
+        "rms_units": "lbf (RMS)",
+        "frf_units": "lbf/g",
+        "input_label": "Input PSD",
+    },
+}
+_RT_NAMES = list(RESPONSE_TYPES.keys())
+
 _DARK_BG = "#2b2b2b"
 _THEMES = {
     "dark": {
@@ -86,7 +160,7 @@ _THEMES = {
 class AsdOverlayModule:
     name = "ASD Overlay"
 
-    DOF_LABELS = ("T1 (X)", "T2 (Y)", "T3 (Z)")
+    DOF_LABELS = ("T1 (X)", "T2 (Y)", "T3 (Z)")  # default; DOF dropdown is dynamic
     UNIT_OPTIONS = ("in/s²", "m/s²")
     UNIT_FACTORS = {"in/s²": 386.089, "m/s²": 9.80665}
 
@@ -96,15 +170,15 @@ class AsdOverlayModule:
     )
 
     _GUIDE_TEXT = """\
-ASD Overlay Tool — Quick Guide
+Random Response Overlay Tool — Quick Guide
 
 PURPOSE
-Compare Acceleration Spectral Density (ASD) curves from 1 or 2 Nastran
-random response OP2 files.  Plots g²/Hz vs frequency on log-log axes.
+Compare random response PSD curves from 1 or 2 Nastran random response
+OP2 files.  Plots response units vs frequency on log-log axes.
 The RMS value for each curve is shown in the legend.
 
 REQUIREMENTS
-OP2 must contain PSD acceleration output.  Required deck entries:
+OP2 must contain PSD output for the chosen response type.  Required deck entries:
   RANDOM = <sid>               (random analysis flag)
   ACCELERATION(PLOT) = ALL     (or the specific node set)
 
@@ -127,20 +201,23 @@ the "Reference ASDs" section.  They overlay on the plot for comparison
 and do not drive any response calculation.
 
 UNITS
-Select the native acceleration unit from the OP2 (matches BDF units).
-  in/s²  — divides by 386.089² to convert PSD to g²/Hz
-  m/s²   — divides by 9.80665² to convert PSD to g²/Hz
+Select units matching the OP2 output for the chosen response type.
+For Acceleration: g (default), in/s², m/s²
+For Velocity: in/s, mm/s, m/s
+For Displacement: in, mm, m
+For SPC Force / CBUSH Force: lbf, N
+For CBUSH Force: enter element IDs (not node IDs) in the Nodes panel.
+  DOF labels become F1/F2/F3 (forces) and M1/M2/M3 (moments).
 
 RMS IN LEGEND
 The tool first checks whether the OP2 contains a Nastran-integrated RMS
-acceleration table (matches F06 GRMS output).  If not present, it falls
-back to numerical integration of the displayed ASD curve using the
-trapezoidal rule.
+table (matches F06 output).  If not present, it falls back to numerical
+integration of the displayed PSD curve using FEMCI log-log integration.
 
 LINE STYLES
   Solid lines  — OP2 A
   Dashed lines — OP2 B
-  Thick solid  — Reference ASDs
+  Dotted thick — Reference ASDs
 
 NAVIGATION
 Use the matplotlib toolbar below the plot to zoom, pan, and save images.
@@ -163,7 +240,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         # Per-slot UI widgets populated in _build_ui
         self._open_btn = [None, None]
         self._file_label = [None, None]
-        self._unit_var = [ctk.StringVar(value="in/s²"), ctk.StringVar(value="in/s²")]
+        self._unit_var = [ctk.StringVar(value="g"), ctk.StringVar(value="g")]
         self._sc_var = [tk.StringVar(value="(none)"), tk.StringVar(value="(none)")]
         self._sc_menu = [None, None]
         self._mode_var = [ctk.StringVar(value="PSD (RANDOM)"),
@@ -171,6 +248,13 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         self._frf_row = [None, None]
         self._input_asd_btn = [None, None]
         self._input_asd_label = [None, None]
+        self._rt_var = [ctk.StringVar(value="Acceleration"),
+                        ctk.StringVar(value="Acceleration")]
+        self._rt_menu = [None, None]
+        self._unit_menu = [None, None]
+        self._clear_btn = [None, None]
+        self._dof_menu = None
+        self._node_panel_hint = None
 
         # Per-slot analysis name (auto-fills from OP2 stem, user-editable)
         self._name_var = [ctk.StringVar(value=""), ctk.StringVar(value="")]
@@ -216,6 +300,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             "op2": None, "path": None, "subcase": None,
             "subcase_options": [],
             "mode": "PSD",
+            "response_type": "Acceleration",
             "input_asd_path": None,
             "input_asd_freqs": None,
             "input_asd_g2hz": None,
@@ -231,54 +316,76 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         # Shared grid so both slot rows have aligned columns
         slot_grid = ctk.CTkFrame(toolbar, fg_color="transparent")
         slot_grid.pack(fill=tk.X, pady=1)
-        slot_grid.grid_columnconfigure(1, weight=1)  # file label absorbs slack
+        slot_grid.grid_columnconfigure(2, weight=1)  # file label absorbs slack
 
         for i, tag in enumerate(_SLOT_TAGS):
             btn = ctk.CTkButton(
                 slot_grid, text=f"Open OP2 {tag}…", width=120,
                 command=lambda idx=i: self._open_op2(idx),
             )
-            btn.grid(row=i, column=0, sticky="w", padx=(0, 6), pady=2)
+            btn.grid(row=i, column=0, sticky="w", padx=(0, 4), pady=2)
             self._open_btn[i] = btn
+
+            clr_btn = ctk.CTkButton(
+                slot_grid, text="Clear", width=60,
+                fg_color="#8b1a1a",
+                command=lambda idx=i: self._clear_slot(idx),
+            )
+            clr_btn.grid(row=i, column=1, sticky="w", padx=(0, 6), pady=2)
+            self._clear_btn[i] = clr_btn
 
             lbl = ctk.CTkLabel(slot_grid, text="(no file)", text_color="gray",
                                anchor=tk.W, width=400)
-            lbl.grid(row=i, column=1, sticky="ew", padx=(0, 8))
+            lbl.grid(row=i, column=2, sticky="ew", padx=(0, 8))
             self._file_label[i] = lbl
 
             ctk.CTkLabel(slot_grid, text="Name:").grid(
-                row=i, column=2, padx=(0, 2))
+                row=i, column=3, padx=(0, 2))
             ctk.CTkEntry(slot_grid, textvariable=self._name_var[i], width=130,
                          placeholder_text="Analysis name",
-                         ).grid(row=i, column=3, padx=(0, 10))
+                         ).grid(row=i, column=4, padx=(0, 10))
 
             ctk.CTkLabel(slot_grid, text="Units:").grid(
-                row=i, column=4, padx=(0, 2))
-            ctk.CTkOptionMenu(
+                row=i, column=5, padx=(0, 2))
+            unit_cfg = RESPONSE_TYPES["Acceleration"]
+            umenu = ctk.CTkOptionMenu(
                 slot_grid, variable=self._unit_var[i],
-                values=list(self.UNIT_OPTIONS),
+                values=unit_cfg["unit_choices"],
                 command=lambda _v, idx=i: self._refresh_plot(),
                 width=80,
-            ).grid(row=i, column=5, padx=(0, 10))
+            )
+            umenu.grid(row=i, column=6, padx=(0, 10))
+            self._unit_menu[i] = umenu
 
             ctk.CTkLabel(slot_grid, text="Subcase:").grid(
-                row=i, column=6, padx=(0, 2))
+                row=i, column=7, padx=(0, 2))
             scmenu = ctk.CTkOptionMenu(
                 slot_grid, variable=self._sc_var[i], values=["(none)"],
                 command=lambda _v, idx=i: self._on_sc_select(idx),
                 width=180,
             )
-            scmenu.grid(row=i, column=7, padx=(0, 10))
+            scmenu.grid(row=i, column=8, padx=(0, 10))
             self._sc_menu[i] = scmenu
 
             ctk.CTkLabel(slot_grid, text="Mode:").grid(
-                row=i, column=8, padx=(0, 2))
+                row=i, column=9, padx=(0, 2))
             ctk.CTkOptionMenu(
                 slot_grid, variable=self._mode_var[i],
                 values=["PSD (RANDOM)", "FRF + Input ASD"],
                 command=lambda _v, idx=i: self._on_mode_change(idx),
                 width=140,
-            ).grid(row=i, column=9, sticky="w")
+            ).grid(row=i, column=10, sticky="w", padx=(0, 10))
+
+            ctk.CTkLabel(slot_grid, text="Type:").grid(
+                row=i, column=11, padx=(0, 2))
+            rtmenu = ctk.CTkOptionMenu(
+                slot_grid, variable=self._rt_var[i],
+                values=_RT_NAMES,
+                command=lambda _v, idx=i: self._on_rt_change(idx),
+                width=120,
+            )
+            rtmenu.grid(row=i, column=12, sticky="w")
+            self._rt_menu[i] = rtmenu
 
             # FRF subrow — hidden until mode is switched
             frf_row = ctk.CTkFrame(toolbar, fg_color="transparent")
@@ -309,10 +416,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         dof_row.pack(fill=tk.X, pady=(4, 0))
 
         ctk.CTkLabel(dof_row, text="DOF:").pack(side=tk.LEFT, padx=(0, 2))
-        ctk.CTkOptionMenu(
+        self._dof_menu = ctk.CTkOptionMenu(
             dof_row, variable=self._dof_var, values=list(self.DOF_LABELS),
-            command=lambda _: self._refresh_plot(), width=100,
-        ).pack(side=tk.LEFT, padx=(0, 12))
+            command=lambda _: self._refresh_plot(), width=120,
+        )
+        self._dof_menu.pack(side=tk.LEFT, padx=(0, 12))
 
         ctk.CTkButton(
             dof_row, text="?", width=30, font=ctk.CTkFont(weight="bold"),
@@ -405,6 +513,13 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                       command=self._export_excel,
                       ).pack(side=tk.LEFT, padx=(14, 0))
 
+        ctk.CTkButton(annot_row, text="Save Session…", width=110,
+                      command=self._save_session,
+                      ).pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkButton(annot_row, text="Open Session…", width=110,
+                      command=self._open_session,
+                      ).pack(side=tk.LEFT, padx=(4, 0))
+
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -415,9 +530,13 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         node_panel.pack_propagate(False)
 
         ctk.CTkLabel(
-            node_panel, text="Nodes",
+            node_panel, text="Nodes / Elements",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(pady=(8, 4))
+        ).pack(pady=(8, 2))
+        self._node_panel_hint = ctk.CTkLabel(
+            node_panel, text="", text_color="gray",
+            font=ctk.CTkFont(size=10))
+        self._node_panel_hint.pack()
 
         btn_row1 = ctk.CTkFrame(node_panel, fg_color="transparent")
         btn_row1.pack(fill=tk.X, padx=6)
@@ -546,7 +665,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ax.clear()
         ax.set_facecolor(t["plot_bg"])
         ax.set_xlabel("Frequency (Hz)", color=t["text"])
-        ax.set_ylabel("ASD (g²/Hz)", color=t["text"])
+        ax.set_ylabel("PSD", color=t["text"])
         ax.tick_params(colors=t["text"], which="both")
         for spine in ax.spines.values():
             spine.set_edgecolor(t["spine"])
@@ -615,8 +734,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 self._status_label.configure(text="Load failed", text_color="red")
                 return
 
-            psd_dict = op2.op2_results.psd.accelerations
-            frf_dict = op2.accelerations
+            rt = self._rt_var[slot_idx].get()
+            cfg = RESPONSE_TYPES[rt]
+            psd_dict = getattr(op2.op2_results.psd, cfg['psd_attr'], None) or {}
+            frf_dict = getattr(op2, cfg['frf_attr'], None) or {}
             if psd_dict:
                 mode = "PSD"
                 result_dict = psd_dict
@@ -625,16 +746,17 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 result_dict = frf_dict
             else:
                 messagebox.showwarning(
-                    "No Acceleration Data",
-                    f"OP2 {tag} contains no acceleration results.\n\n"
-                    "Ensure the deck includes:\n"
-                    "  ACCELERATION(PLOT) = ALL\n\n"
+                    f"No {rt} Data",
+                    f"OP2 {tag} contains no {rt.lower()} results.\n\n"
+                    "Check that the deck includes:\n"
+                    f"  {'ACCELERATION' if rt == 'Acceleration' else rt.upper()}(PLOT) = ALL\n\n"
                     "For PSD output also add:\n"
                     "  RANDOM = <sid>")
                 self._file_label[slot_idx].configure(
                     text="(no data)", text_color="orange")
                 return
 
+            self._op2_slots[slot_idx]['response_type'] = rt
             self._op2_slots[slot_idx]['mode'] = mode
             mode_label = "PSD (RANDOM)" if mode == "PSD" else "FRF + Input ASD"
             self._mode_var[slot_idx].set(mode_label)
@@ -664,6 +786,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 text=f"OP2 {tag}: {os.path.basename(path)} "
                      f"({len(sc_pairs)} subcase{'s' if len(sc_pairs) != 1 else ''})",
                 text_color=("gray10", "gray90"))
+            self._update_dof_dropdown()
             self._refresh_plot()
 
         self._run_in_background(f"Loading OP2 {tag}…", _work, _done)
@@ -1128,33 +1251,40 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         """Return (freqs, data, is_psd) for one node/DOF."""
         slot = self._op2_slots[slot_idx]
         op2 = slot['op2']
+        rt = slot.get('response_type', 'Acceleration')
+        cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+
+        id_attr = cfg.get('id_attr', 'node_gridtype')
+
+        def _entity_ids(tbl):
+            arr = getattr(tbl, id_attr)
+            return arr[:, 0] if id_attr == 'node_gridtype' else arr
 
         if slot['mode'] == "PSD":
-            psd_tbl = _lookup_subcase(op2.op2_results.psd.accelerations, subcase)
+            psd_dict = getattr(op2.op2_results.psd, cfg['psd_attr'], None) or {}
+            psd_tbl = _lookup_subcase(psd_dict, subcase)
             if psd_tbl is None:
                 return None, None, None
             freqs = psd_tbl._times
-            op2_nids = psd_tbl.node_gridtype[:, 0]
-            hits = np.where(op2_nids == nid)[0]
+            hits = np.where(_entity_ids(psd_tbl) == nid)[0]
             if not len(hits):
                 return None, None, None
             raw_psd = psd_tbl.data[:, hits[0], idof]
             return freqs, raw_psd / (unit_factor ** 2), True
         else:  # FRF
-            if not op2.accelerations:
+            frf_dict = getattr(op2, cfg['frf_attr'], None) or {}
+            if not frf_dict:
                 return None, None, None
-            frf_tbl = _lookup_subcase(op2.accelerations, subcase)
+            frf_tbl = _lookup_subcase(frf_dict, subcase)
             if frf_tbl is None:
                 return None, None, None
             freqs = frf_tbl._times
-            op2_nids = frf_tbl.node_gridtype[:, 0]
-            hits = np.where(op2_nids == nid)[0]
+            hits = np.where(_entity_ids(frf_tbl) == nid)[0]
             if not len(hits):
                 return None, None, None
             H_native = frf_tbl.data[:, hits[0], idof]
             H_g = H_native / unit_factor
 
-            # Borrow slot A's input ASD for slot B when "Same as A" is checked
             if slot_idx == 1 and self._same_input_asd_var.get():
                 slot_asd = self._op2_slots[0]
             else:
@@ -1168,19 +1298,22 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 return freqs, np.abs(H_g), False
 
     @staticmethod
-    def _get_rms_g(op2, subcase, nid, idof, freqs, psd_curve_g2hz, unit_factor):
-        """Return RMS in g; prefers Nastran RMS table, falls back to FEMCI integration."""
+    def _get_rms_scalar(op2, subcase, nid, idof, freqs, psd_curve, unit_factor, rt='Acceleration'):
+        cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+        id_attr = cfg.get('id_attr', 'node_gridtype')
         try:
-            rms_tbl = _lookup_subcase(op2.op2_results.rms.accelerations, subcase)
+            rms_dict = getattr(op2.op2_results.rms, cfg['rms_attr'], None) or {}
+            rms_tbl = _lookup_subcase(rms_dict, subcase)
             if rms_tbl is not None:
-                nids_arr = rms_tbl.node_gridtype[:, 0]
-                hits = np.where(nids_arr == nid)[0]
+                arr = getattr(rms_tbl, id_attr)
+                entity_ids = arr[:, 0] if id_attr == 'node_gridtype' else arr
+                hits = np.where(entity_ids == nid)[0]
                 if len(hits):
                     rms_native = float(rms_tbl.data[0, hits[0], idof])
                     return rms_native / unit_factor
         except Exception:
             pass
-        area = AsdOverlayModule._grms_loglog(freqs, psd_curve_g2hz)
+        area = AsdOverlayModule._grms_loglog(freqs, psd_curve)
         return float(np.sqrt(area))
 
     # ── Cycle helpers ────────────────────────────────────────────────────────
@@ -1204,7 +1337,10 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
     def _get_plot_frames(self):
         checked = [(n['id'], n['label']) for n in self._nodes if n['checked'].get()]
-        cur_dof = self.DOF_LABELS.index(self._dof_var.get())
+        active_labels = self._active_dof_labels()
+        dof_str = self._dof_var.get()
+        cur_dof = active_labels.index(dof_str) if dof_str in active_labels else 0
+        n_dof = len(active_labels)
         mode = self._view_mode_var.get()
 
         if mode == "Manual":
@@ -1212,22 +1348,22 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
 
         if mode == "All grids, cycle DOF":
             return (
-                [[(nid, lbl, d) for nid, lbl in checked] for d in range(3)],
-                [self.DOF_LABELS[d] for d in range(3)],
+                [[(nid, lbl, d) for nid, lbl in checked] for d in range(n_dof)],
+                [active_labels[d] for d in range(n_dof)],
             )
 
         if mode == "One grid, cycle DOF×grid":
             frames, descs = [], []
             for nid, lbl in checked:
-                for d in range(3):
+                for d in range(n_dof):
                     frames.append([(nid, lbl, d)])
-                    descs.append(f"Node {nid} {lbl} — {self.DOF_LABELS[d]}")
+                    descs.append(f"{nid} {lbl} — {active_labels[d]}")
             return frames, descs
 
         if mode == "One grid all DOFs, cycle grid":
             return (
-                [[(nid, lbl, d) for d in range(3)] for nid, lbl in checked],
-                [f"Node {nid} {lbl}" for nid, lbl in checked],
+                [[(nid, lbl, d) for d in range(n_dof)] for nid, lbl in checked],
+                [f"{nid} {lbl}" for nid, lbl in checked],
             )
 
         if mode == "Cycle subcases":
@@ -1404,6 +1540,353 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         ctk.CTkButton(btn_row, text="Close", command=dlg.destroy,
                       width=70).pack(side=tk.LEFT)
 
+    def _clear_slot(self, slot_idx):
+        self._op2_slots[slot_idx] = self._empty_slot()
+        self._op2_slots[slot_idx]['response_type'] = self._rt_var[slot_idx].get()
+        self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
+        self._suppress_name_trace[slot_idx] = True
+        try:
+            self._name_var[slot_idx].set("")
+        finally:
+            self._suppress_name_trace[slot_idx] = False
+        self._name_user_edited[slot_idx] = False
+        self._sc_var[slot_idx].set("(none)")
+        self._sc_menu[slot_idx].configure(values=["(none)"])
+        self._input_asd_label[slot_idx].configure(text="(no file)", text_color="gray")
+        self._frf_row[slot_idx].pack_forget()
+        self._update_dof_dropdown()
+        self._status_label.configure(
+            text=f"Slot {_SLOT_TAGS[slot_idx]} cleared", text_color="gray")
+        self._refresh_plot()
+
+    def _active_dof_labels(self):
+        """Union of dof_labels across all loaded slots, preserving order."""
+        seen = []
+        for slot in self._op2_slots.values():
+            rt = slot.get('response_type', 'Acceleration')
+            cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+            for lbl in cfg['dof_labels']:
+                if lbl not in seen:
+                    seen.append(lbl)
+        return seen or list(RESPONSE_TYPES['Acceleration']['dof_labels'])
+
+    def _update_dof_dropdown(self):
+        if self._dof_menu is None:
+            return
+        labels = self._active_dof_labels()
+        self._dof_menu.configure(values=labels)
+        if self._dof_var.get() not in labels:
+            self._dof_var.set(labels[0])
+        # Update the node/element panel hint
+        entity_labels = set()
+        for slot in self._op2_slots.values():
+            rt = slot.get('response_type', 'Acceleration')
+            cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+            if slot.get('op2') is not None:
+                entity_labels.add(cfg['entity_label'])
+        if 'Element' in entity_labels and 'Node' not in entity_labels:
+            hint = "Enter CBUSH element IDs"
+        elif 'Element' in entity_labels:
+            hint = "Mix: some slots use Element IDs"
+        else:
+            hint = ""
+        if hasattr(self, '_node_panel_hint'):
+            self._node_panel_hint.configure(text=hint)
+
+    def _on_rt_change(self, slot_idx):
+        rt = self._rt_var[slot_idx].get()
+        cfg = RESPONSE_TYPES[rt]
+        self._op2_slots[slot_idx]['response_type'] = rt
+        self._unit_menu[slot_idx].configure(values=cfg['unit_choices'])
+        self._unit_var[slot_idx].set(cfg['unit_choices'][0])
+        self._op2_slots[slot_idx]['input_asd_freqs'] = None
+        self._op2_slots[slot_idx]['input_asd_g2hz'] = None
+        self._op2_slots[slot_idx]['input_asd_path'] = None
+        self._input_asd_label[slot_idx].configure(text="(no file)", text_color="gray")
+        self._update_dof_dropdown()
+        op2 = self._op2_slots[slot_idx].get('op2')
+        if op2 is not None:
+            psd_dict = getattr(op2.op2_results.psd, cfg['psd_attr'], None) or {}
+            frf_dict = getattr(op2, cfg['frf_attr'], None) or {}
+            if psd_dict:
+                result_dict = psd_dict
+            elif frf_dict:
+                result_dict = frf_dict
+            else:
+                messagebox.showwarning(
+                    "No Data",
+                    f"Loaded OP2 has no {rt} results.\n"
+                    "Try a different response type.")
+                self._rt_var[slot_idx].set(
+                    self._op2_slots[slot_idx].get('response_type', 'Acceleration'))
+                return
+            sc_pairs = _subcase_options(result_dict)
+            sc_strs = [label for _sc, label in sc_pairs]
+            self._op2_slots[slot_idx]['subcase_options'] = sc_pairs
+            self._sc_menu[slot_idx].configure(values=sc_strs)
+            self._sc_var[slot_idx].set(sc_strs[0])
+            self._op2_slots[slot_idx]['subcase'] = sc_pairs[0][0]
+        self._refresh_plot()
+
+    def _get_unit_factor(self, slot_idx):
+        rt = self._op2_slots[slot_idx].get('response_type', 'Acceleration')
+        cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+        unit = self._unit_var[slot_idx].get()
+        return cfg['unit_factors'].get(unit, 1.0)
+
+    def _load_reference_asd_from_data(self, path, freqs, asds, name, checked):
+        name = name or os.path.splitext(os.path.basename(path))[0]
+        var = tk.BooleanVar(value=checked)
+        name_var = tk.StringVar(value=name)
+        row_frame = ctk.CTkFrame(self._ref_scroll, fg_color="transparent")
+        row_frame.pack(fill=tk.X, pady=1)
+        ref = {"path": path, "name": name, "freqs": freqs, "g2hz": asds,
+               "checked": var, "name_var": name_var, "row_frame": row_frame}
+        self._refs.append(ref)
+        ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
+                        command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
+        name_entry = ctk.CTkEntry(row_frame, textvariable=name_var, width=152)
+        name_entry.pack(side=tk.LEFT, padx=(2, 2))
+        name_entry.bind("<Return>",   lambda _e, r=ref: self._commit_ref_name(r))
+        name_entry.bind("<FocusOut>", lambda _e, r=ref: self._commit_ref_name(r))
+        ctk.CTkButton(row_frame, text="✕", width=22,
+                      command=lambda r=ref: self._remove_reference(r),
+                      fg_color="transparent", hover_color=("gray75", "gray30"),
+                      text_color=("gray40", "gray60"),
+                      ).pack(side=tk.LEFT)
+
+    def _save_session(self):
+        import json, datetime
+        if not any(s['op2'] is not None for s in self._op2_slots.values()):
+            messagebox.showwarning("Nothing to save", "Load at least one OP2 first.")
+            return
+        stem = (self._title_var.get().strip()
+                or self._env_var.get().strip()
+                or "asd_session")
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in stem)
+        path = filedialog.asksaveasfilename(
+            title="Save Session",
+            defaultextension=".asdsession.json",
+            filetypes=[("ASD session", "*.asdsession.json"), ("All files", "*.*")],
+            initialfile=f"{safe.strip()}.asdsession.json",
+        )
+        if not path:
+            return
+
+        checked_nodes = [n['id'] for n in self._nodes if n['checked'].get()]
+        node_list = [{'id': n['id'], 'label': n['label']} for n in self._nodes]
+
+        slots_data = []
+        for idx, slot in self._op2_slots.items():
+            slots_data.append({
+                "tag": _SLOT_TAGS[idx],
+                "name": self._name_var[idx].get(),
+                "op2_path": slot.get('path'),
+                "mode": slot.get('mode', 'PSD'),
+                "response_type": slot.get('response_type', 'Acceleration'),
+                "units": self._unit_var[idx].get(),
+                "subcase": slot.get('subcase'),
+                "input_asd_path": slot.get('input_asd_path'),
+            })
+
+        refs_data = [
+            {"path": r['path'], "name": r['name_var'].get() or r['name'],
+             "checked": r['checked'].get()}
+            for r in self._refs
+        ]
+
+        data = {
+            "version": 1,
+            "tool": "ASD Overlay",
+            "saved_at": datetime.datetime.now().isoformat(timespec='seconds'),
+            "slots": slots_data,
+            "nodes": node_list,
+            "checked_nodes": checked_nodes,
+            "references": refs_data,
+            "view": {
+                "view_mode": self._view_mode_var.get(),
+                "plot_mode": self._plot_mode_var.get(),
+                "y_axis": self._yscale_var.get(),
+                "title": self._title_var.get(),
+                "env": self._env_var.get(),
+                "label_style": self._peak_label_style.get(),
+            },
+            "picked_peaks": [
+                {"slot_idx": pk['slot_idx'], "nid": pk['nid'],
+                 "idof": pk['idof'], "freq": pk['freq'], "value": pk['value']}
+                for pk in self._picked_peaks
+            ],
+        }
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save Error", str(exc))
+            return
+        self._show_export_done_dialog(path)
+
+    def _open_session(self):
+        import json
+        path = filedialog.askopenfilename(
+            title="Open Session",
+            filetypes=[("ASD session", "*.asdsession.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Load Error", f"Could not read session:\n{exc}")
+            return
+        if data.get('version') != 1:
+            messagebox.showerror("Unsupported Version",
+                                 "Session file version not supported.")
+            return
+
+        view = data.get('view', {})
+        self._view_mode_var.set(view.get('view_mode', 'Manual'))
+        self._plot_mode_var.set(view.get('plot_mode', 'ASD'))
+        self._yscale_var.set(view.get('y_axis', 'Log'))
+        self._suppress_env_trace = True
+        try:
+            self._env_var.set(view.get('env', ''))
+        finally:
+            self._suppress_env_trace = False
+        self._env_user_edited = bool(view.get('env', ''))
+        self._title_var.set(view.get('title', ''))
+        self._peak_label_style.set(view.get('label_style', 'Freq only'))
+
+        self._clear_nodes()
+        checked_ids = set(data.get('checked_nodes', []))
+        for n in data.get('nodes', []):
+            self._add_node_row(n['id'], n.get('label', f"Node {n['id']}"))
+        for node in self._nodes:
+            node['checked'].set(node['id'] in checked_ids)
+
+        self._picked_peaks = [
+            {"slot_idx": pk['slot_idx'], "nid": pk['nid'],
+             "idof": pk['idof'], "freq": pk['freq'], "value": pk['value']}
+            for pk in data.get('picked_peaks', [])
+        ]
+
+        self._clear_references()
+        for ref in data.get('references', []):
+            rpath = ref.get('path', '')
+            if rpath and os.path.isfile(rpath):
+                freqs, asds = self._parse_asd_text_file(rpath)
+                if freqs is not None:
+                    self._load_reference_asd_from_data(rpath, freqs, asds,
+                                                        ref.get('name', ''),
+                                                        ref.get('checked', True))
+
+        missing = []
+        for slot_data in data.get('slots', []):
+            idx = _SLOT_TAGS.index(slot_data.get('tag', 'A'))
+            rt = slot_data.get('response_type', 'Acceleration')
+            self._rt_var[idx].set(rt)
+            cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
+            self._unit_menu[idx].configure(values=cfg['unit_choices'])
+            unit = slot_data.get('units', cfg['unit_choices'][0])
+            if unit in cfg['unit_choices']:
+                self._unit_var[idx].set(unit)
+            else:
+                self._unit_var[idx].set(cfg['unit_choices'][0])
+
+            op2_path = slot_data.get('op2_path')
+            if not op2_path or not os.path.isfile(op2_path):
+                if op2_path:
+                    missing.append(f"Slot {slot_data.get('tag')}: {op2_path}")
+                saved_name = slot_data.get('name', '')
+                if saved_name:
+                    self._suppress_name_trace[idx] = True
+                    try:
+                        self._name_var[idx].set(saved_name)
+                    finally:
+                        self._suppress_name_trace[idx] = False
+                continue
+
+            _target_subcase = slot_data.get('subcase')
+            _target_name = slot_data.get('name', '')
+            _target_input_asd = slot_data.get('input_asd_path')
+            _target_mode = slot_data.get('mode', 'PSD')
+            _slot_idx = idx
+
+            def _work(p=op2_path):
+                from pyNastran.op2.op2 import OP2
+                op2 = OP2(mode='nx', debug=False)
+                op2.read_op2(p)
+                return op2
+
+            def _done(op2, error,
+                      si=_slot_idx, rt_=rt, cfg_=cfg,
+                      tsc=_target_subcase, tname=_target_name,
+                      tasd=_target_input_asd, tmode=_target_mode,
+                      op2_path_=op2_path):
+                if error is not None or op2 is None:
+                    return
+                psd_dict = getattr(op2.op2_results.psd, cfg_['psd_attr'], None) or {}
+                frf_dict = getattr(op2, cfg_['frf_attr'], None) or {}
+                if psd_dict:
+                    result_dict = psd_dict
+                    mode = "PSD"
+                elif frf_dict:
+                    result_dict = frf_dict
+                    mode = "FRF"
+                else:
+                    return
+                if tmode == "FRF" and frf_dict:
+                    mode = "FRF"
+                    result_dict = frf_dict
+                self._op2_slots[si]['op2'] = op2
+                self._op2_slots[si]['path'] = op2_path_
+                self._op2_slots[si]['response_type'] = rt_
+                self._op2_slots[si]['mode'] = mode
+                mode_label = "PSD (RANDOM)" if mode == "PSD" else "FRF + Input ASD"
+                self._mode_var[si].set(mode_label)
+                if mode == "FRF":
+                    self._frf_row[si].pack(fill=tk.X, pady=1)
+                else:
+                    self._frf_row[si].pack_forget()
+                sc_pairs = _subcase_options(result_dict)
+                sc_strs = [label for _sc, label in sc_pairs]
+                self._op2_slots[si]['subcase_options'] = sc_pairs
+                self._sc_menu[si].configure(values=sc_strs)
+                matched = next(((sc, lbl) for sc, lbl in sc_pairs if sc == tsc), None)
+                if matched:
+                    self._sc_var[si].set(matched[1])
+                    self._op2_slots[si]['subcase'] = matched[0]
+                elif sc_pairs:
+                    self._sc_var[si].set(sc_strs[0])
+                    self._op2_slots[si]['subcase'] = sc_pairs[0][0]
+                if tname:
+                    self._suppress_name_trace[si] = True
+                    try:
+                        self._name_var[si].set(tname)
+                    finally:
+                        self._suppress_name_trace[si] = False
+                self._file_label[si].configure(
+                    text=os.path.basename(op2_path_),
+                    text_color=("gray10", "gray90"))
+                if tasd and os.path.isfile(tasd):
+                    freqs, asds = self._parse_asd_text_file(tasd)
+                    if freqs is not None:
+                        self._op2_slots[si]['input_asd_path'] = tasd
+                        self._op2_slots[si]['input_asd_freqs'] = freqs
+                        self._op2_slots[si]['input_asd_g2hz'] = asds
+                        self._input_asd_label[si].configure(
+                            text=os.path.basename(tasd),
+                            text_color=("gray10", "gray90"))
+                self._refresh_plot()
+
+            self._run_in_background(
+                f"Loading OP2 {slot_data.get('tag')}…", _work, _done)
+
+        if missing:
+            messagebox.showwarning(
+                "Missing Files",
+                "The following files could not be found:\n\n"
+                + "\n".join(missing))
+
     def _build_sheet_blocks(self, is_cum):
         """Build column blocks for data sheets. One block per slot, one per reference.
 
@@ -1420,18 +1903,20 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             tag = _SLOT_TAGS[slot_idx]
             name = self._name_var[slot_idx].get().strip() or tag
             sc = self._op2_slots[slot_idx]['subcase']
+            rt = self._op2_slots[slot_idx].get('response_type', 'Acceleration')
+            slot_cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
             freqs = curves[0]['freqs']
             cols = []
             for c in curves:
                 base = f"{name}: Node {c['nid']} {self.DOF_LABELS[c['idof']]}"
                 if c['is_psd']:
-                    unit = "Cumulative GRMS (g)" if is_cum else "ASD (g²/Hz)"
+                    unit = slot_cfg['rms_units'] if is_cum else slot_cfg['psd_units']
                     vals = (self._cumulative_grms_loglog(c['freqs'], c['data'])
                             if is_cum else c['data'])
                 else:
                     if is_cum:
                         continue  # skip FRF magnitude in cumulative sheet
-                    unit = "FRF magnitude (g/g)"
+                    unit = slot_cfg['frf_units']
                     vals = c['data']
                 cols.append({'label': f"{base}  [{unit}]",
                              'values': np.asarray(vals)})
@@ -1446,7 +1931,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             if not ref['checked'].get():
                 continue
             rname = ref['name_var'].get().strip() or ref['name']
-            unit = "Cumulative GRMS (g)" if is_cum else "ASD (g²/Hz)"
+            unit = "Cumulative RMS" if is_cum else "PSD"
             vals = (self._cumulative_grms_loglog(ref['freqs'], ref['g2hz'])
                     if is_cum else ref['g2hz'])
             blocks.append({
@@ -1505,7 +1990,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             ws.cell(row, col, val)
 
         # Fixed preamble (rows 1–8)
-        h(1, 1, "ASD Overlay Export")
+        h(1, 1, "Random Response Overlay Export")
         h(2, 1, "Title:"),       v(2, 2, self._title_var.get().strip())
         h(3, 1, "Environment:"), v(3, 2, self._env_var.get().strip())
         h(4, 1, "Plot mode:"),   v(4, 2, self._plot_mode_var.get())
@@ -1517,7 +2002,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         # Curve summary table
         row = 9
         for col, hdr in enumerate(["Slot", "Name", "OP2 file", "Subcase",
-                                    "Curve (Node / DOF)", "GRMS (g)"], start=1):
+                                    "Curve (Node / DOF)", "RMS"], start=1):
             h(row, col, hdr)
         row += 1
 
@@ -1529,10 +2014,11 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             sc = slot['subcase']
             curve_lbl = f"Node {c['nid']} {self.DOF_LABELS[c['idof']]}"
             if c['is_psd']:
-                rms = self._get_rms_g(
+                rms = self._get_rms_scalar(
                     slot['op2'], sc, c['nid'], c['idof'],
                     c['freqs'], c['data'],
-                    self.UNIT_FACTORS[self._unit_var[c['slot_idx']].get()])
+                    self._get_unit_factor(c['slot_idx']),
+                    rt=slot.get('response_type', 'Acceleration'))
                 grms_str = f"{rms:.4g}"
             else:
                 grms_str = "n/a (FRF)"
@@ -1547,7 +2033,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             h(row, 1, "[Ref] Name")
             h(row, 2, "File")
             h(row, 3, "Freq range")
-            h(row, 4, "GRMS (g)")
+            h(row, 4, "RMS")
             row += 1
             for ref in self._refs:
                 if not ref['checked'].get():
@@ -1567,7 +2053,7 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
         row += 1
         if self._picked_peaks:
             for col, hdr in enumerate(["Slot", "Node", "DOF",
-                                        "Freq (Hz)", "Value (g²/Hz)"], start=1):
+                                        "Freq (Hz)", "Value"], start=1):
                 h(row, col, hdr)
             row += 1
             for pk in self._picked_peaks:
@@ -1656,7 +2142,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
             if op2 is None or subcase is None:
                 continue
 
-            unit_factor = self.UNIT_FACTORS[self._unit_var[slot_idx].get()]
+            unit_factor = self._get_unit_factor(slot_idx)
+            rt = slot.get('response_type', 'Acceleration')
+            cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
             tag = _SLOT_TAGS[slot_idx]
             ls = _SLOT_LINES[slot_idx]
             name = self._name_var[slot_idx].get().strip() or tag
@@ -1670,24 +2158,26 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 if freqs is None:
                     continue
 
-                dof_label = self.DOF_LABELS[idof]
+                dof_labels = cfg.get('dof_labels', self.DOF_LABELS)
+                dof_label = dof_labels[idof] if idof < len(dof_labels) else str(idof)
 
                 if is_psd:
                     if is_cum:
                         plot_data = self._cumulative_grms_loglog(freqs, data)
                         final_g = float(plot_data[-1]) if len(plot_data) else 0.0
-                        label = f"{name}: {lbl} {dof_label}  (final GRMS = {final_g:.3g} g)"
+                        label = f"{name}: {lbl} {dof_label}  (final GRMS = {final_g:.3g} {cfg['rms_units']})"
                     else:
                         plot_data = data
-                        rms_g = self._get_rms_g(
-                            op2, subcase, nid, idof, freqs, data, unit_factor)
-                        label = f"{name}: {lbl} {dof_label}  (RMS = {rms_g:.3g} g)"
+                        rms_g = self._get_rms_scalar(
+                            op2, subcase, nid, idof, freqs, data, unit_factor,
+                            rt=rt)
+                        label = f"{name}: {lbl} {dof_label}  (RMS = {rms_g:.3g} {cfg['rms_units']})"
                     has_psd = True
                 else:
                     if is_cum:
                         continue  # cumulative only for PSD
                     plot_data = data
-                    label = f"{name}: {lbl} {dof_label}  (FRF magnitude)"
+                    label = f"{name}: {lbl} {dof_label}  (FRF magnitude, {cfg['frf_units']})"
                     has_frf_mag = True
 
                 ax.plot(freqs, plot_data, label=label, color=color, linestyle=ls)
@@ -1713,18 +2203,34 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                 grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
                 ref_label = f"{rname}  (GRMS = {grms:.3g} g)"
             ax.plot(ref['freqs'], ref_plot, label=ref_label, color=color,
-                    linestyle="-", linewidth=2.0, alpha=0.65)
+                    linestyle=":", linewidth=2.0, alpha=0.65)
             has_curves = True
 
         ax.set_xlabel("Frequency (Hz)", color=t["text"])
+        active_cfgs = [
+            RESPONSE_TYPES.get(s.get('response_type', 'Acceleration'), RESPONSE_TYPES['Acceleration'])
+            for s in self._op2_slots.values() if s['op2'] is not None
+        ]
+        if not active_cfgs:
+            active_cfgs = [RESPONSE_TYPES['Acceleration']]
+        mixed = len({c['psd_units'] for c in active_cfgs}) > 1
         if is_cum:
-            ax.set_ylabel("Cumulative GRMS (g)", color=t["text"])
+            if mixed:
+                ax.set_ylabel("Cumulative RMS", color=t["text"])
+            else:
+                ax.set_ylabel(f"Cumulative RMS ({active_cfgs[0]['rms_units']})", color=t["text"])
         elif has_psd and has_frf_mag:
-            ax.set_ylabel("ASD (g²/Hz) / FRF (g/g)", color=t["text"])
+            ax.set_ylabel("PSD / FRF Magnitude", color=t["text"])
         elif has_frf_mag:
-            ax.set_ylabel("FRF Magnitude (g/g)", color=t["text"])
+            if mixed:
+                ax.set_ylabel("FRF Magnitude", color=t["text"])
+            else:
+                ax.set_ylabel(f"FRF Magnitude ({active_cfgs[0]['frf_units']})", color=t["text"])
         else:
-            ax.set_ylabel("ASD (g²/Hz)", color=t["text"])
+            if mixed:
+                ax.set_ylabel("PSD (mixed units — see legend)", color=t["text"])
+            else:
+                ax.set_ylabel(f"PSD ({active_cfgs[0]['psd_units']})", color=t["text"])
 
         ax.tick_params(colors=t["text"], which="both")
         for spine in ax.spines.values():
@@ -1757,7 +2263,9 @@ Use the matplotlib toolbar below the plot to zoom, pan, and save images.
                         markerfacecolor=curve["color"],
                         markeredgecolor=t["text"], linestyle="none", zorder=5)
                 if label_style == "Freq + value":
-                    ann_text = f"{f:.0f} Hz\n{v:.3g} g²/Hz"
+                    pk_rt = self._op2_slots[pk['slot_idx']].get('response_type', 'Acceleration')
+                    pk_cfg = RESPONSE_TYPES.get(pk_rt, RESPONSE_TYPES['Acceleration'])
+                    ann_text = f"{f:.0f} Hz\n{v:.3g} {pk_cfg['psd_units']}"
                 else:
                     ann_text = f"{f:.0f} Hz"
                 ax.annotate(ann_text, xy=(f, v),
