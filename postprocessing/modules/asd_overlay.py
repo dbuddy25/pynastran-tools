@@ -54,11 +54,9 @@ def _lookup_subcase(result_dict, subcase_int):
     return None
 
 
-_NODE_COLORS = (
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-    "#9467bd", "#8c564b", "#e377c2", "#bcbd22",
-    "#17becf", "#7f7f7f",
-)
+_NODE_COLORS_COOL = ("#1f77b4", "#2ca02c", "#9467bd", "#17becf", "#bcbd22")
+_NODE_COLORS_WARM = ("#d62728", "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f")
+_NODE_COLORS = _NODE_COLORS_COOL + _NODE_COLORS_WARM  # full palette for single-OP2
 _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 _SC_LINES = ("-", "--", "-.", ":")  # linestyle cycle when multiple subcases selected
@@ -2817,6 +2815,13 @@ LINE STYLES
         has_frf_mag = False
         self._last_drawn_curves = []
 
+        loaded_slot_count = sum(
+            1 for s in self._op2_slots.values() if s['op2'] is not None)
+        if loaded_slot_count >= 2:
+            slot_palettes = {0: _NODE_COLORS_COOL, 1: _NODE_COLORS_WARM}
+        else:
+            slot_palettes = {0: _NODE_COLORS, 1: _NODE_COLORS}
+
         for slot_idx, slot in self._op2_slots.items():
             op2 = slot['op2']
             ov = sc_override[slot_idx]
@@ -2845,8 +2850,9 @@ LINE STYLES
                     sc_suffix = f" [{self._sc_display_name(slot_idx, subcase)}]"
 
                 for curve_idx, (nid, lbl, idof) in enumerate(curves):
-                    color = (_NODE_COLORS[idof % len(_NODE_COLORS)] if color_by_dof
-                             else _NODE_COLORS[curve_idx % len(_NODE_COLORS)])
+                    palette = slot_palettes[slot_idx]
+                    color = (palette[idof % len(palette)] if color_by_dof
+                             else palette[curve_idx % len(palette)])
 
                     freqs, data, is_psd = self._get_response_psd(
                         slot_idx, subcase, nid, idof, unit_factor)
