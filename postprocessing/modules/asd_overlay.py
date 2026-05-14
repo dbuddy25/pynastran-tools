@@ -61,6 +61,7 @@ _NODE_COLORS = (
 )
 _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
+_SC_LINES = ("-", "--", "-.", ":")  # linestyle cycle when multiple subcases selected
 
 RESPONSE_TYPES = {
     "Acceleration": {
@@ -74,6 +75,7 @@ RESPONSE_TYPES = {
         "unit_factors": {"in/s²": 386.089, "m/s²": 9.80665},
         "psd_units": "g²/Hz",
         "rms_units": "g",
+        "rms_fmt": ".3g",
         "frf_units": "g/g",
         "input_label": "Input ASD",
     },
@@ -88,6 +90,7 @@ RESPONSE_TYPES = {
         "unit_factors": {"in": 1.0, "mm": 0.0393701, "m": 39.3701},
         "psd_units": "in²/Hz",
         "rms_units": "in (RMS)",
+        "rms_fmt": ".2e",
         "frf_units": "in/g",
         "input_label": "Input PSD",
     },
@@ -102,6 +105,7 @@ RESPONSE_TYPES = {
         "unit_factors": {"lbf": 1.0, "N": 0.224809},
         "psd_units": "lbf²/Hz",
         "rms_units": "lbf (RMS)",
+        "rms_fmt": ".3g",
         "frf_units": "lbf/g",
         "input_label": "Input PSD",
     },
@@ -116,6 +120,7 @@ RESPONSE_TYPES = {
         "unit_factors": {"lbf": 1.0, "N": 0.224809},
         "psd_units": "lbf²/Hz",
         "rms_units": "lbf (RMS)",
+        "rms_fmt": ".3g",
         "frf_units": "lbf/g",
         "input_label": "Input PSD",
     },
@@ -249,8 +254,7 @@ LINE STYLES
         self._open_btn = [None, None]
         self._file_label = [None, None]
         self._unit_var = [ctk.StringVar(value="g"), ctk.StringVar(value="g")]
-        self._sc_var = [tk.StringVar(value="(none)"), tk.StringVar(value="(none)")]
-        self._sc_menu = [None, None]
+        self._sc_btn = [None, None]
         self._mode_var = [ctk.StringVar(value="PSD (RANDOM)"),
                           ctk.StringVar(value="PSD (RANDOM)")]
         self._frf_row = [None, None]
@@ -306,6 +310,7 @@ LINE STYLES
     def _empty_slot():
         return {
             "op2": None, "path": None, "subcase": None,
+            "subcases": [],
             "subcase_options": [],
             "mode": "PSD",
             "input_asd_path": None,
@@ -368,13 +373,13 @@ LINE STYLES
 
             ctk.CTkLabel(slot_grid, text="Subcase:").grid(
                 row=i, column=7, padx=(0, 2))
-            scmenu = ctk.CTkOptionMenu(
-                slot_grid, variable=self._sc_var[i], values=["(none)"],
-                command=lambda _v, idx=i: self._on_sc_select(idx),
-                width=180,
+            scbtn = ctk.CTkButton(
+                slot_grid, text="(none)",
+                command=lambda idx=i: self._open_subcase_picker(idx),
+                width=180, anchor="w",
             )
-            scmenu.grid(row=i, column=8, padx=(0, 10))
-            self._sc_menu[i] = scmenu
+            scbtn.grid(row=i, column=8, padx=(0, 10))
+            self._sc_btn[i] = scbtn
 
             ctk.CTkLabel(slot_grid, text="Mode:").grid(
                 row=i, column=9, padx=(0, 2))
@@ -804,11 +809,10 @@ LINE STYLES
             self._op2_slots[slot_idx]['path'] = path
 
             sc_pairs = _subcase_options(result_dict)
-            sc_strs = [label for _sc, label in sc_pairs]
             self._op2_slots[slot_idx]['subcase_options'] = sc_pairs
-            self._sc_menu[slot_idx].configure(values=sc_strs)
-            self._sc_var[slot_idx].set(sc_strs[0])
             self._op2_slots[slot_idx]['subcase'] = sc_pairs[0][0]
+            self._op2_slots[slot_idx]['subcases'] = [sc_pairs[0][0]]
+            self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
 
             stem = os.path.splitext(os.path.basename(path))[0]
             self._maybe_autofill_name(slot_idx, stem)
@@ -827,17 +831,68 @@ LINE STYLES
 
         self._run_in_background(f"Loading OP2 {tag}…", _work, _done)
 
-    def _on_sc_select(self, slot_idx):
-        val = self._sc_var[slot_idx].get()
-        try:
-            if val == "(none)":
-                self._op2_slots[slot_idx]['subcase'] = None
-            else:
-                # Display string is "42 — SUBTITLE" or just "42"
-                self._op2_slots[slot_idx]['subcase'] = int(val.split("—", 1)[0].strip())
-        except (ValueError, IndexError):
-            self._op2_slots[slot_idx]['subcase'] = None
-        self._refresh_plot()
+    def _sc_btn_label(self, slot_idx):
+        """Button text for the subcase picker button."""
+        scs = self._op2_slots[slot_idx].get('subcases', [])
+        opts = self._op2_slots[slot_idx].get('subcase_options', [])
+        if not scs:
+            return "(none)"
+        if len(scs) == 1:
+            lbl = next((l for sc, l in opts if sc == scs[0]), str(scs[0]))
+            return lbl[:35] + ("…" if len(lbl) > 35 else "")
+        return f"{len(scs)} subcases"
+
+    def _open_subcase_picker(self, slot_idx):
+        """Toplevel checkbox list for selecting one or more subcases."""
+        opts = self._op2_slots[slot_idx].get('subcase_options', [])
+        if not opts:
+            return
+        current = set(self._op2_slots[slot_idx].get('subcases', []))
+        tag = _SLOT_TAGS[slot_idx]
+
+        dlg = ctk.CTkToplevel(self.frame)
+        dlg.title(f"Subcases — Slot {tag}")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ctk.CTkLabel(dlg, text=f"Select subcases for slot {tag}:",
+                     anchor="w").pack(fill=tk.X, padx=12, pady=(10, 4))
+
+        # Checkbox rows
+        check_vars = []
+        scroll = ctk.CTkScrollableFrame(dlg, height=min(30 * len(opts), 280))
+        scroll.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        for sc_id, sc_lbl in opts:
+            var = tk.BooleanVar(value=(sc_id in current))
+            check_vars.append((sc_id, var))
+            ctk.CTkCheckBox(scroll, text=sc_lbl, variable=var).pack(
+                anchor="w", pady=2)
+
+        # Select all / Clear buttons
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=12, pady=(2, 4))
+        ctk.CTkButton(btn_row, text="All", width=60,
+                      command=lambda: [v.set(True) for _, v in check_vars]).pack(
+            side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(btn_row, text="Clear", width=60,
+                      command=lambda: [v.set(False) for _, v in check_vars]).pack(
+            side=tk.LEFT)
+
+        def _ok():
+            selected = [sc for sc, v in check_vars if v.get()]
+            self._op2_slots[slot_idx]['subcases'] = selected
+            # Keep legacy 'subcase' in sync with first selection
+            self._op2_slots[slot_idx]['subcase'] = selected[0] if selected else None
+            self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
+            dlg.destroy()
+            self._refresh_plot()
+
+        ok_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        ok_row.pack(fill=tk.X, padx=12, pady=(4, 10))
+        ctk.CTkButton(ok_row, text="OK", width=80, command=_ok).pack(
+            side=tk.RIGHT, padx=(4, 0))
+        ctk.CTkButton(ok_row, text="Cancel", width=80,
+                      command=dlg.destroy).pack(side=tk.RIGHT)
 
     def _on_mode_change(self, slot_idx):
         mode_label = self._mode_var[slot_idx].get()
@@ -849,9 +904,9 @@ LINE STYLES
             self._frf_row[slot_idx].pack_forget()
         self._op2_slots[slot_idx]['op2'] = None
         self._op2_slots[slot_idx]['subcase'] = None
+        self._op2_slots[slot_idx]['subcases'] = []
         self._op2_slots[slot_idx]['subcase_options'] = []
-        self._sc_var[slot_idx].set("(none)")
-        self._sc_menu[slot_idx].configure(values=["(none)"])
+        self._sc_btn[slot_idx].configure(text="(none)")
         self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
         self._refresh_plot()
 
@@ -1941,8 +1996,7 @@ LINE STYLES
         finally:
             self._suppress_name_trace[slot_idx] = False
         self._name_user_edited[slot_idx] = False
-        self._sc_var[slot_idx].set("(none)")
-        self._sc_menu[slot_idx].configure(values=["(none)"])
+        self._sc_btn[slot_idx].configure(text="(none)")
         self._input_asd_label[slot_idx].configure(text="(no file)", text_color="gray")
         self._input_asd_db_var[slot_idx].set("0")
         self._frf_row[slot_idx].pack_forget()
@@ -1987,16 +2041,20 @@ LINE STYLES
                         f"Slot {_SLOT_TAGS[idx]} OP2 has no {rt} results.\n"
                         "Subcase list cleared for this slot.")
                     self._op2_slots[idx]['subcase'] = None
+                    self._op2_slots[idx]['subcases'] = []
                     self._op2_slots[idx]['subcase_options'] = []
-                    self._sc_var[idx].set("(none)")
-                    self._sc_menu[idx].configure(values=["(none)"])
+                    self._sc_btn[idx].configure(text="(none)")
                     continue
                 sc_pairs = _subcase_options(result_dict)
-                sc_strs = [label for _sc, label in sc_pairs]
                 self._op2_slots[idx]['subcase_options'] = sc_pairs
-                self._sc_menu[idx].configure(values=sc_strs)
-                self._sc_var[idx].set(sc_strs[0])
-                self._op2_slots[idx]['subcase'] = sc_pairs[0][0]
+                # Preserve existing selections that are still valid; otherwise reset to first
+                existing = self._op2_slots[idx].get('subcases', [])
+                valid = [sc for sc in existing if any(s == sc for s, _ in sc_pairs)]
+                if not valid:
+                    valid = [sc_pairs[0][0]]
+                self._op2_slots[idx]['subcases'] = valid
+                self._op2_slots[idx]['subcase'] = valid[0]
+                self._sc_btn[idx].configure(text=self._sc_btn_label(idx))
         self._update_dof_dropdown()
         self._rebuild_sections()
         self._refresh_plot()
@@ -2120,6 +2178,7 @@ LINE STYLES
                 "mode": slot.get('mode', 'PSD'),
                 "units": self._unit_var[idx].get(),
                 "subcase": slot.get('subcase'),
+                "subcases": slot.get('subcases', []),
                 "input_asd_path": slot.get('input_asd_path'),
                 "input_asd_db": slot.get('input_asd_db', 0.0),
             })
@@ -2314,6 +2373,8 @@ LINE STYLES
                 continue
 
             _target_subcase = slot_data.get('subcase')
+            _target_subcases = slot_data.get('subcases') or (
+                [_target_subcase] if _target_subcase is not None else [])
             _target_name = slot_data.get('name', '')
             _target_input_asd = slot_data.get('input_asd_path')
             _target_input_asd_db = float(slot_data.get('input_asd_db', 0.0) or 0.0)
@@ -2328,7 +2389,7 @@ LINE STYLES
 
             def _done(op2, error,
                       si=_slot_idx, cfg_=cfg,
-                      tsc=_target_subcase, tname=_target_name,
+                      tsc=_target_subcase, tscs=_target_subcases, tname=_target_name,
                       tasd=_target_input_asd, tasd_db=_target_input_asd_db,
                       tmode=_target_mode, op2_path_=op2_path):
                 if error is not None or op2 is None:
@@ -2356,16 +2417,18 @@ LINE STYLES
                 else:
                     self._frf_row[si].pack_forget()
                 sc_pairs = _subcase_options(result_dict)
-                sc_strs = [label for _sc, label in sc_pairs]
                 self._op2_slots[si]['subcase_options'] = sc_pairs
-                self._sc_menu[si].configure(values=sc_strs)
-                matched = next(((sc, lbl) for sc, lbl in sc_pairs if sc == tsc), None)
-                if matched:
-                    self._sc_var[si].set(matched[1])
-                    self._op2_slots[si]['subcase'] = matched[0]
-                elif sc_pairs:
-                    self._sc_var[si].set(sc_strs[0])
-                    self._op2_slots[si]['subcase'] = sc_pairs[0][0]
+                valid_ids = {sc for sc, _ in sc_pairs}
+                restored = [sc for sc in tscs if sc in valid_ids]
+                if not restored:
+                    # Fall back to legacy single subcase, then first available
+                    if tsc in valid_ids:
+                        restored = [tsc]
+                    elif sc_pairs:
+                        restored = [sc_pairs[0][0]]
+                self._op2_slots[si]['subcases'] = restored
+                self._op2_slots[si]['subcase'] = restored[0] if restored else None
+                self._sc_btn[si].configure(text=self._sc_btn_label(si))
                 if tname:
                     self._suppress_name_trace[si] = True
                     try:
@@ -2423,15 +2486,15 @@ LINE STYLES
         Curves within a slot all share the same freq vector.
         """
         blocks = []
-        by_slot = {}
+        by_slot_sc = {}
         for c in self._last_drawn_curves:
-            by_slot.setdefault(c['slot_idx'], []).append(c)
+            key = (c['slot_idx'], c.get('subcase'))
+            by_slot_sc.setdefault(key, []).append(c)
 
-        for slot_idx in sorted(by_slot):
-            curves = by_slot[slot_idx]
+        for (slot_idx, sc) in sorted(by_slot_sc):
+            curves = by_slot_sc[(slot_idx, sc)]
             tag = _SLOT_TAGS[slot_idx]
             name = self._name_var[slot_idx].get().strip() or tag
-            sc = self._op2_slots[slot_idx]['subcase']
             slot_cfg = RESPONSE_TYPES.get(
                 self._rt_global_var.get(), RESPONSE_TYPES['Acceleration'])
             freqs = curves[0]['freqs']
@@ -2540,7 +2603,7 @@ LINE STYLES
             tag = _SLOT_TAGS[c['slot_idx']]
             name = self._name_var[c['slot_idx']].get().strip() or tag
             op2_file = os.path.basename(slot['path']) if slot['path'] else ""
-            sc = slot['subcase']
+            sc = c.get('subcase', slot['subcase'])
             curve_lbl = self._fmt_entity_label(c['nid'], c['idof'], c.get('label', ''))
             if c['is_psd']:
                 rms = self._get_rms_scalar(
@@ -2658,11 +2721,11 @@ LINE STYLES
                 sc_a, sc_b, _ = pool[self._cycle_index]
                 sc_override[0] = sc_a[0] if sc_a else "SKIP"
                 sc_override[1] = sc_b[0] if sc_b else "SKIP"
-                # Sync dropdowns so user sees the active subcase
+                # Sync buttons so user sees the active subcase
                 if sc_a:
-                    self._sc_var[0].set(sc_a[1])
+                    self._sc_btn[0].configure(text=sc_a[1][:35])
                 if sc_b:
-                    self._sc_var[1].set(sc_b[1])
+                    self._sc_btn[1].configure(text=sc_b[1][:35])
 
         has_curves = False
         has_psd = False
@@ -2674,63 +2737,77 @@ LINE STYLES
             ov = sc_override[slot_idx]
             if ov == "SKIP":
                 continue
-            subcase = ov if ov is not None else slot['subcase']
-            if op2 is None or subcase is None:
+            if ov is not None:
+                subcases = [ov]
+            else:
+                subcases = slot.get('subcases') or (
+                    [slot['subcase']] if slot['subcase'] is not None else [])
+            if op2 is None or not subcases:
                 continue
 
             unit_factor = self._get_unit_factor(slot_idx)
             rt = self._rt_global_var.get()
             cfg = RESPONSE_TYPES.get(rt, RESPONSE_TYPES['Acceleration'])
             tag = _SLOT_TAGS[slot_idx]
-            ls = _SLOT_LINES[slot_idx]
             name = self._name_var[slot_idx].get().strip() or tag
+            sc_opts = slot.get('subcase_options', [])
+            multi_sc = len(subcases) > 1
 
-            for curve_idx, (nid, lbl, idof) in enumerate(curves):
-                color = (_NODE_COLORS[idof % len(_NODE_COLORS)] if color_by_dof
-                         else _NODE_COLORS[curve_idx % len(_NODE_COLORS)])
+            for sc_pos, subcase in enumerate(subcases):
+                sc_ls = _SC_LINES[sc_pos % len(_SC_LINES)] if multi_sc else _SLOT_LINES[slot_idx]
+                sc_suffix = ""
+                if multi_sc:
+                    sc_lbl = next((l for sc, l in sc_opts if sc == subcase), str(subcase))
+                    sc_suffix = f" [{sc_lbl}]"
 
-                freqs, data, is_psd = self._get_response_psd(
-                    slot_idx, subcase, nid, idof, unit_factor)
-                if freqs is None:
-                    continue
+                for curve_idx, (nid, lbl, idof) in enumerate(curves):
+                    color = (_NODE_COLORS[idof % len(_NODE_COLORS)] if color_by_dof
+                             else _NODE_COLORS[curve_idx % len(_NODE_COLORS)])
 
-                dof_labels = cfg.get('dof_labels', self.DOF_LABELS)
-                dof_label = dof_labels[idof] if idof < len(dof_labels) else str(idof)
+                    freqs, data, is_psd = self._get_response_psd(
+                        slot_idx, subcase, nid, idof, unit_factor)
+                    if freqs is None:
+                        continue
 
-                if is_psd:
-                    if is_cum:
-                        plot_data = self._cumulative_grms_loglog(freqs, data)
-                        final_g = float(plot_data[-1]) if len(plot_data) else 0.0
-                        label = f"{name}: {lbl} {dof_label}  (final RMS = {final_g:.3g} {cfg['rms_units']})"
+                    dof_labels = cfg.get('dof_labels', self.DOF_LABELS)
+                    dof_label = dof_labels[idof] if idof < len(dof_labels) else str(idof)
+
+                    if is_psd:
+                        if is_cum:
+                            plot_data = self._cumulative_grms_loglog(freqs, data)
+                            final_g = float(plot_data[-1]) if len(plot_data) else 0.0
+                            _fmt = cfg.get('rms_fmt', '.3g')
+                            label = f"{name}{sc_suffix}: {lbl} {dof_label}  (final RMS = {final_g:{_fmt}} {cfg['rms_units']})"
+                        else:
+                            plot_data = data
+                            rms_g = self._get_rms_scalar(
+                                op2, subcase, nid, idof, freqs, data, unit_factor,
+                                rt=rt)
+                            _fmt = cfg.get('rms_fmt', '.3g')
+                            label = f"{name}{sc_suffix}: {lbl} {dof_label}  (RMS = {rms_g:{_fmt}} {cfg['rms_units']})"
+                        has_psd = True
                     else:
+                        if is_cum:
+                            continue  # cumulative only for PSD
                         plot_data = data
-                        rms_g = self._get_rms_scalar(
-                            op2, subcase, nid, idof, freqs, data, unit_factor,
-                            rt=rt)
-                        label = f"{name}: {lbl} {dof_label}  (RMS = {rms_g:.3g} {cfg['rms_units']})"
-                    has_psd = True
-                else:
-                    if is_cum:
-                        continue  # cumulative only for PSD
-                    plot_data = data
-                    label = f"{name}: {lbl} {dof_label}  (FRF magnitude, {cfg['frf_units']})"
-                    has_frf_mag = True
+                        label = f"{name}{sc_suffix}: {lbl} {dof_label}  (FRF magnitude, {cfg['frf_units']})"
+                        has_frf_mag = True
 
-                _node = next((n for n in self._nodes_by_rt.get(rt, [])
-                              if n['id'] == nid), None)
-                _st = _node.get('style', {}) if _node else {}
-                ax.plot(freqs, plot_data,
-                        label=_st.get('label_override') or label,
-                        color=_st.get('color') or color,
-                        linestyle=_st.get('linestyle') or ls,
-                        linewidth=_st.get('linewidth') or 1.5)
-                has_curves = True
-                self._last_drawn_curves.append({
-                    "slot_idx": slot_idx, "nid": nid, "idof": idof,
-                    "label": lbl,
-                    "freqs": np.asarray(freqs), "data": np.asarray(data),
-                    "is_psd": is_psd, "color": _st.get('color') or color,
-                })
+                    _node = next((n for n in self._nodes_by_rt.get(rt, [])
+                                  if n['id'] == nid), None)
+                    _st = _node.get('style', {}) if _node else {}
+                    ax.plot(freqs, plot_data,
+                            label=_st.get('label_override') or label,
+                            color=_st.get('color') or color,
+                            linestyle=_st.get('linestyle') or sc_ls,
+                            linewidth=_st.get('linewidth') or 1.5)
+                    has_curves = True
+                    self._last_drawn_curves.append({
+                        "slot_idx": slot_idx, "subcase": subcase,
+                        "nid": nid, "idof": idof, "label": lbl,
+                        "freqs": np.asarray(freqs), "data": np.asarray(data),
+                        "is_psd": is_psd, "color": _st.get('color') or color,
+                    })
 
         # ── Reference ASD overlays ────────────────────────────────────────────
         for ref_idx, ref in enumerate(self._refs):
