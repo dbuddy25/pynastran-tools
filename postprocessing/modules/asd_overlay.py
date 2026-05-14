@@ -538,10 +538,10 @@ LINE STYLES
 
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
-        body.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        body.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
         # Left: node management panel
-        node_panel = ctk.CTkFrame(body, width=260)
+        node_panel = ctk.CTkFrame(body, width=320)
         node_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
         node_panel.pack_propagate(False)
 
@@ -612,7 +612,7 @@ LINE STYLES
         self._ref_scroll.pack(fill=tk.X, padx=4, pady=(2, 6))
 
         # Right: matplotlib plot
-        plot_container = ctk.CTkFrame(body)
+        plot_container = ctk.CTkFrame(body, corner_radius=0)
         plot_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Thin header for theme toggle
@@ -1464,17 +1464,17 @@ LINE STYLES
         ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
                         command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
 
-        gid_entry = ctk.CTkEntry(row_frame, textvariable=gid_var, width=80)
+        gid_entry = ctk.CTkEntry(row_frame, textvariable=gid_var, width=68)
         gid_entry.pack(side=tk.LEFT, padx=(2, 2))
         gid_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_gid(n))
         gid_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_gid(n))
 
-        lbl_entry = ctk.CTkEntry(row_frame, textvariable=label_var, width=74)
+        lbl_entry = ctk.CTkEntry(row_frame, textvariable=label_var, width=120)
         lbl_entry.pack(side=tk.LEFT, padx=(0, 2))
         lbl_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_label(n))
         lbl_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_label(n))
 
-        ctk.CTkButton(row_frame, text="Edit…", width=44,
+        ctk.CTkButton(row_frame, text="Edit…", width=48,
                       command=lambda n=node: self._curve_style_dialog(n, is_ref=False),
                       ).pack(side=tk.LEFT, padx=(0, 2))
 
