@@ -311,6 +311,7 @@ LINE STYLES
         return {
             "op2": None, "path": None, "subcase": None,
             "subcases": [],
+            "subcase_names": {},
             "subcase_options": [],
             "mode": "PSD",
             "input_asd_path": None,
@@ -831,23 +832,31 @@ LINE STYLES
 
         self._run_in_background(f"Loading OP2 {tag}…", _work, _done)
 
+    def _sc_display_name(self, slot_idx, sc_id):
+        """Return custom name for a subcase, or fall back to the OP2 display string."""
+        custom = self._op2_slots[slot_idx].get('subcase_names', {}).get(sc_id)
+        if custom:
+            return custom
+        opts = self._op2_slots[slot_idx].get('subcase_options', [])
+        return next((l for sc, l in opts if sc == sc_id), str(sc_id))
+
     def _sc_btn_label(self, slot_idx):
         """Button text for the subcase picker button."""
         scs = self._op2_slots[slot_idx].get('subcases', [])
-        opts = self._op2_slots[slot_idx].get('subcase_options', [])
         if not scs:
             return "(none)"
         if len(scs) == 1:
-            lbl = next((l for sc, l in opts if sc == scs[0]), str(scs[0]))
+            lbl = self._sc_display_name(slot_idx, scs[0])
             return lbl[:35] + ("…" if len(lbl) > 35 else "")
         return f"{len(scs)} subcases"
 
     def _open_subcase_picker(self, slot_idx):
-        """Toplevel checkbox list for selecting one or more subcases."""
+        """Toplevel checkbox + name-entry list for selecting one or more subcases."""
         opts = self._op2_slots[slot_idx].get('subcase_options', [])
         if not opts:
             return
         current = set(self._op2_slots[slot_idx].get('subcases', []))
+        existing_names = self._op2_slots[slot_idx].get('subcase_names', {})
         tag = _SLOT_TAGS[slot_idx]
 
         dlg = ctk.CTkToplevel(self.frame)
@@ -855,18 +864,30 @@ LINE STYLES
         dlg.resizable(False, False)
         dlg.grab_set()
 
-        ctk.CTkLabel(dlg, text=f"Select subcases for slot {tag}:",
-                     anchor="w").pack(fill=tk.X, padx=12, pady=(10, 4))
+        hdr = ctk.CTkFrame(dlg, fg_color="transparent")
+        hdr.pack(fill=tk.X, padx=12, pady=(10, 2))
+        ctk.CTkLabel(hdr, text="", width=24).pack(side=tk.LEFT)          # checkbox placeholder
+        ctk.CTkLabel(hdr, text="Subcase (from OP2)", width=180,
+                     anchor="w").pack(side=tk.LEFT, padx=(4, 8))
+        ctk.CTkLabel(hdr, text="Custom name", anchor="w").pack(side=tk.LEFT)
 
-        # Checkbox rows
+        # Checkbox + name-entry rows
         check_vars = []
-        scroll = ctk.CTkScrollableFrame(dlg, height=min(30 * len(opts), 280))
+        name_vars = []
+        scroll = ctk.CTkScrollableFrame(dlg, height=min(36 * len(opts), 300), width=500)
         scroll.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
         for sc_id, sc_lbl in opts:
+            row = ctk.CTkFrame(scroll, fg_color="transparent")
+            row.pack(fill=tk.X, pady=2)
             var = tk.BooleanVar(value=(sc_id in current))
             check_vars.append((sc_id, var))
-            ctk.CTkCheckBox(scroll, text=sc_lbl, variable=var).pack(
-                anchor="w", pady=2)
+            ctk.CTkCheckBox(row, text="", variable=var, width=24).pack(side=tk.LEFT)
+            ctk.CTkLabel(row, text=sc_lbl, width=180, anchor="w").pack(
+                side=tk.LEFT, padx=(4, 8))
+            nvar = tk.StringVar(value=existing_names.get(sc_id, ""))
+            name_vars.append((sc_id, nvar))
+            ctk.CTkEntry(row, textvariable=nvar, width=180,
+                         placeholder_text="(use OP2 name)").pack(side=tk.LEFT)
 
         # Select all / Clear buttons
         btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -880,7 +901,9 @@ LINE STYLES
 
         def _ok():
             selected = [sc for sc, v in check_vars if v.get()]
+            names = {sc: nv.get().strip() for sc, nv in name_vars if nv.get().strip()}
             self._op2_slots[slot_idx]['subcases'] = selected
+            self._op2_slots[slot_idx]['subcase_names'] = names
             # Keep legacy 'subcase' in sync with first selection
             self._op2_slots[slot_idx]['subcase'] = selected[0] if selected else None
             self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
@@ -2179,6 +2202,7 @@ LINE STYLES
                 "units": self._unit_var[idx].get(),
                 "subcase": slot.get('subcase'),
                 "subcases": slot.get('subcases', []),
+                "subcase_names": {str(k): v for k, v in slot.get('subcase_names', {}).items()},
                 "input_asd_path": slot.get('input_asd_path'),
                 "input_asd_db": slot.get('input_asd_db', 0.0),
             })
@@ -2375,6 +2399,8 @@ LINE STYLES
             _target_subcase = slot_data.get('subcase')
             _target_subcases = slot_data.get('subcases') or (
                 [_target_subcase] if _target_subcase is not None else [])
+            _target_sc_names = {int(k): v for k, v in
+                                slot_data.get('subcase_names', {}).items()}
             _target_name = slot_data.get('name', '')
             _target_input_asd = slot_data.get('input_asd_path')
             _target_input_asd_db = float(slot_data.get('input_asd_db', 0.0) or 0.0)
@@ -2389,7 +2415,8 @@ LINE STYLES
 
             def _done(op2, error,
                       si=_slot_idx, cfg_=cfg,
-                      tsc=_target_subcase, tscs=_target_subcases, tname=_target_name,
+                      tsc=_target_subcase, tscs=_target_subcases,
+                      tsc_names=_target_sc_names, tname=_target_name,
                       tasd=_target_input_asd, tasd_db=_target_input_asd_db,
                       tmode=_target_mode, op2_path_=op2_path):
                 if error is not None or op2 is None:
@@ -2428,6 +2455,7 @@ LINE STYLES
                         restored = [sc_pairs[0][0]]
                 self._op2_slots[si]['subcases'] = restored
                 self._op2_slots[si]['subcase'] = restored[0] if restored else None
+                self._op2_slots[si]['subcase_names'] = tsc_names
                 self._sc_btn[si].configure(text=self._sc_btn_label(si))
                 if tname:
                     self._suppress_name_trace[si] = True
@@ -2757,8 +2785,7 @@ LINE STYLES
                 sc_ls = _SC_LINES[sc_pos % len(_SC_LINES)] if multi_sc else _SLOT_LINES[slot_idx]
                 sc_suffix = ""
                 if multi_sc:
-                    sc_lbl = next((l for sc, l in sc_opts if sc == subcase), str(subcase))
-                    sc_suffix = f" [{sc_lbl}]"
+                    sc_suffix = f" [{self._sc_display_name(slot_idx, subcase)}]"
 
                 for curve_idx, (nid, lbl, idof) in enumerate(curves):
                     color = (_NODE_COLORS[idof % len(_NODE_COLORS)] if color_by_dof
