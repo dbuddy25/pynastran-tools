@@ -70,8 +70,8 @@ RESPONSE_TYPES = {
         "id_attr": "node_gridtype",
         "entity_label": "Node",
         "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
-        "unit_choices": ["g", "in/s²", "m/s²"],
-        "unit_factors": {"g": 1.0, "in/s²": 386.089, "m/s²": 9.80665},
+        "unit_choices": ["in/s²", "m/s²", "mm/s²"],
+        "unit_factors": {"in/s²": 386.089, "m/s²": 9.80665, "mm/s²": 9806.65},
         "psd_units": "g²/Hz",
         "rms_units": "g",
         "frf_units": "g/g",
@@ -2233,6 +2233,7 @@ LINE STYLES
         self._aux_lines = list(data.get('aux_lines', []))
 
         self._clear_references()
+        missing_refs = []
         for ref in data.get('references', []):
             rpath = ref.get('path', '')
             _is_manual = ref.get('is_manual', False)
@@ -2248,12 +2249,22 @@ LINE STYLES
                         freqs_raw=np.array(_fr), g2hz_raw=np.array(_gr),
                         name=ref.get('name', ''), checked=ref.get('checked', True),
                         db=_db, is_manual=True, manual_text=_mt, style=_style)
-            elif rpath and os.path.isfile(rpath):
-                freqs, asds = self._parse_asd_text_file(rpath)
-                if freqs is not None:
-                    self._load_reference_asd_from_data(
-                        rpath, freqs, asds, ref.get('name', ''),
-                        ref.get('checked', True), db=_db, style=_style)
+                else:
+                    missing_refs.append(f"  Manual ASD '{ref.get('name', '?')}' (data missing from session)")
+            elif rpath:
+                if os.path.isfile(rpath):
+                    freqs, asds = self._parse_asd_text_file(rpath)
+                    if freqs is not None:
+                        self._load_reference_asd_from_data(
+                            rpath, freqs, asds, ref.get('name', ''),
+                            ref.get('checked', True), db=_db, style=_style)
+                else:
+                    missing_refs.append(f"  Ref ASD: {rpath}")
+        if missing_refs:
+            messagebox.showwarning(
+                "Missing Reference Files",
+                "These reference ASD files could not be found:\n\n"
+                + "\n".join(missing_refs))
 
         self._rebuild_sections()
 
@@ -2341,15 +2352,20 @@ LINE STYLES
                 self._file_label[si].configure(
                     text=os.path.basename(op2_path_),
                     text_color=("gray10", "gray90"))
-                if tasd and os.path.isfile(tasd):
-                    freqs, asds = self._parse_asd_text_file(tasd)
-                    if freqs is not None:
-                        self._op2_slots[si]['input_asd_path'] = tasd
-                        self._op2_slots[si]['input_asd_freqs'] = freqs
-                        self._op2_slots[si]['input_asd_g2hz'] = asds
+                if tasd:
+                    if os.path.isfile(tasd):
+                        freqs, asds = self._parse_asd_text_file(tasd)
+                        if freqs is not None:
+                            self._op2_slots[si]['input_asd_path'] = tasd
+                            self._op2_slots[si]['input_asd_freqs'] = freqs
+                            self._op2_slots[si]['input_asd_g2hz'] = asds
+                            self._input_asd_label[si].configure(
+                                text=os.path.basename(tasd),
+                                text_color=("gray10", "gray90"))
+                    else:
                         self._input_asd_label[si].configure(
-                            text=os.path.basename(tasd),
-                            text_color=("gray10", "gray90"))
+                            text=f"⚠ not found: {os.path.basename(tasd)}",
+                            text_color="orange")
                 self._rebuild_sections()
                 self._refresh_plot()
 
