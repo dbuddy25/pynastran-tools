@@ -296,6 +296,9 @@ LINE STYLES
         self._last_drawn_curves = []
         self._mpl_cid_click = None
 
+        # X/Y reference lines
+        self._aux_lines = []
+
         self._build_ui()
 
     @staticmethod
@@ -509,6 +512,14 @@ LINE STYLES
                           width=120,
                           ).pack(side=tk.LEFT)
 
+        ctk.CTkButton(annot_row, text="X/Y Lines…", width=100,
+                      command=self._aux_lines_dialog,
+                      ).pack(side=tk.LEFT, padx=(14, 0))
+
+        ctk.CTkButton(annot_row, text="Pin Vline", width=80,
+                      command=self._pin_last_peak_as_vline,
+                      ).pack(side=tk.LEFT, padx=(4, 0))
+
         ctk.CTkButton(annot_row, text="Export Excel…", width=120,
                       command=self._export_excel,
                       ).pack(side=tk.LEFT, padx=(14, 0))
@@ -586,6 +597,8 @@ LINE STYLES
         ref_btn_row.pack(fill=tk.X, padx=6)
         ctk.CTkButton(ref_btn_row, text="Load…", width=70,
                       command=self._load_reference_asd).pack(side=tk.LEFT)
+        ctk.CTkButton(ref_btn_row, text="Manual…", width=76,
+                      command=self._manual_asd_dialog).pack(side=tk.LEFT, padx=3)
         ctk.CTkButton(ref_btn_row, text="Clear", width=55,
                       command=self._clear_references).pack(side=tk.LEFT, padx=3)
 
@@ -840,35 +853,42 @@ LINE STYLES
     # ── Input ASD loading ────────────────────────────────────────────────────
 
     @staticmethod
-    def _parse_asd_text_file(path):
-        """Parse a 2-column ASD text file (freq, g²/Hz). Returns (freqs, asds) or (None, None)."""
+    def _parse_asd_text(text_str):
+        """Parse 2-column ASD text (freq, g²/Hz). Returns (freqs, g2hz) arrays or (None, None)."""
         freqs, asds = [], []
-        try:
-            with open(path, encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#') or line.startswith('$'):
-                        continue
-                    parts = line.replace(',', ' ').split()
-                    if len(parts) < 2:
-                        continue
-                    try:
-                        freqs.append(float(parts[0]))
-                        asds.append(float(parts[1]))
-                    except ValueError:
-                        continue
-        except Exception as exc:
-            messagebox.showerror("Load Error", str(exc))
-            return None, None
-
+        for line in text_str.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('$'):
+                continue
+            parts = line.replace(',', ' ').split()
+            if len(parts) < 2:
+                continue
+            try:
+                freqs.append(float(parts[0]))
+                asds.append(float(parts[1]))
+            except ValueError:
+                continue
         if len(freqs) < 2:
-            messagebox.showerror("Load Error", "Need at least 2 frequency points.")
             return None, None
-
         freqs_arr = np.array(freqs)
         asds_arr = np.array(asds)
         order = np.argsort(freqs_arr)
         return freqs_arr[order], asds_arr[order]
+
+    @staticmethod
+    def _parse_asd_text_file(path):
+        """Parse a 2-column ASD text file (freq, g²/Hz). Returns (freqs, asds) or (None, None)."""
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc))
+            return None, None
+        freqs, asds = AsdOverlayModule._parse_asd_text(text)
+        if freqs is None:
+            messagebox.showerror("Load Error", "Need at least 2 frequency points.")
+            return None, None
+        return freqs, asds
 
     def _load_input_asd(self, slot_idx):
         path = filedialog.askopenfilename(
@@ -933,25 +953,7 @@ LINE STYLES
         if freqs is None:
             return
         name = os.path.splitext(os.path.basename(path))[0]
-        var = tk.BooleanVar(value=True)
-        name_var = tk.StringVar(value=name)
-        row_frame = ctk.CTkFrame(self._ref_scroll, fg_color="transparent")
-        row_frame.pack(fill=tk.X, pady=1)
-        ref = {"path": path, "name": name, "freqs": freqs, "g2hz": asds,
-               "checked": var, "name_var": name_var, "row_frame": row_frame}
-        self._refs.append(ref)
-
-        ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
-                        command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
-        name_entry = ctk.CTkEntry(row_frame, textvariable=name_var, width=152)
-        name_entry.pack(side=tk.LEFT, padx=(2, 2))
-        name_entry.bind("<Return>",   lambda _e, r=ref: self._commit_ref_name(r))
-        name_entry.bind("<FocusOut>", lambda _e, r=ref: self._commit_ref_name(r))
-        ctk.CTkButton(row_frame, text="✕", width=22,
-                      command=lambda r=ref: self._remove_reference(r),
-                      fg_color="transparent", hover_color=("gray75", "gray30"),
-                      text_color=("gray40", "gray60"),
-                      ).pack(side=tk.LEFT)
+        self._load_reference_asd_from_data(path, freqs, asds, name, True)
         self._refresh_plot()
 
     def _remove_reference(self, ref):
@@ -971,6 +973,325 @@ LINE STYLES
             return
         ref['name'] = new_name
         ref['name_var'].set(new_name)
+        self._refresh_plot()
+
+    def _on_ref_db_change(self, ref):
+        try:
+            db = float(ref['db_var'].get())
+        except ValueError:
+            db = 0.0
+        ref['db'] = db
+        ref['g2hz'] = ref['g2hz_raw'] * 10.0 ** (db / 10.0)
+        grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
+        if ref.get('grms_label') is not None:
+            ref['grms_label'].configure(text=f"{grms:.3g} g")
+        self._refresh_plot()
+
+    def _manual_asd_dialog(self):
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("Manual ASD Entry")
+        dlg.geometry("420x370")
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
+
+        top_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        top_row.pack(fill=tk.X, padx=12, pady=(12, 4))
+        ctk.CTkLabel(top_row, text="Name:").pack(side=tk.LEFT, padx=(0, 2))
+        name_var = ctk.StringVar(value="")
+        ctk.CTkEntry(top_row, textvariable=name_var, width=170,
+                     placeholder_text="ASD name").pack(side=tk.LEFT, padx=(0, 12))
+        ctk.CTkLabel(top_row, text="dB scale:").pack(side=tk.LEFT, padx=(0, 2))
+        db_var = ctk.StringVar(value="0")
+        db_entry = ctk.CTkEntry(top_row, textvariable=db_var, width=60)
+        db_entry.pack(side=tk.LEFT)
+
+        ctk.CTkLabel(dlg, text="Enter freq, PSD pairs (one per line, comma or space separated):",
+                     anchor=tk.W).pack(padx=12, pady=(4, 2), fill=tk.X)
+
+        tb = ctk.CTkTextbox(dlg, wrap="none")
+        tb.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        status_var = ctk.StringVar(value="Parsed: 0 points")
+        status_lbl = ctk.CTkLabel(dlg, textvariable=status_var, text_color="gray",
+                                  anchor=tk.W)
+        status_lbl.pack(padx=12, pady=(2, 0), fill=tk.X)
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=12, pady=8)
+        ok_btn = ctk.CTkButton(btn_row, text="OK", state=tk.DISABLED, command=lambda: _ok())
+        ok_btn.pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+
+        def _update_readout(*_):
+            text = tb.get("1.0", "end")
+            freqs, g2hz = self._parse_asd_text(text)
+            try:
+                db = float(db_var.get())
+            except ValueError:
+                db = 0.0
+            if freqs is None:
+                status_var.set("Parsed: 0 points — enter freq, PSD pairs")
+                status_lbl.configure(text_color="gray")
+                ok_btn.configure(state=tk.DISABLED)
+                return
+            g2hz_scaled = g2hz * 10.0 ** (db / 10.0)
+            grms = float(np.sqrt(max(self._grms_loglog(freqs, g2hz_scaled), 0.0)))
+            status_var.set(f"Parsed: {len(freqs)} points    g_RMS: {grms:.3g} g")
+            status_lbl.configure(text_color=("gray10", "gray90"))
+            ok_btn.configure(state=tk.NORMAL)
+
+        tb.bind("<KeyRelease>", _update_readout)
+        db_entry.bind("<KeyRelease>", _update_readout)
+
+        def _ok():
+            text = tb.get("1.0", "end")
+            freqs, g2hz = self._parse_asd_text(text)
+            if freqs is None:
+                messagebox.showerror("Error", "Need at least 2 valid freq, PSD pairs.",
+                                     parent=dlg)
+                return
+            try:
+                db = float(db_var.get())
+            except ValueError:
+                db = 0.0
+            name = name_var.get().strip() or "Manual ASD"
+            self._load_reference_asd_from_data(
+                path=None, freqs_raw=freqs, g2hz_raw=g2hz, name=name,
+                checked=True, db=db, is_manual=True, manual_text=text.strip())
+            self._refresh_plot()
+            dlg.destroy()
+
+    def _curve_style_dialog(self, curve_dict, is_ref=False):
+        from tkinter import colorchooser
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("Edit Curve Style")
+        dlg.geometry("400x260")
+        dlg.resizable(False, False)
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
+
+        st = curve_dict.get('style', {})
+
+        # Label override
+        row = ctk.CTkFrame(dlg, fg_color="transparent")
+        row.pack(fill=tk.X, padx=14, pady=(14, 4))
+        ctk.CTkLabel(row, text="Label override:", width=110, anchor=tk.W).pack(side=tk.LEFT)
+        lbl_var = ctk.StringVar(value=st.get('label_override') or "")
+        ctk.CTkEntry(row, textvariable=lbl_var, width=220,
+                     placeholder_text="blank = auto").pack(side=tk.LEFT)
+
+        # Color
+        color_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        color_row.pack(fill=tk.X, padx=14, pady=4)
+        ctk.CTkLabel(color_row, text="Color:", width=110, anchor=tk.W).pack(side=tk.LEFT)
+        color_var = tk.StringVar(value=st.get('color') or "")
+        color_entry = ctk.CTkEntry(color_row, textvariable=color_var, width=90)
+        color_entry.pack(side=tk.LEFT, padx=(0, 6))
+        swatch = ctk.CTkFrame(color_row, width=22, height=22,
+                              fg_color=st.get('color') or "gray50")
+        swatch.pack(side=tk.LEFT, padx=(0, 6))
+        swatch.pack_propagate(False)
+
+        def _pick_color():
+            init = color_var.get() or None
+            result = colorchooser.askcolor(color=init, title="Pick Color", parent=dlg)
+            if result and result[1]:
+                color_var.set(result[1])
+                swatch.configure(fg_color=result[1])
+
+        color_entry.bind("<FocusOut>", lambda _e: swatch.configure(
+            fg_color=color_var.get() if color_var.get() else "gray50"))
+        ctk.CTkButton(color_row, text="Pick…", width=60,
+                      command=_pick_color).pack(side=tk.LEFT)
+
+        # Linestyle
+        ls_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        ls_row.pack(fill=tk.X, padx=14, pady=4)
+        ctk.CTkLabel(ls_row, text="Linestyle:", width=110, anchor=tk.W).pack(side=tk.LEFT)
+        _ls_map = {"Auto": None, "Solid": "-", "Dashed": "--", "Dotted": ":", "Dash-dot": "-."}
+        _ls_rev = {v: k for k, v in _ls_map.items()}
+        cur_ls_name = _ls_rev.get(st.get('linestyle'), "Auto")
+        ls_var = ctk.StringVar(value=cur_ls_name)
+        ctk.CTkOptionMenu(ls_row, variable=ls_var, values=list(_ls_map.keys()),
+                          width=130).pack(side=tk.LEFT)
+
+        # Linewidth
+        lw_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        lw_row.pack(fill=tk.X, padx=14, pady=4)
+        ctk.CTkLabel(lw_row, text="Linewidth:", width=110, anchor=tk.W).pack(side=tk.LEFT)
+        lw_var = ctk.StringVar(value=str(st.get('linewidth') or ""))
+        ctk.CTkEntry(lw_row, textvariable=lw_var, width=60,
+                     placeholder_text="auto").pack(side=tk.LEFT)
+
+        # Buttons
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=14, pady=(8, 14))
+
+        def _reset():
+            curve_dict['style'] = {}
+            self._refresh_plot()
+            dlg.destroy()
+
+        def _ok():
+            new_st = {}
+            lbl = lbl_var.get().strip()
+            if lbl:
+                new_st['label_override'] = lbl
+            col = color_var.get().strip()
+            if col:
+                new_st['color'] = col
+            ls_name = ls_var.get()
+            ls_val = _ls_map.get(ls_name)
+            if ls_val is not None:
+                new_st['linestyle'] = ls_val
+            try:
+                lw = float(lw_var.get())
+                new_st['linewidth'] = lw
+            except ValueError:
+                pass
+            curve_dict['style'] = new_st
+            self._refresh_plot()
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="Reset to defaults", width=130,
+                      command=_reset).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="OK", width=70, command=_ok).pack(side=tk.LEFT, padx=(8, 4))
+        ctk.CTkButton(btn_row, text="Cancel", width=70,
+                      command=dlg.destroy).pack(side=tk.LEFT)
+
+    def _aux_lines_dialog(self):
+        import copy
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("X/Y Reference Lines")
+        dlg.geometry("660x380")
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
+
+        working = copy.deepcopy(self._aux_lines)
+        row_widgets = []
+
+        scroll = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        scroll.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 0))
+
+        hdr = ctk.CTkFrame(scroll, fg_color="transparent")
+        hdr.pack(fill=tk.X, pady=(0, 2))
+        for txt, w in [("Vis", 28), ("Axis", 50), ("Value", 80), ("Label", 170),
+                       ("Color", 80), ("Style", 80), ("LW", 50), ("", 28)]:
+            ctk.CTkLabel(hdr, text=txt, width=w, anchor=tk.W,
+                         font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=2)
+
+        def _make_row(ln):
+            from tkinter import colorchooser as cc
+            rf = ctk.CTkFrame(scroll, fg_color="transparent")
+            rf.pack(fill=tk.X, pady=1)
+
+            vis_var = tk.BooleanVar(value=ln.get('visible', True))
+            axis_var = ctk.StringVar(value=ln.get('axis', 'x').upper())
+            val_var = ctk.StringVar(value=str(ln.get('value', 0.0)))
+            lbl_var = ctk.StringVar(value=ln.get('label', ''))
+            col_var = ctk.StringVar(value=ln.get('color', '#888888'))
+            ls_var = ctk.StringVar(value=ln.get('linestyle', '--'))
+            lw_var = ctk.StringVar(value=str(ln.get('linewidth', 1.0)))
+
+            ctk.CTkCheckBox(rf, text="", variable=vis_var, width=28).pack(side=tk.LEFT, padx=2)
+            ctk.CTkOptionMenu(rf, variable=axis_var, values=["X", "Y"],
+                              width=50).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=val_var, width=80).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=lbl_var, width=170).pack(side=tk.LEFT, padx=2)
+
+            swatch = ctk.CTkButton(rf, text="", width=30, height=22,
+                                   fg_color=ln.get('color', '#888888'),
+                                   hover_color=ln.get('color', '#888888'),
+                                   command=lambda cv=col_var, sw=None: None)
+
+            def _pick(cv=col_var, sw_ref=[None]):
+                result = cc.askcolor(color=cv.get(), title="Pick Color", parent=dlg)
+                if result and result[1]:
+                    cv.set(result[1])
+                    swatch.configure(fg_color=result[1], hover_color=result[1])
+
+            swatch.configure(command=_pick)
+            swatch.pack(side=tk.LEFT, padx=2)
+
+            ctk.CTkOptionMenu(rf, variable=ls_var,
+                              values=["-", "--", ":", "-."],
+                              width=80).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=lw_var, width=50).pack(side=tk.LEFT, padx=2)
+
+            def _del(r=rf):
+                r.destroy()
+                for item in row_widgets:
+                    if item['frame'] is r:
+                        row_widgets.remove(item)
+                        break
+
+            ctk.CTkButton(rf, text="✕", width=28,
+                          fg_color="transparent", hover_color=("gray75", "gray30"),
+                          text_color=("gray40", "gray60"),
+                          command=_del).pack(side=tk.LEFT, padx=2)
+
+            row_widgets.append({
+                'frame': rf, 'vis': vis_var, 'axis': axis_var,
+                'value': val_var, 'label': lbl_var, 'color': col_var,
+                'linestyle': ls_var, 'linewidth': lw_var,
+            })
+
+        for ln in working:
+            _make_row(ln)
+
+        def _add():
+            _make_row({"axis": "x", "value": 100.0, "label": "",
+                       "color": "#888888", "linestyle": "--",
+                       "linewidth": 1.0, "visible": True})
+
+        add_btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        add_btn_row.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ctk.CTkButton(add_btn_row, text="+ Add Line", width=100,
+                      command=_add).pack(side=tk.LEFT)
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=8, pady=(4, 10))
+
+        def _ok():
+            new_lines = []
+            for w in row_widgets:
+                try:
+                    val = float(w['value'].get())
+                except ValueError:
+                    continue
+                try:
+                    lw = float(w['linewidth'].get())
+                except ValueError:
+                    lw = 1.0
+                new_lines.append({
+                    "axis": w['axis'].get().lower(),
+                    "value": val,
+                    "label": w['label'].get(),
+                    "color": w['color'].get() or "#888888",
+                    "linestyle": w['linestyle'].get(),
+                    "linewidth": lw,
+                    "visible": w['vis'].get(),
+                })
+            self._aux_lines = new_lines
+            self._refresh_plot()
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="OK", width=80, command=_ok).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="Cancel", width=80,
+                      command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _pin_last_peak_as_vline(self):
+        if not self._picked_peaks:
+            messagebox.showwarning("No Peaks", "Pick a peak first using Pick Peaks mode.")
+            return
+        pk = self._picked_peaks[-1]
+        freq = pk['freq']
+        self._aux_lines.append({
+            "axis": "x", "value": freq,
+            "label": f"{freq:.1f} Hz",
+            "color": "#888888", "linestyle": "--",
+            "linewidth": 1.0, "visible": True,
+        })
         self._refresh_plot()
 
     # ── Node management ──────────────────────────────────────────────────────
@@ -1116,21 +1437,26 @@ LINE STYLES
 
         node = {"id": gid, "label": label, "rt": rt,
                 "checked": var, "row_frame": row_frame,
-                "gid_var": gid_var, "label_var": label_var}
+                "gid_var": gid_var, "label_var": label_var,
+                "style": {}}
         self._nodes_by_rt[rt].append(node)
 
         ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
                         command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
 
-        gid_entry = ctk.CTkEntry(row_frame, textvariable=gid_var, width=90)
+        gid_entry = ctk.CTkEntry(row_frame, textvariable=gid_var, width=80)
         gid_entry.pack(side=tk.LEFT, padx=(2, 2))
         gid_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_gid(n))
         gid_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_gid(n))
 
-        lbl_entry = ctk.CTkEntry(row_frame, textvariable=label_var, width=100)
+        lbl_entry = ctk.CTkEntry(row_frame, textvariable=label_var, width=74)
         lbl_entry.pack(side=tk.LEFT, padx=(0, 2))
         lbl_entry.bind("<Return>",   lambda _e, n=node: self._commit_node_label(n))
         lbl_entry.bind("<FocusOut>", lambda _e, n=node: self._commit_node_label(n))
+
+        ctk.CTkButton(row_frame, text="Edit…", width=44,
+                      command=lambda n=node: self._curve_style_dialog(n, is_ref=False),
+                      ).pack(side=tk.LEFT, padx=(0, 2))
 
         ctk.CTkButton(row_frame, text="✕", width=22,
                       command=lambda n=node: self._remove_node(n),
@@ -1673,25 +1999,65 @@ LINE STYLES
         unit = self._unit_var[slot_idx].get()
         return cfg['unit_factors'].get(unit, 1.0)
 
-    def _load_reference_asd_from_data(self, path, freqs, asds, name, checked):
-        name = name or os.path.splitext(os.path.basename(path))[0]
+    def _load_reference_asd_from_data(self, path, freqs_raw, g2hz_raw, name, checked,
+                                       db=0.0, is_manual=False, manual_text="", style=None):
+        if path:
+            name = name or os.path.splitext(os.path.basename(path))[0]
+        name = name or "ASD"
+        db = float(db) if db else 0.0
+        g2hz_scaled = g2hz_raw * 10.0 ** (db / 10.0) if db != 0.0 else g2hz_raw
+
         var = tk.BooleanVar(value=checked)
         name_var = tk.StringVar(value=name)
-        row_frame = ctk.CTkFrame(self._ref_scroll, fg_color="transparent")
-        row_frame.pack(fill=tk.X, pady=1)
-        ref = {"path": path, "name": name, "freqs": freqs, "g2hz": asds,
-               "checked": var, "name_var": name_var, "row_frame": row_frame}
+        db_var = tk.StringVar(value=f"{db:.1f}" if db != 0.0 else "0")
+
+        container = ctk.CTkFrame(self._ref_scroll, fg_color="transparent")
+        container.pack(fill=tk.X, pady=1)
+
+        row1 = ctk.CTkFrame(container, fg_color="transparent")
+        row1.pack(fill=tk.X)
+        row2 = ctk.CTkFrame(container, fg_color="transparent")
+        row2.pack(fill=tk.X, padx=(26, 0))
+
+        ref = {
+            "path": path, "name": name,
+            "freqs_raw": freqs_raw, "g2hz_raw": g2hz_raw,
+            "freqs": freqs_raw, "g2hz": g2hz_scaled,
+            "db": db, "is_manual": is_manual, "manual_text": manual_text,
+            "checked": var, "name_var": name_var, "db_var": db_var,
+            "row_frame": container, "grms_label": None,
+            "style": style if style is not None else {},
+        }
         self._refs.append(ref)
-        ctk.CTkCheckBox(row_frame, text="", variable=var, width=24,
+
+        # row1: checkbox, name entry, X
+        ctk.CTkCheckBox(row1, text="", variable=var, width=24,
                         command=self._refresh_plot).pack(side=tk.LEFT, padx=(2, 0))
-        name_entry = ctk.CTkEntry(row_frame, textvariable=name_var, width=152)
+        name_entry = ctk.CTkEntry(row1, textvariable=name_var, width=128)
         name_entry.pack(side=tk.LEFT, padx=(2, 2))
         name_entry.bind("<Return>",   lambda _e, r=ref: self._commit_ref_name(r))
         name_entry.bind("<FocusOut>", lambda _e, r=ref: self._commit_ref_name(r))
-        ctk.CTkButton(row_frame, text="✕", width=22,
+        ctk.CTkButton(row1, text="✕", width=22,
                       command=lambda r=ref: self._remove_reference(r),
                       fg_color="transparent", hover_color=("gray75", "gray30"),
                       text_color=("gray40", "gray60"),
+                      ).pack(side=tk.LEFT)
+
+        # row2: dB entry, g_RMS readout, Edit button
+        ctk.CTkLabel(row2, text="dB:", width=24).pack(side=tk.LEFT)
+        db_entry = ctk.CTkEntry(row2, textvariable=db_var, width=46)
+        db_entry.pack(side=tk.LEFT, padx=(0, 4))
+        db_entry.bind("<Return>",   lambda _e, r=ref: self._on_ref_db_change(r))
+        db_entry.bind("<FocusOut>", lambda _e, r=ref: self._on_ref_db_change(r))
+
+        grms_init = float(np.sqrt(max(self._grms_loglog(freqs_raw, g2hz_scaled), 0.0)))
+        grms_lbl = ctk.CTkLabel(row2, text=f"{grms_init:.3g} g", width=50, anchor=tk.W,
+                                text_color="gray")
+        grms_lbl.pack(side=tk.LEFT, padx=(0, 4))
+        ref['grms_label'] = grms_lbl
+
+        ctk.CTkButton(row2, text="Edit…", width=46,
+                      command=lambda r=ref: self._curve_style_dialog(r, is_ref=True),
                       ).pack(side=tk.LEFT)
 
     def _save_session(self):
@@ -1713,7 +2079,8 @@ LINE STYLES
             return
 
         nodes_by_rt = {
-            rt: [{'id': n['id'], 'label': n['label']} for n in nodes]
+            rt: [{'id': n['id'], 'label': n['label'],
+                  'style': n.get('style', {})} for n in nodes]
             for rt, nodes in self._nodes_by_rt.items()
             if nodes
         }
@@ -1735,14 +2102,24 @@ LINE STYLES
                 "input_asd_path": slot.get('input_asd_path'),
             })
 
-        refs_data = [
-            {"path": r['path'], "name": r['name_var'].get() or r['name'],
-             "checked": r['checked'].get()}
-            for r in self._refs
-        ]
+        refs_data = []
+        for r in self._refs:
+            rd = {
+                "path": r['path'],
+                "name": r['name_var'].get() or r['name'],
+                "checked": r['checked'].get(),
+                "db": r.get('db', 0.0),
+                "is_manual": r.get('is_manual', False),
+                "style": r.get('style', {}),
+            }
+            if r.get('is_manual'):
+                rd['manual_text'] = r.get('manual_text', '')
+                rd['freqs_raw'] = r['freqs_raw'].tolist()
+                rd['g2hz_raw'] = r['g2hz_raw'].tolist()
+            refs_data.append(rd)
 
         data = {
-            "version": 1,
+            "version": 2,
             "tool": "ASD Overlay",
             "saved_at": datetime.datetime.now().isoformat(timespec='seconds'),
             "response_type": self._rt_global_var.get(),
@@ -1750,6 +2127,7 @@ LINE STYLES
             "nodes_by_rt": nodes_by_rt,
             "checked_by_rt": checked_by_rt,
             "references": refs_data,
+            "aux_lines": list(self._aux_lines),
             "view": {
                 "view_mode": self._view_mode_var.get(),
                 "plot_mode": self._plot_mode_var.get(),
@@ -1786,7 +2164,7 @@ LINE STYLES
         except Exception as exc:
             messagebox.showerror("Load Error", f"Could not read session:\n{exc}")
             return
-        if data.get('version') != 1:
+        if data.get('version') not in (1, 2):
             messagebox.showerror("Unsupported Version",
                                  "Session file version not supported.")
             return
@@ -1833,6 +2211,8 @@ LINE STYLES
                 _checked_ids = set(checked_by_rt.get(_rt_key, []))
                 for _n in _nlist:
                     self._add_node_row(_n['id'], _n.get('label', f"{_rt_key} {_n['id']}"), _rt_key)
+                    if _n.get('style'):
+                        self._nodes_by_rt[_rt_key][-1]['style'] = _n['style']
                 for _node in self._nodes_by_rt[_rt_key]:
                     _node['checked'].set(_node['id'] in _checked_ids)
         else:
@@ -1850,15 +2230,30 @@ LINE STYLES
             for pk in data.get('picked_peaks', [])
         ]
 
+        self._aux_lines = list(data.get('aux_lines', []))
+
         self._clear_references()
         for ref in data.get('references', []):
             rpath = ref.get('path', '')
-            if rpath and os.path.isfile(rpath):
+            _is_manual = ref.get('is_manual', False)
+            _db = ref.get('db', 0.0)
+            _style = ref.get('style', {})
+            if _is_manual:
+                _mt = ref.get('manual_text', '')
+                _fr = ref.get('freqs_raw')
+                _gr = ref.get('g2hz_raw')
+                if _fr and _gr:
+                    self._load_reference_asd_from_data(
+                        path=None,
+                        freqs_raw=np.array(_fr), g2hz_raw=np.array(_gr),
+                        name=ref.get('name', ''), checked=ref.get('checked', True),
+                        db=_db, is_manual=True, manual_text=_mt, style=_style)
+            elif rpath and os.path.isfile(rpath):
                 freqs, asds = self._parse_asd_text_file(rpath)
                 if freqs is not None:
-                    self._load_reference_asd_from_data(rpath, freqs, asds,
-                                                        ref.get('name', ''),
-                                                        ref.get('checked', True))
+                    self._load_reference_asd_from_data(
+                        rpath, freqs, asds, ref.get('name', ''),
+                        ref.get('checked', True), db=_db, style=_style)
 
         self._rebuild_sections()
 
@@ -2131,8 +2526,9 @@ LINE STYLES
                 rname = ref['name_var'].get().strip() or ref['name']
                 grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
                 freq_range = f"{ref['freqs'][0]:.1f}–{ref['freqs'][-1]:.1f} Hz"
+                _ref_src = "(manual)" if ref.get('is_manual') else os.path.basename(ref['path'] or '')
                 for col, val in enumerate(
-                        [rname, os.path.basename(ref['path']), freq_range, f"{grms:.4g}"],
+                        [rname, _ref_src, freq_range, f"{grms:.4g}"],
                         start=1):
                     ws.cell(row, col, val)
                 row += 1
@@ -2276,13 +2672,20 @@ LINE STYLES
                     label = f"{name}: {lbl} {dof_label}  (FRF magnitude, {cfg['frf_units']})"
                     has_frf_mag = True
 
-                ax.plot(freqs, plot_data, label=label, color=color, linestyle=ls)
+                _node = next((n for n in self._nodes_by_rt.get(rt, [])
+                              if n['id'] == nid), None)
+                _st = _node.get('style', {}) if _node else {}
+                ax.plot(freqs, plot_data,
+                        label=_st.get('label_override') or label,
+                        color=_st.get('color') or color,
+                        linestyle=_st.get('linestyle') or ls,
+                        linewidth=_st.get('linewidth') or 1.5)
                 has_curves = True
                 self._last_drawn_curves.append({
                     "slot_idx": slot_idx, "nid": nid, "idof": idof,
                     "label": lbl,
                     "freqs": np.asarray(freqs), "data": np.asarray(data),
-                    "is_psd": is_psd, "color": color,
+                    "is_psd": is_psd, "color": _st.get('color') or color,
                 })
 
         # ── Reference ASD overlays ────────────────────────────────────────────
@@ -2299,9 +2702,43 @@ LINE STYLES
                 ref_plot = ref['g2hz']
                 grms = float(np.sqrt(max(self._grms_loglog(ref['freqs'], ref['g2hz']), 0.0)))
                 ref_label = f"{rname}  (RMS = {grms:.3g})"
-            ax.plot(ref['freqs'], ref_plot, label=ref_label, color=color,
-                    linestyle=":", linewidth=2.0, alpha=0.65)
+            _rst = ref.get('style', {})
+            ax.plot(ref['freqs'], ref_plot,
+                    label=_rst.get('label_override') or ref_label,
+                    color=_rst.get('color') or color,
+                    linestyle=_rst.get('linestyle') or ":",
+                    linewidth=_rst.get('linewidth') or 2.0,
+                    alpha=0.65)
             has_curves = True
+
+        # ── X/Y reference lines ───────────────────────────────────────────────
+        for _ln in self._aux_lines:
+            if not _ln.get('visible', True):
+                continue
+            _lv = _ln.get('value', 0.0)
+            _lc = _ln.get('color', '#888888')
+            _lls = _ln.get('linestyle', '--')
+            _llw = _ln.get('linewidth', 1.0)
+            if _ln.get('axis', 'x') == 'x':
+                ax.axvline(_lv, color=_lc, linestyle=_lls, linewidth=_llw,
+                           alpha=0.7, zorder=2)
+                if _ln.get('label'):
+                    ax.text(_lv, 1.0, _ln['label'],
+                            transform=ax.get_xaxis_transform(),
+                            rotation=90, va='top', ha='right',
+                            color=t['text'], fontsize=8,
+                            bbox=dict(facecolor=t['legend_bg'], edgecolor=_lc,
+                                      alpha=0.75, pad=2))
+            else:
+                ax.axhline(_lv, color=_lc, linestyle=_lls, linewidth=_llw,
+                           alpha=0.7, zorder=2)
+                if _ln.get('label'):
+                    ax.text(1.0, _lv, _ln['label'],
+                            transform=ax.get_yaxis_transform(),
+                            va='bottom', ha='right',
+                            color=t['text'], fontsize=8,
+                            bbox=dict(facecolor=t['legend_bg'], edgecolor=_lc,
+                                      alpha=0.75, pad=2))
 
         ax.set_xlabel("Frequency (Hz)", color=t["text"])
         _rt_now = self._rt_global_var.get()
