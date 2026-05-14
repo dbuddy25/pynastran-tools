@@ -253,7 +253,7 @@ LINE STYLES
         # Per-slot UI widgets populated in _build_ui
         self._open_btn = [None, None]
         self._file_label = [None, None]
-        self._unit_var = [ctk.StringVar(value="g"), ctk.StringVar(value="g")]
+        self._unit_var = [ctk.StringVar(value="in/s²"), ctk.StringVar(value="in/s²")]
         self._sc_btn = [None, None]
         self._mode_var = [ctk.StringVar(value="PSD (RANDOM)"),
                           ctk.StringVar(value="PSD (RANDOM)")]
