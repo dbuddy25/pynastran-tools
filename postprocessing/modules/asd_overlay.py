@@ -240,7 +240,7 @@ LINE STYLES
         # Reference ASD rows
         self._refs = []
 
-        self._dof_var = ctk.StringVar(value="T3 (Z)")
+        self._dof_var = ctk.StringVar(value="T1 (X)")
 
         # Global response type (single selector for both slots)
         self._rt_global_var = ctk.StringVar(value="Acceleration")
