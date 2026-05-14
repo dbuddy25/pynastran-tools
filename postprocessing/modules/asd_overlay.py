@@ -275,7 +275,7 @@ LINE STYLES
 
         self._same_input_asd_var = tk.BooleanVar(value=False)
 
-        self._plot_theme = "dark"
+        self._plot_theme = "light"
         self._theme_btn = None
         self._view_mode_var = ctk.StringVar(value="Manual")
         self._cycle_index = 0
@@ -626,7 +626,7 @@ LINE STYLES
         plot_header.pack(side=tk.TOP, fill=tk.X)
         plot_header.pack_propagate(False)
         self._theme_btn = ctk.CTkButton(
-            plot_header, text="☀ Light", width=80,
+            plot_header, text="☾ Dark", width=80,
             command=self._toggle_theme,
         )
         self._theme_btn.pack(side=tk.RIGHT, padx=4, pady=2)
