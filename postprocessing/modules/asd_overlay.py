@@ -70,8 +70,8 @@ RESPONSE_TYPES = {
         "id_attr": "node_gridtype",
         "entity_label": "Node",
         "dof_labels": ("T1 (X)", "T2 (Y)", "T3 (Z)"),
-        "unit_choices": ["in/s²", "m/s²", "mm/s²"],
-        "unit_factors": {"in/s²": 386.089, "m/s²": 9.80665, "mm/s²": 9806.65},
+        "unit_choices": ["in/s²", "m/s²"],
+        "unit_factors": {"in/s²": 386.089, "m/s²": 9.80665},
         "psd_units": "g²/Hz",
         "rms_units": "g",
         "frf_units": "g/g",
@@ -256,6 +256,7 @@ LINE STYLES
         self._frf_row = [None, None]
         self._input_asd_btn = [None, None]
         self._input_asd_label = [None, None]
+        self._input_asd_db_var = [tk.StringVar(value="0"), tk.StringVar(value="0")]
         self._unit_menu = [None, None]
         self._clear_btn = [None, None]
         self._dof_menu = None
@@ -310,6 +311,8 @@ LINE STYLES
             "input_asd_path": None,
             "input_asd_freqs": None,
             "input_asd_g2hz": None,
+            "input_asd_g2hz_raw": None,
+            "input_asd_db": 0.0,
         }
 
     # ── UI construction ──────────────────────────────────────────────────────
@@ -399,12 +402,14 @@ LINE STYLES
             asd_btn.pack(side=tk.LEFT, padx=(0, 6))
             self._input_asd_btn[i] = asd_btn
             asd_lbl = ctk.CTkLabel(frf_row, text="(no file)", text_color="gray",
-                                   anchor=tk.W, width=200)
-            asd_lbl.pack(side=tk.LEFT, padx=(0, 12))
+                                   anchor=tk.W, width=180)
+            asd_lbl.pack(side=tk.LEFT, padx=(0, 8))
             self._input_asd_label[i] = asd_lbl
-            ctk.CTkLabel(frf_row, text="Assumes unit-g base input.",
-                         text_color="gray",
-                         font=ctk.CTkFont(size=11, slant="italic")).pack(side=tk.LEFT)
+            ctk.CTkLabel(frf_row, text="dB:").pack(side=tk.LEFT, padx=(0, 2))
+            _db_entry = ctk.CTkEntry(frf_row, textvariable=self._input_asd_db_var[i], width=46)
+            _db_entry.pack(side=tk.LEFT, padx=(0, 8))
+            _db_entry.bind("<Return>",   lambda _e, idx=i: self._on_input_asd_db_change(idx))
+            _db_entry.bind("<FocusOut>", lambda _e, idx=i: self._on_input_asd_db_change(idx))
 
         # ── Type / DOF row ────────────────────────────────────────────────────
         dof_row = ctk.CTkFrame(toolbar, fg_color="transparent")
@@ -905,6 +910,9 @@ LINE STYLES
         slot = self._op2_slots[slot_idx]
         slot['input_asd_path'] = path
         slot['input_asd_freqs'] = freqs_arr
+        slot['input_asd_g2hz_raw'] = asds_arr
+        slot['input_asd_db'] = 0.0
+        self._input_asd_db_var[slot_idx].set("0")
         slot['input_asd_g2hz'] = asds_arr
 
         self._input_asd_label[slot_idx].configure(
@@ -913,6 +921,18 @@ LINE STYLES
                  f"{freqs_arr[0]:.1f}–{freqs_arr[-1]:.1f} Hz)",
             text_color=("gray10", "gray90"))
         self._maybe_autofill_env(os.path.splitext(os.path.basename(path))[0])
+        self._refresh_plot()
+
+    def _on_input_asd_db_change(self, slot_idx):
+        slot = self._op2_slots[slot_idx]
+        if slot['input_asd_g2hz_raw'] is None:
+            return
+        try:
+            db = float(self._input_asd_db_var[slot_idx].get())
+        except ValueError:
+            db = 0.0
+        slot['input_asd_db'] = db
+        slot['input_asd_g2hz'] = slot['input_asd_g2hz_raw'] * 10.0 ** (db / 10.0)
         self._refresh_plot()
 
     def _on_same_input_asd_toggle(self):
@@ -1924,6 +1944,7 @@ LINE STYLES
         self._sc_var[slot_idx].set("(none)")
         self._sc_menu[slot_idx].configure(values=["(none)"])
         self._input_asd_label[slot_idx].configure(text="(no file)", text_color="gray")
+        self._input_asd_db_var[slot_idx].set("0")
         self._frf_row[slot_idx].pack_forget()
         self._update_dof_dropdown()
         self._rebuild_sections()
@@ -2100,6 +2121,7 @@ LINE STYLES
                 "units": self._unit_var[idx].get(),
                 "subcase": slot.get('subcase'),
                 "input_asd_path": slot.get('input_asd_path'),
+                "input_asd_db": slot.get('input_asd_db', 0.0),
             })
 
         refs_data = []
@@ -2294,6 +2316,7 @@ LINE STYLES
             _target_subcase = slot_data.get('subcase')
             _target_name = slot_data.get('name', '')
             _target_input_asd = slot_data.get('input_asd_path')
+            _target_input_asd_db = float(slot_data.get('input_asd_db', 0.0) or 0.0)
             _target_mode = slot_data.get('mode', 'PSD')
             _slot_idx = idx
 
@@ -2306,8 +2329,8 @@ LINE STYLES
             def _done(op2, error,
                       si=_slot_idx, cfg_=cfg,
                       tsc=_target_subcase, tname=_target_name,
-                      tasd=_target_input_asd, tmode=_target_mode,
-                      op2_path_=op2_path):
+                      tasd=_target_input_asd, tasd_db=_target_input_asd_db,
+                      tmode=_target_mode, op2_path_=op2_path):
                 if error is not None or op2 is None:
                     return
                 psd_dict = getattr(op2.op2_results.psd, cfg_['psd_attr'], None) or {}
@@ -2358,7 +2381,12 @@ LINE STYLES
                         if freqs is not None:
                             self._op2_slots[si]['input_asd_path'] = tasd
                             self._op2_slots[si]['input_asd_freqs'] = freqs
-                            self._op2_slots[si]['input_asd_g2hz'] = asds
+                            self._op2_slots[si]['input_asd_g2hz_raw'] = asds
+                            self._op2_slots[si]['input_asd_db'] = tasd_db
+                            self._op2_slots[si]['input_asd_g2hz'] = (
+                                asds * 10.0 ** (tasd_db / 10.0) if tasd_db else asds)
+                            self._input_asd_db_var[si].set(
+                                f"{tasd_db:.1f}" if tasd_db else "0")
                             self._input_asd_label[si].configure(
                                 text=os.path.basename(tasd),
                                 text_color=("gray10", "gray90"))
