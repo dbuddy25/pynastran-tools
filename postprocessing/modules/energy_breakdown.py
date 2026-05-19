@@ -739,6 +739,9 @@ REQUIREMENTS
                                       command=self._open_bdf)
         self._bdf_btn.pack(side=tk.LEFT, padx=(5, 0))
 
+        ctk.CTkButton(toolbar, text="Clear", width=60,
+                      command=self._clear).pack(side=tk.LEFT, padx=(5, 0))
+
         # Separator
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
             side=tk.LEFT, padx=6)
@@ -1131,6 +1134,46 @@ REQUIREMENTS
                         continue
                     if pid_int != 0:
                         self._eid_to_pid[eid] = pid_int
+
+    def _clear(self):
+        """Reset the tool to its initial state, discarding all loaded data."""
+        if not messagebox.askyesno(
+                "Clear", "Reset and discard all loaded data and customizations?"):
+            return
+
+        # File paths and load flags
+        self._op2_path = None
+        self._bdf_path = None
+        self._bdf_loaded = False
+
+        # OP2 raw data
+        self._modes = None
+        self._freqs = None
+        self._ese_by_eid = None
+
+        # BDF mappings
+        self._eid_to_pid = {}
+        self._eid_to_file = {}
+        self._pid_names = {}
+        self._file_order = []
+
+        # User customizations
+        self._custom_groups = {}
+        self._show_ungrouped = True
+        self._column_names = {}
+        self._current_labels = []
+
+        # Tk vars
+        self._threshold_var.set('5.0')
+        self._title_var.set('')
+        self._group_by_var.set('Property ID')
+
+        # UI
+        self._sheet.headers(["Mode", "Freq (Hz)", "Total"])
+        self._sheet.set_sheet_data([])
+        self._status_label.configure(text="No OP2 loaded", text_color="gray")
+        self._group_by_menu.configure(state=tk.DISABLED)
+        self._manage_btn.configure(state=tk.DISABLED)
 
     # ---------------------------------------------------------- aggregation
     def _aggregate_by_group(self):

@@ -141,6 +141,30 @@ def write_mass_sheet(ws, data, styles, bdf_name=None, title=None, wtmass=None):
                 cell.number_format = s['pct1'] if ci == pct_col else s['num2']
             cell.border = s['cell_border']
 
+    # GPWG CG and principal MMOI rows (only when GPWG mass row is present)
+    gpwg_cg = data.get('gpwg_cg')
+    gpwg_IQ = data.get('gpwg_IQ')
+    if gpwg_row_data and (gpwg_cg or gpwg_IQ):
+        extra_texts = []
+        if gpwg_cg:
+            x, y, z = gpwg_cg
+            extra_texts.append(f"GPWG CG: ({x:.4f}, {y:.4f}, {z:.4f})")
+        if gpwg_IQ:
+            i1, i2, i3 = gpwg_IQ
+            extra_texts.append(
+                f"GPWG Principal MMOI: I1={i1:.4f}  I2={i2:.4f}  I3={i3:.4f}")
+        base = data_start + len(table) + (1 if total_row_data else 0) + 1
+        for offset, text in enumerate(extra_texts):
+            r = base + offset
+            cell = ws.cell(row=r, column=1, value=text)
+            cell.font = s['italic_font']
+            cell.alignment = s['center']
+            cell.border = s['cell_border']
+            ws.merge_cells(start_row=r, start_column=1,
+                           end_row=r, end_column=total_cols)
+            for ci in range(2, total_cols + 1):
+                ws.cell(row=r, column=ci).border = s['cell_border']
+
     # Column widths
     ws.column_dimensions['A'].width = 30
     ws.column_dimensions['B'].width = 14    # Type column
@@ -287,6 +311,8 @@ class MassBreakdownModule:
 
         # GPWG from OP2
         self._gpwg_mass = None     # total GPWG mass (float) or None
+        self._gpwg_cg = None       # [x, y, z] or None
+        self._gpwg_IQ = None       # [I1, I2, I3] principal moments or None
 
         # Custom group merges
         self._custom_groups = {}       # {name: set(keys)}
@@ -370,6 +396,9 @@ REQUIREMENTS
                                       command=self._open_op2)
         self._op2_btn.pack(side=tk.LEFT, padx=(5, 0))
 
+        ctk.CTkButton(toolbar, text="Clear", width=60,
+                      command=self._clear).pack(side=tk.LEFT, padx=(5, 0))
+
         # Separator
         ctk.CTkLabel(toolbar, text="|", text_color="gray").pack(
             side=tk.LEFT, padx=6)
@@ -448,6 +477,14 @@ REQUIREMENTS
             show_row_index=False,
         )
         self._sheet.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # GPWG CG/MMOI strip — packed/unpacked dynamically when OP2 loads
+        self._gpwg_panel = ctk.CTkFrame(self.frame, fg_color="transparent")
+        self._gpwg_info_label = ctk.CTkLabel(
+            self._gpwg_panel, text="", text_color="gray",
+            anchor=tk.W, font=ctk.CTkFont(size=11))
+        self._gpwg_info_label.pack(side=tk.LEFT, padx=10, pady=(0, 4))
+
         self._sheet.disable_bindings()
         self._sheet.enable_bindings(
             "single_select", "copy", "arrowkeys",
@@ -910,7 +947,7 @@ REQUIREMENTS
                                              text_color="red")
                 return
 
-            gpwg_mass = result
+            gpwg_mass, gpwg_cg, gpwg_IQ = result
             if gpwg_mass is None:
                 messagebox.showwarning(
                     "No GPWG Data",
@@ -921,6 +958,8 @@ REQUIREMENTS
 
             self._op2_path = path
             self._gpwg_mass = gpwg_mass
+            self._gpwg_cg = gpwg_cg
+            self._gpwg_IQ = gpwg_IQ
 
             status = ""
             if self._bdf_path:
@@ -936,29 +975,132 @@ REQUIREMENTS
                                          text_color=("gray10", "gray90"))
             if self._bdf_loaded:
                 self._refresh_table()
+            self._update_gpwg_panel()
 
         self._run_in_background("Loading OP2\u2026", _work, _done)
 
     @staticmethod
     def _load_gpwg(op2_path):
-        """Load GPWG total mass from OP2. Returns float or None."""
+        """Load GPWG data from OP2. Returns (mass, cg, IQ) or (None, None, None)."""
         from pyNastran.op2.op2 import OP2
         op2 = OP2(mode='nx')
         op2.read_op2(op2_path)
 
         gpwg = getattr(op2, 'grid_point_weight', None)
         if not gpwg:
-            return None
+            return None, None, None
 
-        # Sum GPWG mass across all superelements
-        total = 0.0
-        for key, weight in gpwg.items():
-            mass = weight.mass
-            if hasattr(mass, '__len__'):
-                total += float(mass[0])
-            else:
-                total += float(mass)
-        return total if total > 0.0 else None
+        entries = list(gpwg.items())
+        total_mass = 0.0
+        cg = None
+        IQ = None
+
+        if len(entries) == 1:
+            _, weight = entries[0]
+            m = weight.mass
+            total_mass = float(m[0]) if hasattr(m, '__len__') else float(m)
+            raw_cg = getattr(weight, 'cg', None)
+            if raw_cg is not None:
+                try:
+                    cg = [float(raw_cg[i]) for i in range(3)]
+                except (IndexError, TypeError):
+                    pass
+            raw_IQ = getattr(weight, 'IQ', None)
+            if raw_IQ is not None:
+                try:
+                    IQ = [float(raw_IQ[i]) for i in range(3)]
+                except (IndexError, TypeError):
+                    pass
+        else:
+            # Multiple GPWG entries: sum mass, weighted-average CG, IQ not computed
+            import numpy as np
+            cg_sum = np.zeros(3)
+            for _, weight in entries:
+                m = weight.mass
+                m = float(m[0]) if hasattr(m, '__len__') else float(m)
+                total_mass += m
+                raw_cg = getattr(weight, 'cg', None)
+                if raw_cg is not None:
+                    try:
+                        cg_sum += m * np.array([float(raw_cg[i]) for i in range(3)])
+                    except (IndexError, TypeError):
+                        pass
+            if total_mass > 0.0:
+                cg = (cg_sum / total_mass).tolist()
+
+        if total_mass <= 0.0:
+            return None, None, None
+        return total_mass, cg, IQ
+
+    def _clear(self):
+        """Reset the tool to its initial state, discarding all loaded data."""
+        if not messagebox.askyesno(
+                "Clear", "Reset and discard all loaded data and customizations?"):
+            return
+
+        # File paths and load flags
+        self._bdf_path = None
+        self._op2_path = None
+        self._bdf_loaded = False
+        self._has_superelements = False
+
+        # BDF mass data
+        self._mass_by_key = {}
+        self._count_by_key = {}
+        self._pid_names = {}
+        self._mass_by_file = {}
+        self._count_by_file = {}
+        self._file_order = []
+        self._file_types = {}
+        self._dmig_name_to_file = {}
+        self._wtmass = 1.0
+        self._dmig_mass = {}
+        self._mass_elem_by_eid = {}
+
+        # GPWG
+        self._gpwg_mass = None
+        self._gpwg_cg = None
+        self._gpwg_IQ = None
+
+        # User customizations
+        self._custom_groups = {}
+        self._show_ungrouped = True
+        self._eid_range_groups = {}
+        self._column_names = {}
+        self._current_keys = []
+
+        # Tk vars
+        self._title_var.set('')
+        self._group_by_var.set('Property ID')
+        self._units_var.set('slinch')
+        self._display_var.set('lb')
+
+        # UI
+        self._sheet.headers(["Group", "Mass", "% of Total"])
+        self._sheet.set_sheet_data([])
+        self._status_label.configure(text="No BDF loaded", text_color="gray")
+        self._manage_btn.configure(state=tk.DISABLED)
+        self._eid_range_btn.configure(state=tk.DISABLED)
+        self._gpwg_panel.pack_forget()
+
+    def _update_gpwg_panel(self):
+        """Show or hide the GPWG CG/MMOI info strip below the table."""
+        if self._gpwg_cg is None and self._gpwg_IQ is None:
+            self._gpwg_panel.pack_forget()
+            return
+
+        parts = []
+        if self._gpwg_cg is not None:
+            x, y, z = self._gpwg_cg
+            parts.append(f"GPWG CG: ({x:.4f},  {y:.4f},  {z:.4f})")
+        if self._gpwg_IQ is not None:
+            i1, i2, i3 = self._gpwg_IQ
+            parts.append(
+                f"Principal MMOI:  I₁={i1:.4f}  "
+                f"I₂={i2:.4f}  I₃={i3:.4f}")
+
+        self._gpwg_info_label.configure(text="     |     ".join(parts))
+        self._gpwg_panel.pack(fill=tk.X, padx=5, pady=(0, 4))
 
     # ---------------------------------------------------------- aggregation
     def _aggregate_by_group(self):
@@ -1373,6 +1515,8 @@ REQUIREMENTS
             'table': table,
             'total_row': total_row,
             'gpwg_row': gpwg_row,
+            'gpwg_cg': self._gpwg_cg,
+            'gpwg_IQ': self._gpwg_IQ,
         }
 
         wb = Workbook()

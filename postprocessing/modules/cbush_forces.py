@@ -869,6 +869,9 @@ REQUIREMENTS
                                       command=self._open_bdf)
         self._bdf_btn.pack(side=tk.LEFT, padx=(5, 0))
 
+        ctk.CTkButton(row1, text="Clear", width=60,
+                      command=self._clear).pack(side=tk.LEFT, padx=(5, 0))
+
         # Load case dropdown
         ctk.CTkLabel(row1, text="Load Case:").pack(
             side=tk.LEFT, padx=(10, 2))
@@ -1134,6 +1137,53 @@ REQUIREMENTS
     def _has_bdf(self):
         """True if BDF mappings are loaded."""
         return bool(self._eid_to_pid)
+
+    def _clear(self):
+        """Reset the tool to its initial state, discarding all loaded data."""
+        if not messagebox.askyesno(
+                "Clear", "Reset and discard all loaded data and customizations?"):
+            return
+
+        # File paths
+        self._op2_path = None
+        self._bdf_path = None
+
+        # Per-subcase state
+        self._subcase_data.clear()
+        self._subcase_eids.clear()
+        self._subcase_titles.clear()
+        self._subcase_names.clear()
+        self._subcase_scales.clear()
+        self._subcase_order.clear()
+        self._active_subcase = None
+
+        # BDF mappings
+        self._pid_names = {}
+        self._eid_to_pid = {}
+        self._eid_axial = {}
+
+        # Joints
+        self._joints = {}
+        self._joint_order = []
+
+        # Tk vars
+        self._title_var.set('')
+        self._name_var.set('')
+        self._scale_var.set('1.0')
+        self._combined_var.set(False)
+        self._axial_var.set('X')
+        self._lc_var.set('(none)')
+        self._lc_menu.configure(values=["(none)"])
+
+        # UI
+        self._sheet.headers(_build_headers(False))
+        self._sheet.set_sheet_data([])
+        self._status_label.configure(text="No OP2 loaded", text_color="gray")
+        self._joints_btn.configure(state=tk.DISABLED)
+        if self._joint_sheet_visible:
+            self._joint_sheet.pack_forget()
+            self._joint_sheet_visible = False
+        self._joint_sheet.set_sheet_data([])
 
     # -------------------------------------------------------------- load
     def load(self, op2):
