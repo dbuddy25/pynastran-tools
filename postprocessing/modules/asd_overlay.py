@@ -3022,5 +3022,18 @@ LINE STYLES
                     color=t["text"], fontsize=10,
                     style="italic", alpha=0.75)
 
+        if view_mode == "Cycle subcases" and len(descs) > 1:
+            cycle_desc = descs[self._cycle_index] if self._cycle_index < len(descs) else ""
+            if cycle_desc:
+                ax.text(0.98, 0.98, cycle_desc,
+                        transform=ax.transAxes,
+                        ha="right", va="top",
+                        color=t["text"], fontsize=9,
+                        style="italic",
+                        bbox=dict(boxstyle="round,pad=0.35",
+                                  facecolor=t["plot_bg"],
+                                  edgecolor=t["spine"],
+                                  alpha=0.8))
+
         self._canvas.draw_idle()
         self._update_cycle_controls(frames, descs)
