@@ -2845,9 +2845,7 @@ LINE STYLES
 
             for sc_pos, subcase in enumerate(subcases):
                 sc_ls = _SC_LINES[sc_pos % len(_SC_LINES)] if multi_sc else _SLOT_LINES[slot_idx]
-                sc_suffix = ""
-                if multi_sc:
-                    sc_suffix = f" [{self._sc_display_name(slot_idx, subcase)}]"
+                sc_suffix = f" [{self._sc_display_name(slot_idx, subcase)}]"
 
                 for curve_idx, (nid, lbl, idof) in enumerate(curves):
                     palette = slot_palettes[slot_idx]
