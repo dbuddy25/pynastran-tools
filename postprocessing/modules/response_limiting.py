@@ -119,10 +119,12 @@ UNITS
 
         self._notch_enabled_var = ctk.BooleanVar(value=False)
         self._notch_db_var      = ctk.StringVar(value="6.0")
+        self._scale_var         = ctk.StringVar(value="1.0")
 
         self._view_var       = ctk.StringVar(value="input")
         self._curve_var      = ctk.StringVar(value="(none)")   # single-curve picker
 
+        self._drawer_visible = False
         self._debounce_id    = None
 
         self._build_ui()
@@ -200,8 +202,12 @@ UNITS
                         command=self._on_notch_toggle).pack(side=tk.LEFT)
         self._notch_entry = ctk.CTkEntry(row2, textvariable=self._notch_db_var,
                                           width=54, state=tk.DISABLED)
-        self._notch_entry.pack(side=tk.LEFT, padx=(4, 16))
+        self._notch_entry.pack(side=tk.LEFT, padx=(4, 20))
         self._notch_db_var.trace_add("write", lambda *_: self._schedule_recompute())
+
+        ctk.CTkLabel(row2, text="Input scale:").pack(side=tk.LEFT)
+        ctk.CTkEntry(row2, textvariable=self._scale_var, width=60).pack(side=tk.LEFT, padx=(4, 20))
+        self._scale_var.trace_add("write", lambda *_: self._schedule_recompute())
 
         self._export_excel_btn = ctk.CTkButton(row2, text="Export Excel…", width=110,
                                                 command=self._export_excel, state=tk.DISABLED)
@@ -275,17 +281,25 @@ UNITS
             values=["(none)"], command=lambda _: self._redraw(), width=150)
         self._curve_menu.pack(side=tk.LEFT, padx=4)
 
+        # Drawer (right side, initially hidden) — must be packed before canvas frame
+        self._drawer = ctk.CTkFrame(body, width=290)
+        # not packed until toggled
+
         # Right: canvas + theme button + GRMS overlay
         right = ctk.CTkFrame(body, fg_color="transparent")
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Plot header with theme toggle
+        # Plot header with theme + drawer toggles
         plot_hdr = ctk.CTkFrame(right, fg_color="transparent")
         plot_hdr.pack(fill=tk.X)
         self._theme_btn = ctk.CTkButton(
             plot_hdr, text="☾ Dark", width=80,
             command=self._toggle_theme)
         self._theme_btn.pack(side=tk.RIGHT, padx=4, pady=2)
+        self._drawer_btn = ctk.CTkButton(
+            plot_hdr, text="Tables ▶", width=84,
+            command=self._toggle_drawer)
+        self._drawer_btn.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
 
         self._fig = Figure(figsize=(8, 5))
         self._ax  = self._fig.add_subplot(111)
@@ -304,7 +318,109 @@ UNITS
         self._grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         self._grms_sheet.enable_bindings("column_width_resize")
 
+        # Drawer content
+        self._build_drawer()
+
         self._draw_idle_plot()
+
+    # ── Drawer ────────────────────────────────────────────────────────────
+
+    def _build_drawer(self):
+        ctk.CTkLabel(self._drawer, text="Data Tables",
+                     font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W, padx=8, pady=(8, 4))
+
+        ctk.CTkLabel(self._drawer, text="Input ASD",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor=tk.W, padx=8, pady=(4, 2))
+        self._input_tbl = Sheet(
+            self._drawer,
+            headers=["Freq (Hz)", "ASD (g²/Hz)"],
+            height=220, show_row_index=False,
+            theme="dark" if ctk.get_appearance_mode() == "Dark" else "light",
+        )
+        self._input_tbl.pack(fill=tk.X, padx=4, pady=(0, 6))
+        self._input_tbl.enable_bindings("edit_cell", "column_width_resize", "single_select")
+        self._input_tbl.column_width(0, 90)
+        self._input_tbl.column_width(1, 100)
+        self._input_tbl.extra_bindings([("end_edit_cell", self._on_input_tbl_edit)])
+
+        ctk.CTkFrame(self._drawer, height=1, fg_color="gray40").pack(fill=tk.X, padx=4, pady=4)
+
+        ctk.CTkLabel(self._drawer, text="Response Limit",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor=tk.W, padx=8, pady=(4, 2))
+        self._limit_tbl = Sheet(
+            self._drawer,
+            headers=["Freq (Hz)", "Limit (g²/Hz)"],
+            height=220, show_row_index=False,
+            theme="dark" if ctk.get_appearance_mode() == "Dark" else "light",
+        )
+        self._limit_tbl.pack(fill=tk.X, padx=4, pady=(0, 6))
+        self._limit_tbl.enable_bindings("edit_cell", "column_width_resize", "single_select")
+        self._limit_tbl.column_width(0, 90)
+        self._limit_tbl.column_width(1, 100)
+        self._limit_tbl.extra_bindings([("end_edit_cell", self._on_limit_tbl_edit)])
+
+    def _toggle_drawer(self):
+        if self._drawer_visible:
+            self._drawer.pack_forget()
+            self._drawer_btn.configure(text="Tables ▶")
+            self._drawer_visible = False
+        else:
+            self._drawer.pack(side=tk.RIGHT, fill=tk.Y)
+            self._drawer_btn.configure(text="Tables ◀")
+            self._drawer_visible = True
+            self._populate_drawer_tables()
+
+    def _populate_drawer_tables(self):
+        if self._input_asd_freqs is not None:
+            self._input_tbl.set_sheet_data(
+                [[f"{f:.5g}", f"{a:.6g}"]
+                 for f, a in zip(self._input_asd_freqs, self._input_asd_vals)])
+        else:
+            self._input_tbl.set_sheet_data([])
+        if self._limit_asd_freqs is not None:
+            self._limit_tbl.set_sheet_data(
+                [[f"{f:.5g}", f"{a:.6g}"]
+                 for f, a in zip(self._limit_asd_freqs, self._limit_asd_vals)])
+        else:
+            self._limit_tbl.set_sheet_data([])
+
+    def _on_input_tbl_edit(self, event):
+        freqs, asds = [], []
+        for row in self._input_tbl.get_sheet_data():
+            try:
+                freqs.append(float(row[0]))
+                asds.append(float(row[1]))
+            except (ValueError, IndexError, TypeError):
+                continue
+        if len(freqs) < 2:
+            return
+        order = np.argsort(freqs)
+        self._input_asd_freqs = np.array(freqs)[order]
+        self._input_asd_vals  = np.array(asds)[order]
+        self._input_status.configure(
+            text=self._asd_status_text("(edited)", self._input_asd_freqs),
+            text_color=("gray10", "gray90"))
+        self._clear_results()
+        self._schedule_recompute()
+
+    def _on_limit_tbl_edit(self, event):
+        freqs, asds = [], []
+        for row in self._limit_tbl.get_sheet_data():
+            try:
+                freqs.append(float(row[0]))
+                asds.append(float(row[1]))
+            except (ValueError, IndexError, TypeError):
+                continue
+        if len(freqs) < 2:
+            return
+        order = np.argsort(freqs)
+        self._limit_asd_freqs = np.array(freqs)[order]
+        self._limit_asd_vals  = np.array(asds)[order]
+        self._limit_status.configure(
+            text=self._asd_status_text("(edited)", self._limit_asd_freqs),
+            text_color=("gray10", "gray90"))
+        self._clear_results()
+        self._schedule_recompute()
 
     # ── Theme toggle ──────────────────────────────────────────────────────
 
@@ -476,6 +592,8 @@ UNITS
         self._input_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
             text_color=("gray10", "gray90"))
+        if self._drawer_visible:
+            self._populate_drawer_tables()
         self._clear_results()
         self._schedule_recompute()
 
@@ -492,6 +610,8 @@ UNITS
         self._input_status.configure(
             text=self._asd_status_text("(pasted)", freqs),
             text_color=("gray10", "gray90"))
+        if self._drawer_visible:
+            self._populate_drawer_tables()
         self._clear_results()
         self._schedule_recompute()
 
@@ -515,6 +635,8 @@ UNITS
         self._limit_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
             text_color=("gray10", "gray90"))
+        if self._drawer_visible:
+            self._populate_drawer_tables()
         self._clear_results()
         self._schedule_recompute()
 
@@ -539,6 +661,8 @@ UNITS
         self._limit_status.configure(
             text=self._asd_status_text("(pasted)", freqs),
             text_color=("gray10", "gray90"))
+        if self._drawer_visible:
+            self._populate_drawer_tables()
         self._clear_results()
         self._schedule_recompute()
 
@@ -811,7 +935,14 @@ UNITS
         arr   = getattr(frf_tbl, id_attr)
         entity_ids = arr[:, 0] if id_attr == 'node_gridtype' else arr
 
-        orig_interp  = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs)
+        try:
+            scale = float(self._scale_var.get())
+            if scale <= 0:
+                scale = 1.0
+        except ValueError:
+            scale = 1.0
+
+        orig_interp  = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs) * scale
         limit_interp = interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
 
         min_allowed = np.full(len(freqs), np.inf)
@@ -963,12 +1094,18 @@ UNITS
     def _draw_input_view(self):
         ax = self._ax
         freqs = self._frf_freqs
+        try:
+            scale = float(self._scale_var.get())
+            if scale <= 0:
+                scale = 1.0
+        except ValueError:
+            scale = 1.0
+        lbl_scale = f" ×{scale:.3g}" if scale != 1.0 else ""
         if self._input_asd_freqs is not None:
-            ax.loglog(self._input_asd_freqs, self._input_asd_vals,
-                      color="#1f77b4", label="Original Input")
+            ax.loglog(self._input_asd_freqs, self._input_asd_vals * scale,
+                      color="#1f77b4", label=f"Original Input{lbl_scale}")
         ax.loglog(freqs, self._notched_asd, color="#d62728", label="Notched Input")
-        og = (np.sqrt(max(0.0, grms_loglog(self._input_asd_freqs, self._input_asd_vals)))
-              if self._input_asd_freqs is not None else 0.0)
+        og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
         ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
         self._legend(ax).set_title(
             f"Orig:    {og:.3g} g GRMS\nNotched: {ng:.3g} g GRMS")
