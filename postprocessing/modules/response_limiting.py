@@ -1,9 +1,9 @@
-"""FRF Response Limiting — compute a notched drive ASD from FRF data.
+"""FRF Response Limiting: compute a notched drive ASD from FRF data.
 
 Loads a Nastran SOL 111 frequency-response OP2, an input environment ASD,
-and a response limit ASD.  Node/DOF rows are added to a list; rows flagged
-as 'Limit' drive the notch calculation while all 'Show' rows have their
-response curves plotted before and after notching.
+and a response limit ASD.  Node/direction rows are added to a grid; rows
+with X/Y/Z set to 'S' (Show) or 'L' (Limit) are plotted, rows with 'L'
+drive the notch calculation.  Results update live as inputs change.
 """
 
 import os
@@ -29,6 +29,7 @@ from .asd_common import (
 
 
 _DOF_NAMES = ["X", "Y", "Z"]
+_DOF_COLS  = [2, 3, 4]   # column indices in the node grid
 
 _NODE_COLORS = (
     "#1f77b4", "#2ca02c", "#9467bd", "#17becf", "#bcbd22",
@@ -46,46 +47,48 @@ _THEMES = {
     },
 }
 
+# Cell colours for S / L states
+_COL_S  = {"bg": "#1f6aa5", "fg": "white"}   # show only
+_COL_L  = {"bg": "#cc6600", "fg": "white"}   # limit (implies show)
+_VALID  = {"", "S", "L"}
+
 
 class ResponseLimitingModule:
     name = "Response Limiting"
 
     _GUIDE_TEXT = """\
-Response Limiting — Quick Guide
+Response Limiting: Quick Guide
 
 PURPOSE
   Compute a notched drive ASD so that the response at selected nodes/DOFs
-  stays at or below a specified limit spectrum.  All added nodes are plotted;
-  nodes flagged 'Limit' drive the notch calculation.
+  stays at or below a specified limit spectrum.
 
 WORKFLOW
   1. Open a SOL 111 FRF OP2 (ACCELERATION(PLOT,PHASE)=ALL required).
-  2. Load or paste the Input ASD (freq vs g²/Hz) — the baseline drive spec.
+  2. Load or paste the Input ASD (freq vs g²/Hz).
   3. Load or paste the Response Limit ASD (freq vs g²/Hz).
-  4. Paste or import (node_id  direction) rows, e.g.:
-         1001 X
-         1001 Z
-         1042 Y
-     Check 'Limit' on the rows you want to notch against.
-  5. Click Compute Notch.
-  6. Use the View radio buttons to explore results.
-  7. Export Excel or CSV for the notched ASD.
+     The Response Limit Paste button pre-fills with existing data for editing.
+  4. Add nodes via Paste…, Import CSV…, or Add… and set X/Y/Z states.
+     Type or use Tab/Enter to cycle states in the grid:
+       S = Show:  response curve is plotted
+       L = Limit: drives the notch AND is plotted (marked [L])
+       (empty)  = not used
+  5. Results update live; use Export to save.
 
-MATH
-  At each frequency f, for each Limit DOF j:
-    S_allowed_j(f) = S_limit(f) / |H_j(f)|²
-  Notched input = min(S_original, min_j S_allowed_j)
-  Optional floor: notched ≥ S_original × 10^(-D/10)
+NODE GRID
+  Paste format, one per line:  node_id  direction  (e.g.  1001 Z)
+    Direction defaults to all three (L) when omitted.
+    Imported direction letter sets only that DOF to L.
 
-NODE ROWS
-  Show ☑  — include this curve in response plots
-  Limit ☑ — include this DOF in the notch calculation
-  A node can be Show-only (no Limit) to observe its response under the
-  notched input without contributing to the notch.
+PLOT THEME
+  ☾ / ☀ button toggles plot background independent of the system theme.
+
+CURVE PICKER  (Response: single curve view)
+  Selects which node/direction to display. [L] marks Limit DOFs.
 
 UNITS
-  Set Units to match the OP2 output (in/s² for slinch/inch models).
-  All plotted ASDs are in g²/Hz; GRMS in g.
+  Set to match OP2 output units (in/s² for slinch/inch models).
+  All ASDs are displayed in g²/Hz; GRMS in g.
 """
 
     def __init__(self, parent):
@@ -95,31 +98,31 @@ UNITS
         self._op2 = None
         self._op2_path = None
         self._subcase_opts = []
-        self._subcase_var = ctk.StringVar(value="—")
+        self._subcase_var = ctk.StringVar(value="(none)")
         self._units_var = ctk.StringVar(value="in/s²")
-        self._rt_var = ctk.StringVar(value="Acceleration")
 
         self._input_asd_freqs = None
-        self._input_asd_vals = None
+        self._input_asd_vals  = None
         self._limit_asd_freqs = None
-        self._limit_asd_vals = None
+        self._limit_asd_vals  = None
 
-        # Node rows: list of dicts with nid, show_var, dir_var, limit_var, color, row_frame
-        self._node_rows = []
-
-        self._notch_enabled_var = ctk.BooleanVar(value=False)
-        self._notch_db_var = ctk.StringVar(value="6.0")
+        self._plot_theme = "dark"   # "light" or "dark"
 
         # Computed results (on FRF frequency grid)
-        self._frf_freqs = None
+        self._frf_freqs       = None
         self._orig_asd_interp = None
         self._limit_asd_interp = None
-        self._notched_asd = None
-        self._response_curves = {}   # {(nid, dof_idx): (resp_before, resp_after)}
-        self._limit_dofs_set = set() # (nid, dof_idx) pairs that were limit nodes at compute time
+        self._notched_asd     = None
+        self._response_curves  = {}   # {(nid, dof_idx): (resp_before, resp_after)}
+        self._limit_dofs_set   = set()
 
-        self._view_var = ctk.StringVar(value="input")
-        self._dof_picker_var = ctk.StringVar(value="—")
+        self._notch_enabled_var = ctk.BooleanVar(value=False)
+        self._notch_db_var      = ctk.StringVar(value="6.0")
+
+        self._view_var       = ctk.StringVar(value="input")
+        self._curve_var      = ctk.StringVar(value="(none)")   # single-curve picker
+
+        self._debounce_id    = None
 
         self._build_ui()
 
@@ -129,7 +132,7 @@ UNITS
         toolbar = ctk.CTkFrame(self.frame, fg_color="transparent")
         toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
 
-        # Row 0: OP2 controls + help
+        # Row 0: OP2 + units + subcase + status + help
         row0 = ctk.CTkFrame(toolbar, fg_color="transparent")
         row0.pack(fill=tk.X, pady=1)
 
@@ -145,13 +148,13 @@ UNITS
         self._file_label.pack(side=tk.LEFT, padx=4)
 
         ctk.CTkLabel(row0, text="Units:").pack(side=tk.LEFT, padx=(8, 2))
-        self._units_menu = ctk.CTkOptionMenu(row0, variable=self._units_var,
-                                             values=["in/s²", "m/s²"], width=90)
-        self._units_menu.pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(row0, variable=self._units_var,
+                          values=["in/s²", "m/s²"], width=90,
+                          command=lambda _: self._schedule_recompute()).pack(side=tk.LEFT)
 
         ctk.CTkLabel(row0, text="Subcase:").pack(side=tk.LEFT, padx=(8, 2))
         self._sc_menu = ctk.CTkOptionMenu(row0, variable=self._subcase_var,
-                                          values=["—"],
+                                          values=["(none)"],
                                           command=self._on_subcase_change,
                                           width=160)
         self._sc_menu.pack(side=tk.LEFT)
@@ -167,33 +170,27 @@ UNITS
         row1 = ctk.CTkFrame(toolbar, fg_color="transparent")
         row1.pack(fill=tk.X, pady=1)
 
-        input_group = ctk.CTkFrame(row1, fg_color="transparent")
-        input_group.pack(side=tk.LEFT, padx=(0, 16))
-        ctk.CTkLabel(input_group, text="Input ASD:", width=72, anchor=tk.W).pack(side=tk.LEFT)
-        ctk.CTkButton(input_group, text="Load…", width=60,
-                      command=self._load_input_asd).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(input_group, text="Paste…", width=60,
-                      command=self._paste_input_asd).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(input_group, text="Clear", width=50,
-                      command=self._clear_input_asd).pack(side=tk.LEFT, padx=2)
-        self._input_status = ctk.CTkLabel(input_group, text="(none)", text_color="gray",
+        inp = ctk.CTkFrame(row1, fg_color="transparent")
+        inp.pack(side=tk.LEFT, padx=(0, 16))
+        ctk.CTkLabel(inp, text="Input ASD:", width=72, anchor=tk.W).pack(side=tk.LEFT)
+        ctk.CTkButton(inp, text="Load…",  width=60, command=self._load_input_asd).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(inp, text="Paste…", width=60, command=self._paste_input_asd).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(inp, text="Clear",  width=50, command=self._clear_input_asd).pack(side=tk.LEFT, padx=2)
+        self._input_status = ctk.CTkLabel(inp, text="(none)", text_color="gray",
                                           width=200, anchor=tk.W)
         self._input_status.pack(side=tk.LEFT, padx=4)
 
-        limit_group = ctk.CTkFrame(row1, fg_color="transparent")
-        limit_group.pack(side=tk.LEFT)
-        ctk.CTkLabel(limit_group, text="Response Limit:", width=104, anchor=tk.W).pack(side=tk.LEFT)
-        ctk.CTkButton(limit_group, text="Load…", width=60,
-                      command=self._load_limit_asd).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(limit_group, text="Paste…", width=60,
-                      command=self._paste_limit_asd).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(limit_group, text="Clear", width=50,
-                      command=self._clear_limit_asd).pack(side=tk.LEFT, padx=2)
-        self._limit_status = ctk.CTkLabel(limit_group, text="(none)", text_color="gray",
+        lim = ctk.CTkFrame(row1, fg_color="transparent")
+        lim.pack(side=tk.LEFT)
+        ctk.CTkLabel(lim, text="Response Limit:", width=104, anchor=tk.W).pack(side=tk.LEFT)
+        ctk.CTkButton(lim, text="Load…",  width=60, command=self._load_limit_asd).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(lim, text="Paste…", width=60, command=self._paste_limit_asd).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(lim, text="Clear",  width=50, command=self._clear_limit_asd).pack(side=tk.LEFT, padx=2)
+        self._limit_status = ctk.CTkLabel(lim, text="(none)", text_color="gray",
                                           width=200, anchor=tk.W)
         self._limit_status.pack(side=tk.LEFT, padx=4)
 
-        # Row 2: notch floor + action buttons
+        # Row 2: notch floor
         row2 = ctk.CTkFrame(toolbar, fg_color="transparent")
         row2.pack(fill=tk.X, pady=1)
 
@@ -203,59 +200,58 @@ UNITS
         self._notch_entry = ctk.CTkEntry(row2, textvariable=self._notch_db_var,
                                           width=54, state=tk.DISABLED)
         self._notch_entry.pack(side=tk.LEFT, padx=(4, 16))
+        self._notch_db_var.trace_add("write", lambda *_: self._schedule_recompute())
 
-        self._compute_btn = ctk.CTkButton(row2, text="Compute Notch", width=130,
-                                          command=self._compute_notch)
-        self._compute_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._export_excel_btn = ctk.CTkButton(row2, text="Export Excel…", width=110,
-                                                command=self._export_excel,
-                                                state=tk.DISABLED)
+                                                command=self._export_excel, state=tk.DISABLED)
         self._export_excel_btn.pack(side=tk.LEFT, padx=(0, 4))
         self._export_csv_btn = ctk.CTkButton(row2, text="Export CSV…", width=90,
-                                              command=self._export_csv,
-                                              state=tk.DISABLED)
+                                              command=self._export_csv, state=tk.DISABLED)
         self._export_csv_btn.pack(side=tk.LEFT)
 
         # ── Body ──────────────────────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
-        # Left panel — scrollable
-        self._left = ctk.CTkScrollableFrame(body, width=300)
+        # Left panel
+        self._left = ctk.CTkScrollableFrame(body, width=320)
         self._left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
 
-        # Nodes section header + buttons
-        ctk.CTkLabel(self._left, text="Nodes",
+        # Node grid section
+        ctk.CTkLabel(self._left, text="Nodes  (S = Show, L = Limit [L])",
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W, pady=(4, 2))
 
         node_btns = ctk.CTkFrame(self._left, fg_color="transparent")
-        node_btns.pack(fill=tk.X, pady=(0, 2))
-        ctk.CTkButton(node_btns, text="Paste…", width=68,
-                      command=self._paste_nodes).pack(side=tk.LEFT, padx=(0, 2))
-        ctk.CTkButton(node_btns, text="Import CSV…", width=90,
+        node_btns.pack(fill=tk.X, pady=(0, 4))
+        ctk.CTkButton(node_btns, text="Add…",       width=62,
+                      command=self._add_node_dialog).pack(side=tk.LEFT, padx=(0, 2))
+        ctk.CTkButton(node_btns, text="Paste…",     width=62,
+                      command=self._paste_nodes).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(node_btns, text="Import CSV…",width=90,
                       command=self._import_nodes_csv).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(node_btns, text="Clear All", width=76,
+        ctk.CTkButton(node_btns, text="Clear All",  width=76,
                       command=self._clear_all_nodes).pack(side=tk.LEFT, padx=2)
 
-        # Column header for node rows
-        hdr = ctk.CTkFrame(self._left, fg_color="transparent")
-        hdr.pack(fill=tk.X)
-        ctk.CTkLabel(hdr, text="Show", width=44, anchor=tk.CENTER,
-                     font=ctk.CTkFont(size=11), text_color="gray").pack(side=tk.LEFT)
-        ctk.CTkLabel(hdr, text="Node", width=46, anchor=tk.CENTER,
-                     font=ctk.CTkFont(size=11), text_color="gray").pack(side=tk.LEFT)
-        ctk.CTkLabel(hdr, text="Dir", width=74, anchor=tk.CENTER,
-                     font=ctk.CTkFont(size=11), text_color="gray").pack(side=tk.LEFT)
-        ctk.CTkLabel(hdr, text="Limit", width=50, anchor=tk.CENTER,
-                     font=ctk.CTkFont(size=11), text_color="gray").pack(side=tk.LEFT)
-
-        # Node rows will be packed here (between header and view section)
-        self._nodes_container = ctk.CTkFrame(self._left, fg_color="transparent")
-        self._nodes_container.pack(fill=tk.X)
+        self._node_sheet = Sheet(
+            self._left,
+            headers=["Node", "Label", "X", "Y", "Z"],
+            height=200,
+            show_row_index=False,
+            theme="dark" if ctk.get_appearance_mode() == "Dark" else "light",
+        )
+        self._node_sheet.pack(fill=tk.X, pady=(0, 6))
+        self._node_sheet.enable_bindings(
+            "single_select", "row_select", "edit_cell", "column_width_resize")
+        self._node_sheet.column_width(0, 56)
+        self._node_sheet.column_width(1, 100)
+        self._node_sheet.column_width(2, 40)
+        self._node_sheet.column_width(3, 40)
+        self._node_sheet.column_width(4, 40)
+        self._node_sheet.extra_bindings([("end_edit_cell", self._on_grid_edit)])
 
         # Separator
         ctk.CTkFrame(self._left, height=1, fg_color="gray40").pack(
-            fill=tk.X, pady=(6, 6))
+            fill=tk.X, pady=(2, 6))
 
         # View section
         ctk.CTkLabel(self._left, text="View",
@@ -263,27 +259,35 @@ UNITS
 
         for val, label in [
             ("input",        "Input ASDs (orig / notched)"),
-            ("response_dof", "Response — selected DOF"),
+            ("response_dof", "Response: single curve"),
             ("response_all", "All responses overlay"),
             ("grms",         "GRMS Summary"),
         ]:
             ctk.CTkRadioButton(self._left, text=label, variable=self._view_var,
                                value=val, command=self._redraw).pack(anchor=tk.W, pady=1)
 
-        dof_pick_row = ctk.CTkFrame(self._left, fg_color="transparent")
-        dof_pick_row.pack(fill=tk.X, pady=(4, 0))
-        ctk.CTkLabel(dof_pick_row, text="DOF:").pack(side=tk.LEFT)
-        self._dof_picker_menu = ctk.CTkOptionMenu(
-            dof_pick_row, variable=self._dof_picker_var,
-            values=["—"], command=lambda _: self._redraw(), width=150)
-        self._dof_picker_menu.pack(side=tk.LEFT, padx=4)
+        curve_row = ctk.CTkFrame(self._left, fg_color="transparent")
+        curve_row.pack(fill=tk.X, pady=(4, 0))
+        ctk.CTkLabel(curve_row, text="Curve:").pack(side=tk.LEFT)
+        self._curve_menu = ctk.CTkOptionMenu(
+            curve_row, variable=self._curve_var,
+            values=["(none)"], command=lambda _: self._redraw(), width=150)
+        self._curve_menu.pack(side=tk.LEFT, padx=4)
 
-        # Right — matplotlib canvas + GRMS table overlay
+        # Right: canvas + theme button + GRMS overlay
         right = ctk.CTkFrame(body, fg_color="transparent")
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        # Plot header with theme toggle
+        plot_hdr = ctk.CTkFrame(right, fg_color="transparent")
+        plot_hdr.pack(fill=tk.X)
+        self._theme_btn = ctk.CTkButton(
+            plot_hdr, text="☀ Light", width=80,
+            command=self._toggle_theme)
+        self._theme_btn.pack(side=tk.RIGHT, padx=4, pady=2)
+
         self._fig = Figure(figsize=(8, 5))
-        self._ax = self._fig.add_subplot(111)
+        self._ax  = self._fig.add_subplot(111)
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas_widget = self._canvas.get_tk_widget()
         self._canvas_widget.pack(fill=tk.BOTH, expand=True)
@@ -294,20 +298,27 @@ UNITS
             self._grms_frame,
             headers=["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
                      "Resp Before (g)", "Resp After (g)", "Max Notch (dB)"],
-            height=300,
-            show_row_index=False,
+            height=300, show_row_index=False,
         )
         self._grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         self._grms_sheet.enable_bindings("column_width_resize")
 
         self._draw_idle_plot()
 
+    # ── Theme toggle ──────────────────────────────────────────────────────
+
+    def _toggle_theme(self):
+        self._plot_theme = "light" if self._plot_theme == "dark" else "dark"
+        self._theme_btn.configure(
+            text="☾ Dark" if self._plot_theme == "light" else "☀ Light")
+        self._redraw()
+
     # ── Help ──────────────────────────────────────────────────────────────
 
     def _open_help(self):
         win = ctk.CTkToplevel(self.frame.winfo_toplevel())
-        win.title("Response Limiting — Guide")
-        win.geometry("560x480")
+        win.title("Response Limiting: Guide")
+        win.geometry("560x500")
         win.resizable(True, True)
         win.transient(self.frame.winfo_toplevel())
         tb = ctk.CTkTextbox(win, wrap="word")
@@ -322,13 +333,36 @@ UNITS
     def _on_notch_toggle(self):
         self._notch_entry.configure(
             state=tk.NORMAL if self._notch_enabled_var.get() else tk.DISABLED)
+        self._schedule_recompute()
+
+    # ── Live compute ──────────────────────────────────────────────────────
+
+    def _schedule_recompute(self, delay=400):
+        if self._debounce_id is not None:
+            self.frame.after_cancel(self._debounce_id)
+        self._debounce_id = self.frame.after(delay, self._auto_compute)
+
+    def _auto_compute(self):
+        self._debounce_id = None
+        if (self._op2 is not None
+                and self._input_asd_freqs is not None
+                and self._limit_asd_freqs is not None
+                and self._any_limit_dofs()):
+            self._compute_notch(silent=True)
+
+    def _any_limit_dofs(self):
+        data = self._node_sheet.get_sheet_data()
+        for row in data:
+            for col in _DOF_COLS:
+                if str(row[col]).upper() == "L":
+                    return True
+        return False
 
     # ── Background threading ───────────────────────────────────────────────
 
     def _run_in_background(self, label, work_fn, done_fn):
         self._status_label.configure(text=label, text_color="gray")
         self._open_btn.configure(state=tk.DISABLED)
-        self._compute_btn.configure(state=tk.DISABLED)
         container = {}
 
         def _worker():
@@ -342,7 +376,6 @@ UNITS
                 self.frame.after(50, _poll)
             else:
                 self._open_btn.configure(state=tk.NORMAL)
-                self._compute_btn.configure(state=tk.NORMAL)
                 done_fn(container.get('result'), container.get('error'))
 
         thread = threading.Thread(target=_worker, daemon=True)
@@ -376,8 +409,7 @@ UNITS
                 messagebox.showwarning(
                     "No FRF Data",
                     "This OP2 has no frequency-response acceleration data.\n\n"
-                    "The deck must include:\n"
-                    "  ACCELERATION(PLOT,PHASE) = ALL")
+                    "The deck must include:\n  ACCELERATION(PLOT,PHASE) = ALL")
                 self._file_label.configure(text="(no FRF data)", text_color="orange")
                 return
 
@@ -388,14 +420,15 @@ UNITS
             self._subcase_opts = sc_pairs
             labels = [lbl for _, lbl in sc_pairs]
             self._sc_menu.configure(values=labels)
-            self._subcase_var.set(labels[0] if labels else "—")
+            self._subcase_var.set(labels[0] if labels else "(none)")
 
             stem = os.path.splitext(os.path.basename(path))[0]
             self._file_label.configure(text=stem, text_color=("gray10", "gray90"))
             self._status_label.configure(
-                text=f"{os.path.basename(path)} — {len(sc_pairs)} subcase(s)",
+                text=f"{os.path.basename(path)}: {len(sc_pairs)} subcase(s)",
                 text_color=("gray10", "gray90"))
             self._clear_results()
+            self._schedule_recompute()
 
         self._run_in_background("Loading OP2…", _work, _done)
 
@@ -403,8 +436,8 @@ UNITS
         self._op2 = None
         self._op2_path = None
         self._subcase_opts = []
-        self._subcase_var.set("—")
-        self._sc_menu.configure(values=["—"])
+        self._subcase_var.set("(none)")
+        self._sc_menu.configure(values=["(none)"])
         self._file_label.configure(text="(none)", text_color="gray")
         self._status_label.configure(text="Load an FRF OP2 to begin", text_color="gray")
         self._clear_results()
@@ -412,6 +445,7 @@ UNITS
 
     def _on_subcase_change(self, _=None):
         self._clear_results()
+        self._schedule_recompute()
 
     def _get_subcase_int(self):
         label = self._subcase_var.get()
@@ -442,10 +476,11 @@ UNITS
             text=self._asd_status_text(os.path.basename(path), freqs),
             text_color=("gray10", "gray90"))
         self._clear_results()
+        self._schedule_recompute()
 
     def _paste_input_asd(self):
-        text = self._paste_dialog("Paste Input ASD",
-                                  "Paste 2-column data (freq  g²/Hz), one row per line:")
+        text = self._paste_dialog(
+            "Paste Input ASD", "Paste 2-column data (freq  g²/Hz), one row per line:")
         if text is None:
             return
         freqs, asds = parse_asd_text(text)
@@ -454,8 +489,10 @@ UNITS
             return
         self._input_asd_freqs, self._input_asd_vals = freqs, asds
         self._input_status.configure(
-            text=self._asd_status_text("(pasted)", freqs), text_color=("gray10", "gray90"))
+            text=self._asd_status_text("(pasted)", freqs),
+            text_color=("gray10", "gray90"))
         self._clear_results()
+        self._schedule_recompute()
 
     def _clear_input_asd(self):
         self._input_asd_freqs = self._input_asd_vals = None
@@ -478,10 +515,19 @@ UNITS
             text=self._asd_status_text(os.path.basename(path), freqs),
             text_color=("gray10", "gray90"))
         self._clear_results()
+        self._schedule_recompute()
 
     def _paste_limit_asd(self):
-        text = self._paste_dialog("Paste Response Limit ASD",
-                                  "Paste 2-column data (freq  g²/Hz), one row per line:")
+        # Pre-populate with current limit data so the user can edit in place
+        initial = ""
+        if self._limit_asd_freqs is not None:
+            lines = [f"{f:.5g}  {a:.6g}"
+                     for f, a in zip(self._limit_asd_freqs, self._limit_asd_vals)]
+            initial = "\n".join(lines)
+        text = self._paste_dialog(
+            "Paste / Edit Response Limit ASD",
+            "2-column data (freq  g²/Hz), one row per line:",
+            initial=initial)
         if text is None:
             return
         freqs, asds = parse_asd_text(text)
@@ -490,58 +536,103 @@ UNITS
             return
         self._limit_asd_freqs, self._limit_asd_vals = freqs, asds
         self._limit_status.configure(
-            text=self._asd_status_text("(pasted)", freqs), text_color=("gray10", "gray90"))
+            text=self._asd_status_text("(pasted)", freqs),
+            text_color=("gray10", "gray90"))
         self._clear_results()
+        self._schedule_recompute()
 
     def _clear_limit_asd(self):
         self._limit_asd_freqs = self._limit_asd_vals = None
         self._limit_status.configure(text="(none)", text_color="gray")
         self._clear_results()
 
-    # ── Node row management ───────────────────────────────────────────────
+    # ── Node grid management ──────────────────────────────────────────────
 
-    def _add_node_row(self, nid, dir_name="X", show=True, limit=True):
-        color = _NODE_COLORS[len(self._node_rows) % len(_NODE_COLORS)]
+    def _add_node_to_grid(self, nid, label="", x="", y="", z=""):
+        """Insert a row in the node sheet. x/y/z should be '', 'S', or 'L'."""
+        nrows = len(self._node_sheet.get_sheet_data())
+        self._node_sheet.insert_row(values=[str(nid), label,
+                                            x.upper(), y.upper(), z.upper()])
+        for ci, val in zip(_DOF_COLS, [x, y, z]):
+            self._apply_cell_color(nrows, ci, val.upper())
 
-        show_var = ctk.BooleanVar(value=show)
-        dir_var = ctk.StringVar(value=dir_name)
-        limit_var = ctk.BooleanVar(value=limit)
+    def _apply_cell_color(self, row, col, val):
+        if val == "S":
+            self._node_sheet.highlight_cells(
+                row=row, column=col,
+                bg=_COL_S["bg"], fg=_COL_S["fg"])
+        elif val == "L":
+            self._node_sheet.highlight_cells(
+                row=row, column=col,
+                bg=_COL_L["bg"], fg=_COL_L["fg"])
+        else:
+            self._node_sheet.dehighlight_cells(row=row, column=col)
 
-        row_frame = ctk.CTkFrame(self._nodes_container, fg_color="transparent")
-        row_frame.pack(fill=tk.X, pady=1)
+    def _on_grid_edit(self, event):
+        r, c = event.row, event.column
+        if c not in _DOF_COLS:
+            # Label or Node ID changed; just schedule recompute
+            self._schedule_recompute()
+            return
+        raw = str(self._node_sheet.get_cell_data(r, c)).strip().upper()
+        if raw not in _VALID:
+            raw = ""
+        self._node_sheet.set_cell_data(r, c, raw)
+        self._apply_cell_color(r, c, raw)
+        self._schedule_recompute()
 
-        # Colour swatch
-        swatch = tk.Canvas(row_frame, width=10, height=16,
-                           bg=ctk.ThemeManager.theme["CTkFrame"]["fg_color"][1],
-                           highlightthickness=0)
-        swatch.pack(side=tk.LEFT, padx=(2, 0))
-        swatch.create_rectangle(1, 3, 9, 13, fill=color, outline="")
+    def _add_node_dialog(self):
+        win = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        win.title("Add Node")
+        win.geometry("300x180")
+        win.resizable(False, False)
+        win.transient(self.frame.winfo_toplevel())
+        win.grab_set()
 
-        ctk.CTkCheckBox(row_frame, text="", variable=show_var, width=24,
-                        command=self._redraw).pack(side=tk.LEFT)
-        ctk.CTkLabel(row_frame, text=str(nid), width=46,
-                     anchor=tk.E).pack(side=tk.LEFT)
-        ctk.CTkOptionMenu(row_frame, variable=dir_var, values=_DOF_NAMES,
-                          width=72, command=lambda _: self._clear_results()).pack(side=tk.LEFT, padx=2)
-        ctk.CTkCheckBox(row_frame, text="Limit", variable=limit_var,
-                        width=70).pack(side=tk.LEFT, padx=(4, 2))
+        ctk.CTkLabel(win, text="Node ID:").grid(row=0, column=0, padx=12, pady=(14, 4), sticky=tk.W)
+        nid_var = ctk.StringVar()
+        ctk.CTkEntry(win, textvariable=nid_var, width=120).grid(row=0, column=1, padx=12, pady=(14, 4))
 
-        entry = {
-            'nid': nid,
-            'show_var': show_var,
-            'dir_var': dir_var,
-            'limit_var': limit_var,
-            'color': color,
-            'row_frame': row_frame,
-        }
-        self._node_rows.append(entry)
+        ctk.CTkLabel(win, text="Label:").grid(row=1, column=0, padx=12, pady=4, sticky=tk.W)
+        lbl_var = ctk.StringVar()
+        ctk.CTkEntry(win, textvariable=lbl_var, width=120).grid(row=1, column=1, padx=12, pady=4)
+
+        ctk.CTkLabel(win, text="Directions:").grid(row=2, column=0, padx=12, pady=4, sticky=tk.W)
+        dir_frame = ctk.CTkFrame(win, fg_color="transparent")
+        dir_frame.grid(row=2, column=1, padx=12, pady=4, sticky=tk.W)
+        x_var = ctk.BooleanVar(value=True)
+        y_var = ctk.BooleanVar(value=False)
+        z_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(dir_frame, text="X", variable=x_var, width=50).pack(side=tk.LEFT)
+        ctk.CTkCheckBox(dir_frame, text="Y", variable=y_var, width=50).pack(side=tk.LEFT)
+        ctk.CTkCheckBox(dir_frame, text="Z", variable=z_var, width=50).pack(side=tk.LEFT)
+
+        def _add():
+            try:
+                nid = int(nid_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Invalid", "Node ID must be an integer.", parent=win)
+                return
+            self._add_node_to_grid(
+                nid, lbl_var.get().strip(),
+                x="L" if x_var.get() else "",
+                y="L" if y_var.get() else "",
+                z="L" if z_var.get() else "")
+            self._schedule_recompute()
+            win.destroy()
+
+        btn_r = ctk.CTkFrame(win, fg_color="transparent")
+        btn_r.grid(row=3, column=0, columnspan=2, pady=(8, 4))
+        ctk.CTkButton(btn_r, text="Add", width=80, command=_add).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(btn_r, text="Cancel", width=80, command=win.destroy).pack(side=tk.LEFT, padx=4)
 
     def _paste_nodes(self):
         text = self._paste_dialog(
             "Paste Nodes",
-            "Paste one node per line:  node_id  direction\n"
-            "Direction is X, Y, or Z  (e.g.  1001 Z)\n"
-            "Direction defaults to X if omitted.")
+            "One per line:  node_id  direction  [label]\n"
+            "Direction: X, Y, Z  (sets that DOF to L / Limit)\n"
+            "Omit direction to set all three to L.\n"
+            "e.g.   1001 Z   or   1042 X Y   or   1001")
         if text is None:
             return
         added = 0
@@ -552,16 +643,28 @@ UNITS
             parts = line.replace(',', ' ').split()
             try:
                 nid = int(parts[0])
-                dir_name = parts[1].upper() if len(parts) > 1 else "X"
-                if dir_name not in _DOF_NAMES:
-                    dir_name = "X"
             except (ValueError, IndexError):
                 continue
-            self._add_node_row(nid, dir_name)
+            # Gather direction tokens and label remainder
+            dirs = []
+            label_parts = []
+            for tok in parts[1:]:
+                if tok.upper() in _DOF_NAMES:
+                    dirs.append(tok.upper())
+                else:
+                    label_parts.append(tok)
+            label = " ".join(label_parts)
+            if not dirs:
+                dirs = _DOF_NAMES  # all three
+            x = "L" if "X" in dirs else ""
+            y = "L" if "Y" in dirs else ""
+            z = "L" if "Z" in dirs else ""
+            self._add_node_to_grid(nid, label, x=x, y=y, z=z)
             added += 1
         if added:
-            self._status_label.configure(text=f"Added {added} node row(s).",
+            self._status_label.configure(text=f"Added {added} node(s).",
                                          text_color=("gray10", "gray90"))
+            self._schedule_recompute()
 
     def _import_nodes_csv(self):
         path = filedialog.askopenfilename(
@@ -583,29 +686,63 @@ UNITS
             parts = line.replace(',', ' ').split()
             try:
                 nid = int(parts[0])
-                dir_name = parts[1].upper() if len(parts) > 1 else "X"
-                if dir_name not in _DOF_NAMES:
-                    dir_name = "X"
             except (ValueError, IndexError):
                 continue
-            self._add_node_row(nid, dir_name)
+            dirs = [t.upper() for t in parts[1:] if t.upper() in _DOF_NAMES]
+            label_parts = [t for t in parts[1:] if t.upper() not in _DOF_NAMES]
+            label = " ".join(label_parts)
+            if not dirs:
+                dirs = _DOF_NAMES
+            self._add_node_to_grid(
+                nid, label,
+                x="L" if "X" in dirs else "",
+                y="L" if "Y" in dirs else "",
+                z="L" if "Z" in dirs else "")
             added += 1
-        self._status_label.configure(text=f"Imported {added} node row(s).",
+        self._status_label.configure(text=f"Imported {added} node(s).",
                                      text_color=("gray10", "gray90"))
+        if added:
+            self._schedule_recompute()
 
     def _clear_all_nodes(self):
-        for entry in self._node_rows:
-            entry['row_frame'].destroy()
-        self._node_rows.clear()
+        n = len(self._node_sheet.get_sheet_data())
+        if n:
+            self._node_sheet.delete_rows(list(range(n)))
         self._clear_results()
 
-    # ── Paste dialog helper ────────────────────────────────────────────────
+    def _get_grid_dofs(self):
+        """Return (plot_dofs, limit_dofs, color_map, label_map) from current grid."""
+        data     = self._node_sheet.get_sheet_data()
+        plot_dofs  = []   # [(nid, dof_idx), ...]
+        limit_dofs = []
+        color_map  = {}   # (nid, dof_idx) → hex color
+        label_map  = {}   # (nid, dof_idx) → display label
+        for row_idx, row in enumerate(data):
+            try:
+                nid = int(str(row[0]).strip())
+            except (ValueError, TypeError):
+                continue
+            user_label = str(row[1]).strip()
+            color = _NODE_COLORS[row_idx % len(_NODE_COLORS)]
+            for ci, dof_idx in zip(_DOF_COLS, range(3)):
+                val = str(row[ci]).strip().upper()
+                if val in ("S", "L"):
+                    key = (nid, dof_idx)
+                    plot_dofs.append(key)
+                    color_map[key] = color
+                    base = user_label if user_label else str(nid)
+                    label_map[key] = f"{base} {_DOF_NAMES[dof_idx]}"
+                if val == "L":
+                    limit_dofs.append((nid, dof_idx))
+        return plot_dofs, limit_dofs, color_map, label_map
 
-    def _paste_dialog(self, title, prompt):
+    # ── Paste dialog ──────────────────────────────────────────────────────
+
+    def _paste_dialog(self, title, prompt, initial=""):
         result = {}
         win = ctk.CTkToplevel(self.frame.winfo_toplevel())
         win.title(title)
-        win.geometry("440x320")
+        win.geometry("460x340")
         win.resizable(True, True)
         win.transient(self.frame.winfo_toplevel())
         win.grab_set()
@@ -613,6 +750,8 @@ UNITS
         ctk.CTkLabel(win, text=prompt, anchor=tk.W).pack(fill=tk.X, padx=10, pady=(10, 4))
         tb = ctk.CTkTextbox(win, wrap="none")
         tb.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        if initial:
+            tb.insert("1.0", initial)
 
         btn_row = ctk.CTkFrame(win, fg_color="transparent")
         btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
@@ -629,30 +768,29 @@ UNITS
 
     # ── Core computation ──────────────────────────────────────────────────
 
-    def _compute_notch(self):
+    def _compute_notch(self, silent=False):
         if self._op2 is None:
-            messagebox.showwarning("No OP2", "Load an FRF OP2 first.")
+            if not silent:
+                messagebox.showwarning("No OP2", "Load an FRF OP2 first.")
             return
         if self._input_asd_freqs is None:
-            messagebox.showwarning("No Input ASD", "Load an Input ASD first.")
+            if not silent:
+                messagebox.showwarning("No Input ASD", "Load an Input ASD first.")
             return
         if self._limit_asd_freqs is None:
-            messagebox.showwarning("No Limit ASD", "Load a Response Limit ASD first.")
+            if not silent:
+                messagebox.showwarning("No Limit ASD", "Load a Response Limit ASD first.")
             return
 
-        plot_rows = [r for r in self._node_rows if r['show_var'].get()]
-        limit_rows = [r for r in self._node_rows if r['limit_var'].get()]
-        if not plot_rows and not limit_rows:
-            messagebox.showwarning("No Nodes", "Add at least one node row.")
-            return
-        if not limit_rows:
-            messagebox.showwarning("No Limit Nodes",
-                                   "Check 'Limit' on at least one node row.")
+        plot_dofs, limit_dofs, color_map, label_map = self._get_grid_dofs()
+        if not limit_dofs:
+            if not silent:
+                messagebox.showwarning("No Limit DOFs",
+                                       "Set at least one X/Y/Z cell to L in the node grid.")
             return
 
         sc = self._get_subcase_int()
         if sc is None:
-            messagebox.showwarning("No Subcase", "Select a valid subcase.")
             return
 
         cfg = RESPONSE_TYPES['Acceleration']
@@ -660,35 +798,31 @@ UNITS
         id_attr = cfg['id_attr']
 
         frf_dict = getattr(self._op2, cfg['frf_attr'], None) or {}
-        frf_tbl = lookup_subcase(frf_dict, sc)
+        frf_tbl  = lookup_subcase(frf_dict, sc)
         if frf_tbl is None:
-            messagebox.showerror("Error", f"Subcase {sc} not found in FRF results.")
             return
 
         freqs = frf_tbl._times
-        arr = getattr(frf_tbl, id_attr)
+        arr   = getattr(frf_tbl, id_attr)
         entity_ids = arr[:, 0] if id_attr == 'node_gridtype' else arr
 
-        orig_interp = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs)
+        orig_interp  = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs)
         limit_interp = interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
 
-        # Compute minimum allowed input across all limit DOFs
         min_allowed = np.full(len(freqs), np.inf)
-        missing = []
+        missing     = []
         limit_dofs_set = set()
 
-        for r in limit_rows:
-            nid = r['nid']
-            dof_idx = _DOF_NAMES.index(r['dir_var'].get())
+        for nid, dof_idx in limit_dofs:
             hits = np.where(entity_ids == nid)[0]
             if not len(hits):
                 missing.append(f"{nid} {_DOF_NAMES[dof_idx]}")
                 continue
             H_g = frf_tbl.data[:, hits[0], dof_idx] / unit_factor
-            H_mag2 = H_g.real**2 + H_g.imag**2
+            H2  = H_g.real**2 + H_g.imag**2
             with np.errstate(divide='ignore', invalid='ignore'):
-                allowed = np.where(H_mag2 > 0, limit_interp / H_mag2, np.inf)
-            min_allowed = np.minimum(min_allowed, allowed)
+                min_allowed = np.minimum(
+                    min_allowed, np.where(H2 > 0, limit_interp / H2, np.inf))
             limit_dofs_set.add((nid, dof_idx))
 
         notched = np.minimum(orig_interp, min_allowed)
@@ -701,43 +835,40 @@ UNITS
                 db = 6.0
             notched = np.maximum(notched, orig_interp * 10**(-db / 10.0))
 
-        # Compute response curves for all show rows
         response_curves = {}
-        for r in plot_rows:
-            nid = r['nid']
-            dof_idx = _DOF_NAMES.index(r['dir_var'].get())
+        for nid, dof_idx in plot_dofs:
             hits = np.where(entity_ids == nid)[0]
             if not len(hits):
                 if f"{nid} {_DOF_NAMES[dof_idx]}" not in missing:
                     missing.append(f"{nid} {_DOF_NAMES[dof_idx]}")
                 continue
             H_g = frf_tbl.data[:, hits[0], dof_idx] / unit_factor
-            H_mag2 = H_g.real**2 + H_g.imag**2
-            response_curves[(nid, dof_idx)] = (H_mag2 * orig_interp, H_mag2 * notched)
+            H2  = H_g.real**2 + H_g.imag**2
+            response_curves[(nid, dof_idx)] = (H2 * orig_interp, H2 * notched)
 
-        self._frf_freqs = freqs
-        self._orig_asd_interp = orig_interp
+        self._frf_freqs        = freqs
+        self._orig_asd_interp  = orig_interp
         self._limit_asd_interp = limit_interp
-        self._notched_asd = notched
-        self._response_curves = response_curves
-        self._limit_dofs_set = limit_dofs_set
+        self._notched_asd      = notched
+        self._response_curves  = response_curves
+        self._limit_dofs_set   = limit_dofs_set
+        self._color_map        = color_map
+        self._label_map        = label_map
 
-        # Update DOF picker with show-row labels
+        # Update curve picker
         labels = []
-        for r in plot_rows:
-            nid = r['nid']
-            dof_idx = _DOF_NAMES.index(r['dir_var'].get())
-            if (nid, dof_idx) in response_curves:
-                tag = " ★" if (nid, dof_idx) in limit_dofs_set else ""
-                labels.append(f"Node {nid} {_DOF_NAMES[dof_idx]}{tag}")
-        self._dof_picker_menu.configure(values=labels if labels else ["—"])
-        if labels:
-            self._dof_picker_var.set(labels[0])
+        for key in response_curves:
+            tag = " [L]" if key in limit_dofs_set else ""
+            labels.append(label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag)
+        self._curve_menu.configure(values=labels if labels else ["(none)"])
+        if labels and (self._curve_var.get() == "(none)" or
+                       self._curve_var.get() not in labels):
+            self._curve_var.set(labels[0])
 
         self._export_excel_btn.configure(state=tk.NORMAL)
         self._export_csv_btn.configure(state=tk.NORMAL)
 
-        parts = [f"Notch computed — {len(response_curves)} curve(s)."]
+        parts = [f"Notched: {len(response_curves)} curve(s)."]
         if missing:
             parts.append(f"Not found: {', '.join(missing[:4])}")
         self._status_label.configure(text="  ".join(parts),
@@ -745,21 +876,23 @@ UNITS
         self._redraw()
 
     def _clear_results(self):
-        self._frf_freqs = None
-        self._orig_asd_interp = None
+        self._frf_freqs        = None
+        self._orig_asd_interp  = None
         self._limit_asd_interp = None
-        self._notched_asd = None
-        self._response_curves = {}
-        self._limit_dofs_set = set()
+        self._notched_asd      = None
+        self._response_curves  = {}
+        self._limit_dofs_set   = set()
+        self._color_map        = {}
+        self._label_map        = {}
         self._export_excel_btn.configure(state=tk.DISABLED)
         self._export_csv_btn.configure(state=tk.DISABLED)
-        self._dof_picker_menu.configure(values=["—"])
-        self._dof_picker_var.set("—")
+        self._curve_menu.configure(values=["(none)"])
+        self._curve_var.set("(none)")
 
     # ── Plot helpers ──────────────────────────────────────────────────────
 
     def _get_theme(self):
-        return _THEMES.get(ctk.get_appearance_mode().lower(), _THEMES["light"])
+        return _THEMES[self._plot_theme]
 
     def _format_plot(self, ax, title="", ylabel="ASD (g²/Hz)"):
         th = self._get_theme()
@@ -777,6 +910,14 @@ UNITS
         if title:
             ax.set_title(title)
 
+    def _legend(self, ax):
+        th = self._get_theme()
+        leg = ax.legend(facecolor=th["legend_bg"],
+                        edgecolor=th["spine"],
+                        labelcolor=th["text"],
+                        fontsize=8)
+        return leg
+
     def _draw_idle_plot(self):
         th = self._get_theme()
         self._fig.clf()
@@ -785,7 +926,8 @@ UNITS
         self._format_plot(ax, title="Response Limiting")
         ax.text(0.5, 0.5,
                 "1. Open FRF OP2\n2. Load Input ASD + Response Limit\n"
-                "3. Paste node rows and check Limit\n4. Compute Notch",
+                "3. Add nodes, set X/Y/Z to L\n"
+                "Results update automatically",
                 ha='center', va='center', transform=ax.transAxes,
                 color=th["text"], fontsize=11)
         self._canvas.draw_idle()
@@ -819,90 +961,84 @@ UNITS
         if self._input_asd_freqs is not None:
             ax.loglog(self._input_asd_freqs, self._input_asd_vals,
                       color="#1f77b4", label="Original Input")
-        ax.loglog(freqs, self._notched_asd,
-                  color="#d62728", label="Notched Input")
-        orig_grms = np.sqrt(max(0.0, grms_loglog(self._input_asd_freqs,
-                                                   self._input_asd_vals))) \
-            if self._input_asd_freqs is not None else 0.0
-        notch_grms = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
-        ax.legend(title=f"Orig:   {orig_grms:.3g} g GRMS\nNotched: {notch_grms:.3g} g GRMS")
-        self._format_plot(ax, title="Input ASD — Original vs Notched")
+        ax.loglog(freqs, self._notched_asd, color="#d62728", label="Notched Input")
+        og = (np.sqrt(max(0.0, grms_loglog(self._input_asd_freqs, self._input_asd_vals)))
+              if self._input_asd_freqs is not None else 0.0)
+        ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
+        self._legend(ax).set_title(
+            f"Orig:    {og:.3g} g GRMS\nNotched: {ng:.3g} g GRMS")
+        self._format_plot(ax, title="Input ASD: Original vs Notched")
         ax.set_xlim(freqs[0], freqs[-1])
 
     def _draw_response_dof_view(self):
         ax = self._ax
         freqs = self._frf_freqs
-        sel = self._dof_picker_var.get()
+        sel = self._curve_var.get()
 
-        # Resolve selected key from picker label
         selected_key = None
-        for nid, dof_idx in self._response_curves:
-            tag = " ★" if (nid, dof_idx) in self._limit_dofs_set else ""
-            if f"Node {nid} {_DOF_NAMES[dof_idx]}{tag}" == sel:
-                selected_key = (nid, dof_idx)
+        for key in self._response_curves:
+            tag = " [L]" if key in self._limit_dofs_set else ""
+            lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
+            if lbl == sel:
+                selected_key = key
                 break
         if selected_key is None and self._response_curves:
             selected_key = next(iter(self._response_curves))
 
+        rb_grms = ra_grms = 0.0
         if selected_key is not None:
             rb, ra = self._response_curves[selected_key]
-            ax.loglog(freqs, rb, color="#1f77b4", label="Before notch")
-            ax.loglog(freqs, ra, color="#d62728", label="After notch")
+            col = self._color_map.get(selected_key, "#1f77b4")
+            ax.loglog(freqs, rb, color=col, linestyle="--", label="Before notch")
+            ax.loglog(freqs, ra, color=col,              label="After notch")
             rb_grms = np.sqrt(max(0.0, grms_loglog(freqs, rb)))
             ra_grms = np.sqrt(max(0.0, grms_loglog(freqs, ra)))
 
         ax.loglog(freqs, self._limit_asd_interp,
-                  color="#ff7f0e", linestyle="--", linewidth=1.5, label="Response Limit")
+                  color="#ff7f0e", linestyle=":", linewidth=2, label="Response Limit")
+        leg = self._legend(ax)
+        leg.set_title(f"Before: {rb_grms:.3g} g\nAfter:  {ra_grms:.3g} g")
 
-        if selected_key is not None:
-            ax.legend(title=f"Before: {rb_grms:.3g} g\nAfter:  {ra_grms:.3g} g")
+        if selected_key:
+            lbl = self._label_map.get(selected_key,
+                                       f"Node {selected_key[0]} {_DOF_NAMES[selected_key[1]]}")
         else:
-            ax.legend()
-
-        nid, dof_idx = selected_key if selected_key else (0, 0)
-        self._format_plot(ax, title=f"Response: Node {nid} {_DOF_NAMES[dof_idx]}")
+            lbl = "(none)"
+        self._format_plot(ax, title=f"Response: {lbl}")
         ax.set_xlim(freqs[0], freqs[-1])
 
     def _draw_response_all_view(self):
         ax = self._ax
         freqs = self._frf_freqs
-
-        # Colour map from node_rows so colours match the swatch
-        color_map = {
-            (r['nid'], _DOF_NAMES.index(r['dir_var'].get())): r['color']
-            for r in self._node_rows if r['show_var'].get()
-        }
-        for (nid, dof_idx), (_, resp_after) in self._response_curves.items():
-            col = color_map.get((nid, dof_idx), "#aaaaaa")
-            tag = " ★" if (nid, dof_idx) in self._limit_dofs_set else ""
-            ax.loglog(freqs, resp_after, color=col,
-                      label=f"Node {nid} {_DOF_NAMES[dof_idx]}{tag}")
-
+        for key, (_, ra) in self._response_curves.items():
+            col = self._color_map.get(key, "#aaaaaa")
+            tag = " [L]" if key in self._limit_dofs_set else ""
+            lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
+            ax.loglog(freqs, ra, color=col, label=lbl)
         ax.loglog(freqs, self._limit_asd_interp,
-                  color="#ff7f0e", linestyle="--", linewidth=2, label="Response Limit")
-        ax.legend(fontsize=8)
-        self._format_plot(ax, title="All Responses (notched) vs Limit — ★ = limit node")
+                  color="#ff7f0e", linestyle=":", linewidth=2, label="Response Limit")
+        self._legend(ax)
+        self._format_plot(ax, title="All Responses (notched) vs Limit  ([L] = limit DOF)")
         ax.set_xlim(freqs[0], freqs[-1])
 
     def _draw_grms_view(self):
         freqs = self._frf_freqs
-        orig_grms = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
-        notch_grms = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
+        og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
+        ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
         with np.errstate(divide='ignore', invalid='ignore'):
             ratio = np.where(self._notched_asd > 0,
                              self._orig_asd_interp / self._notched_asd, 1.0)
-        max_notch_db = 10.0 * np.log10(max(float(ratio.max()), 1.0))
-
+        max_db = 10.0 * np.log10(max(float(ratio.max()), 1.0))
         rows = []
-        for (nid, dof_idx), (rb, ra) in self._response_curves.items():
-            tag = " ★" if (nid, dof_idx) in self._limit_dofs_set else ""
+        for key, (rb, ra) in self._response_curves.items():
+            tag = " [L]" if key in self._limit_dofs_set else ""
+            lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
             rows.append([
-                f"Node {nid} {_DOF_NAMES[dof_idx]}{tag}",
-                f"{orig_grms:.4g}",
-                f"{notch_grms:.4g}",
+                lbl,
+                f"{og:.4g}", f"{ng:.4g}",
                 f"{np.sqrt(max(0.0, grms_loglog(freqs, rb))):.4g}",
                 f"{np.sqrt(max(0.0, grms_loglog(freqs, ra))):.4g}",
-                f"{max_notch_db:.2f}",
+                f"{max_db:.2f}",
             ])
         self._grms_sheet.set_sheet_data(rows)
 
@@ -913,8 +1049,7 @@ UNITS
             messagebox.showwarning("No Data", "Compute notch first.")
             return
         path = filedialog.asksaveasfilename(
-            title="Save Excel",
-            defaultextension=".xlsx",
+            title="Save Excel", defaultextension=".xlsx",
             filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")])
         if not path:
             return
@@ -930,16 +1065,17 @@ UNITS
         ws = wb.active
         ws.title = "Notched ASD"
         ws.append(["Freq (Hz)", "Original ASD (g²/Hz)", "Notched ASD (g²/Hz)"])
-        for f, orig, notch in zip(freqs, self._orig_asd_interp, self._notched_asd):
-            ws.append([float(f), float(orig), float(notch)])
+        for f, o, n in zip(freqs, self._orig_asd_interp, self._notched_asd):
+            ws.append([float(f), float(o), float(n)])
 
         ws2 = wb.create_sheet("Limit ASD")
         ws2.append(["Freq (Hz)", "Limit ASD (g²/Hz)"])
         for f, lim in zip(freqs, self._limit_asd_interp):
             ws2.append([float(f), float(lim)])
 
-        for (nid, dof_idx), (rb, ra) in self._response_curves.items():
-            sname = f"N{nid}_{_DOF_NAMES[dof_idx]}"[:31]
+        for key, (rb, ra) in self._response_curves.items():
+            lbl = self._label_map.get(key, f"N{key[0]}_{_DOF_NAMES[key[1]]}")
+            sname = lbl[:31]
             ws_d = wb.create_sheet(sname)
             ws_d.append(["Freq (Hz)", "Resp Before (g²/Hz)", "Resp After (g²/Hz)"])
             for f, r_b, r_a in zip(freqs, rb, ra):
@@ -948,21 +1084,19 @@ UNITS
         ws_g = wb.create_sheet("GRMS Summary")
         ws_g.append(["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
                       "Resp Before (g)", "Resp After (g)", "Max Notch (dB)"])
-        orig_grms = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
-        notch_grms = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
+        og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
+        ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
         with np.errstate(divide='ignore', invalid='ignore'):
             ratio = np.where(self._notched_asd > 0,
                              self._orig_asd_interp / self._notched_asd, 1.0)
-        max_notch_db = 10.0 * np.log10(max(float(ratio.max()), 1.0))
-        for (nid, dof_idx), (rb, ra) in self._response_curves.items():
-            tag = " ★" if (nid, dof_idx) in self._limit_dofs_set else ""
-            ws_g.append([
-                f"Node {nid} {_DOF_NAMES[dof_idx]}{tag}",
-                round(orig_grms, 6), round(notch_grms, 6),
-                round(np.sqrt(max(0.0, grms_loglog(freqs, rb))), 6),
-                round(np.sqrt(max(0.0, grms_loglog(freqs, ra))), 6),
-                round(max_notch_db, 4),
-            ])
+        max_db = 10.0 * np.log10(max(float(ratio.max()), 1.0))
+        for key, (rb, ra) in self._response_curves.items():
+            tag = " [L]" if key in self._limit_dofs_set else ""
+            lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
+            ws_g.append([lbl, round(og, 6), round(ng, 6),
+                          round(np.sqrt(max(0.0, grms_loglog(freqs, rb))), 6),
+                          round(np.sqrt(max(0.0, grms_loglog(freqs, ra))), 6),
+                          round(max_db, 4)])
 
         wb.save(path)
         self._status_label.configure(text=f"Saved: {os.path.basename(path)}",
@@ -973,8 +1107,7 @@ UNITS
             messagebox.showwarning("No Data", "Compute notch first.")
             return
         path = filedialog.asksaveasfilename(
-            title="Save CSV",
-            defaultextension=".csv",
+            title="Save CSV", defaultextension=".csv",
             filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
         if not path:
             return
