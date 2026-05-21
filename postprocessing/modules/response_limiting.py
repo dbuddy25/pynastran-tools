@@ -312,7 +312,7 @@ UNITS
         self._grms_sheet = Sheet(
             self._grms_frame,
             headers=["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
-                     "Resp Before (g)", "Resp After (g)", "Max Notch (dB)"],
+                     "Resp @ Orig Input (g)", "Resp @ Notched Input (g)", "Max Notch (dB)"],
             height=300, show_row_index=False,
         )
         self._grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -846,19 +846,20 @@ UNITS
         limit_dofs = []
         color_map  = {}   # (nid, dof_idx) → hex color
         label_map  = {}   # (nid, dof_idx) → display label
-        for row_idx, row in enumerate(data):
+        color_idx = 0
+        for row in data:
             try:
                 nid = int(str(row[0]).strip())
             except (ValueError, TypeError):
                 continue
             user_label = str(row[1]).strip()
-            color = _NODE_COLORS[row_idx % len(_NODE_COLORS)]
             for ci, dof_idx in zip(_DOF_COLS, range(3)):
                 val = str(row[ci]).strip().upper()
                 if val in ("S", "L"):
                     key = (nid, dof_idx)
                     plot_dofs.append(key)
-                    color_map[key] = color
+                    color_map[key] = _NODE_COLORS[color_idx % len(_NODE_COLORS)]
+                    color_idx += 1
                     base = user_label if user_label else str(nid)
                     label_map[key] = f"{base} {_DOF_NAMES[dof_idx]}"
                 if val == "L":
