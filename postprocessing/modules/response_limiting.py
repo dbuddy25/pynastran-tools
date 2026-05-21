@@ -119,7 +119,7 @@ UNITS
 
         self._notch_enabled_var = ctk.BooleanVar(value=False)
         self._notch_db_var      = ctk.StringVar(value="6.0")
-        self._scale_var         = ctk.StringVar(value="1.0")
+        self._scale_var         = ctk.StringVar(value="0.0")
 
         self._view_var       = ctk.StringVar(value="input")
         self._curve_var      = ctk.StringVar(value="(none)")   # single-curve picker
@@ -205,8 +205,8 @@ UNITS
         self._notch_entry.pack(side=tk.LEFT, padx=(4, 20))
         self._notch_db_var.trace_add("write", lambda *_: self._schedule_recompute())
 
-        ctk.CTkLabel(row2, text="Input scale:").pack(side=tk.LEFT)
-        ctk.CTkEntry(row2, textvariable=self._scale_var, width=60).pack(side=tk.LEFT, padx=(4, 20))
+        ctk.CTkLabel(row2, text="Input scale (dB):").pack(side=tk.LEFT)
+        ctk.CTkEntry(row2, textvariable=self._scale_var, width=54).pack(side=tk.LEFT, padx=(4, 20))
         self._scale_var.trace_add("write", lambda *_: self._schedule_recompute())
 
         self._export_excel_btn = ctk.CTkButton(row2, text="Export Excel…", width=110,
@@ -936,11 +936,10 @@ UNITS
         entity_ids = arr[:, 0] if id_attr == 'node_gridtype' else arr
 
         try:
-            scale = float(self._scale_var.get())
-            if scale <= 0:
-                scale = 1.0
+            scale_db = float(self._scale_var.get())
         except ValueError:
-            scale = 1.0
+            scale_db = 0.0
+        scale = 10.0 ** (scale_db / 10.0)
 
         orig_interp  = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs) * scale
         limit_interp = interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
@@ -1095,12 +1094,11 @@ UNITS
         ax = self._ax
         freqs = self._frf_freqs
         try:
-            scale = float(self._scale_var.get())
-            if scale <= 0:
-                scale = 1.0
+            scale_db = float(self._scale_var.get())
         except ValueError:
-            scale = 1.0
-        lbl_scale = f" ×{scale:.3g}" if scale != 1.0 else ""
+            scale_db = 0.0
+        scale = 10.0 ** (scale_db / 10.0)
+        lbl_scale = f" ({scale_db:+.3g} dB)" if scale_db != 0.0 else ""
         if self._input_asd_freqs is not None:
             ax.loglog(self._input_asd_freqs, self._input_asd_vals * scale,
                       color="#1f77b4", label=f"Original Input{lbl_scale}")
