@@ -552,8 +552,8 @@ UNITS
     def _add_node_to_grid(self, nid, label="", x="", y="", z=""):
         """Insert a row in the node sheet. x/y/z should be '', 'S', or 'L'."""
         nrows = len(self._node_sheet.get_sheet_data())
-        self._node_sheet.insert_row(values=[str(nid), label,
-                                            x.upper(), y.upper(), z.upper()])
+        self._node_sheet.insert_row(row=[str(nid), label,
+                                        x.upper(), y.upper(), z.upper()])
         for ci, val in zip(_DOF_COLS, [x, y, z]):
             self._apply_cell_color(nrows, ci, val.upper())
 
