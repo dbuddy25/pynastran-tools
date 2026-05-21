@@ -66,6 +66,13 @@ try:
 except Exception:
     _asd_available = False
 
+# ResponseLimitingModule — lazy import with fallback
+_response_limiting_available = True
+try:
+    from modules.response_limiting import ResponseLimitingModule
+except Exception:
+    _response_limiting_available = False
+
 from miles_equation import MilesEquationTool
 
 
@@ -119,6 +126,7 @@ class Sidebar(ctk.CTkFrame):
         self._add_tool("cbush", "CBUSH Forces")
         self._add_tool("mass_breakdown", "Mass Breakdown")
         self._add_tool("asd", "ASD Overlay")
+        self._add_tool("response_limit", "Response Limiting")
 
         # Hand Calcs section
         self._add_section("Hand Calcs")
@@ -224,6 +232,12 @@ class StructuresToolsApp(ctk.CTk):
         else:
             self._sidebar.disable_tool("asd")
 
+        if _response_limiting_available:
+            rl = ResponseLimitingModule(self._content)
+            self._tools['response_limit'] = rl.frame
+        else:
+            self._sidebar.disable_tool("response_limit")
+
         self._tools['miles'] = MilesEquationTool(self._content)
 
         self._active_tool = None
@@ -250,7 +264,7 @@ class StructuresToolsApp(ctk.CTk):
 
         categories = (
             "Pre-Processing — Mass Scale, Renumber, Thermal CTE",
-            "Post-Processing — MEFFMASS, ESE Breakdown, CBUSH Forces, Mass Breakdown, ASD Overlay",
+            "Post-Processing — MEFFMASS, ESE Breakdown, CBUSH Forces, Mass Breakdown, ASD Overlay, Response Limiting",
             "Hand Calcs — Miles Equation",
         )
         for i, cat in enumerate(categories):
