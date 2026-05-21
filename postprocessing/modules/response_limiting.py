@@ -124,6 +124,17 @@ UNITS
         self._view_var       = ctk.StringVar(value="input")
         self._curve_var      = ctk.StringVar(value="(none)")   # single-curve picker
 
+        self._title_var      = ctk.StringVar(value="")
+        self._env_var        = ctk.StringVar(value="")
+        self._limit_name_var = ctk.StringVar(value="Response Limit")
+        self._yscale_var     = ctk.StringVar(value="Log")
+        self._peak_label_var = ctk.StringVar(value="Freq only")
+
+        self._aux_lines        = []
+        self._pick_peaks_mode  = False
+        self._picked_peaks     = []
+        self._last_drawn_curves = []
+
         self._drawer_visible = False
         self._debounce_id    = None
 
@@ -215,6 +226,46 @@ UNITS
         self._export_csv_btn = ctk.CTkButton(row2, text="Export CSV…", width=90,
                                               command=self._export_csv, state=tk.DISABLED)
         self._export_csv_btn.pack(side=tk.LEFT)
+
+        # Row 3: title / environment / limit name
+        row3 = ctk.CTkFrame(toolbar, fg_color="transparent")
+        row3.pack(fill=tk.X, pady=1)
+        ctk.CTkLabel(row3, text="Title:").pack(side=tk.LEFT)
+        ctk.CTkEntry(row3, textvariable=self._title_var, width=200,
+                     placeholder_text="Plot title").pack(side=tk.LEFT, padx=(4, 12))
+        ctk.CTkLabel(row3, text="Env:").pack(side=tk.LEFT)
+        ctk.CTkEntry(row3, textvariable=self._env_var, width=180,
+                     placeholder_text="Environment / subtitle").pack(side=tk.LEFT, padx=(4, 12))
+        ctk.CTkLabel(row3, text="Limit name:").pack(side=tk.LEFT)
+        ctk.CTkEntry(row3, textvariable=self._limit_name_var, width=140).pack(side=tk.LEFT, padx=4)
+        for v in (self._title_var, self._env_var, self._limit_name_var):
+            v.trace_add("write", lambda *_: self._redraw())
+
+        # Row 4: annotations / peak picking / session
+        row4 = ctk.CTkFrame(toolbar, fg_color="transparent")
+        row4.pack(fill=tk.X, pady=1)
+        ctk.CTkLabel(row4, text="Y-axis:").pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(row4, variable=self._yscale_var, values=["Log", "Linear"],
+                          width=80, command=lambda _: self._redraw()).pack(side=tk.LEFT, padx=(4, 12))
+        self._yscale_var.trace_add("write", lambda *_: None)  # handled by command above
+
+        self._pick_btn = ctk.CTkButton(row4, text="Pick Peaks", width=96,
+                                       command=self._toggle_pick_mode)
+        self._pick_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(row4, text="Clear Peaks", width=90,
+                      command=self._clear_peaks).pack(side=tk.LEFT, padx=(0, 12))
+
+        ctk.CTkLabel(row4, text="Label:").pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(row4, variable=self._peak_label_var,
+                          values=["Freq only", "Freq + value"],
+                          width=110, command=lambda _: self._redraw()).pack(side=tk.LEFT, padx=(4, 12))
+
+        ctk.CTkButton(row4, text="X/Y Lines…", width=90,
+                      command=self._aux_lines_dialog).pack(side=tk.LEFT, padx=(0, 12))
+        ctk.CTkButton(row4, text="Save Session…", width=110,
+                      command=self._save_session).pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(row4, text="Open Session…", width=110,
+                      command=self._open_session).pack(side=tk.LEFT)
 
         # ── Body ──────────────────────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -309,6 +360,7 @@ UNITS
         self._canvas_widget = self._canvas.get_tk_widget()
         self._canvas_widget.pack(fill=tk.BOTH, expand=True)
         NavigationToolbar2Tk(self._canvas, right).update()
+        self._canvas.mpl_connect("button_press_event", self._on_canvas_click)
 
         self._grms_frame = ctk.CTkFrame(right)
         self._grms_sheet = Sheet(
@@ -1064,6 +1116,8 @@ UNITS
         self._limit_dofs_set   = set()
         self._color_map        = {}
         self._label_map        = {}
+        self._picked_peaks.clear()
+        self._last_drawn_curves = []
         self._export_excel_btn.configure(state=tk.DISABLED)
         self._export_csv_btn.configure(state=tk.DISABLED)
         self._curve_menu.configure(values=["(none)"])
@@ -1084,11 +1138,20 @@ UNITS
         ax.title.set_color(th["text"])
         for spine in ax.spines.values():
             spine.set_edgecolor(th["spine"])
+        ax.set_xscale("log")
+        ax.set_yscale(self._yscale_var.get().lower())
         ax.grid(True, which="both", color=th["grid"], linewidth=0.5)
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel(ylabel)
-        if title:
-            ax.set_title(title)
+        user_title = self._title_var.get().strip()
+        env = self._env_var.get().strip()
+        display_title = user_title or title
+        if display_title:
+            ax.set_title(display_title, color=th["text"], fontsize=12, weight="bold",
+                         pad=20 if env else 6)
+        if env:
+            ax.text(0.5, 1.01, env, transform=ax.transAxes, ha="center", va="bottom",
+                    color=th["text"], fontsize=10, style="italic", alpha=0.75)
 
     def _legend(self, ax):
         th = self._get_theme()
@@ -1144,12 +1207,18 @@ UNITS
             scale_db = 0.0
         scale = 10.0 ** (scale_db / 10.0)
         lbl_scale = f" ({scale_db:+.3g} dB)" if scale_db != 0.0 else ""
+        self._last_drawn_curves = []
         if self._input_asd_freqs is not None:
-            ax.loglog(self._input_asd_freqs, self._input_asd_vals * scale,
-                      color="#1f77b4", label=f"Original Input{lbl_scale}")
-        ax.loglog(freqs, self._notched_asd, color="#d62728", label="Notched Input")
+            vals = self._input_asd_vals * scale
+            lbl = f"Original Input{lbl_scale}"
+            ax.plot(self._input_asd_freqs, vals, color="#1f77b4", label=lbl)
+            self._last_drawn_curves.append({"freqs": self._input_asd_freqs, "data": vals, "label": lbl})
+        ax.plot(freqs, self._notched_asd, color="#d62728", label="Notched Input")
+        self._last_drawn_curves.append({"freqs": freqs, "data": self._notched_asd, "label": "Notched Input"})
         og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
         ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
+        self._draw_aux_lines(ax)
+        self._draw_picked_peaks(ax)
         self._legend(ax).set_title(
             f"Orig:    {og:.3g} g GRMS\nNotched: {ng:.3g} g GRMS")
         self._format_plot(ax, title="Input ASD: Original vs Notched")
@@ -1159,6 +1228,7 @@ UNITS
         ax = self._ax
         freqs = self._frf_freqs
         sel = self._curve_var.get()
+        limit_name = self._limit_name_var.get().strip() or "Response Limit"
 
         selected_key = None
         for key in self._response_curves:
@@ -1170,17 +1240,26 @@ UNITS
         if selected_key is None and self._response_curves:
             selected_key = next(iter(self._response_curves))
 
+        self._last_drawn_curves = []
         rb_grms = ra_grms = 0.0
         if selected_key is not None:
             rb, ra = self._response_curves[selected_key]
             col = self._color_map.get(selected_key, "#1f77b4")
-            ax.loglog(freqs, rb, color=col, linestyle="--", label="Before notch")
-            ax.loglog(freqs, ra, color=col,              label="After notch")
+            lbl_b = "Before notch"
+            lbl_a = "After notch"
+            ax.plot(freqs, rb, color=col, linestyle="--", label=lbl_b)
+            ax.plot(freqs, ra, color=col, label=lbl_a)
+            self._last_drawn_curves.append({"freqs": freqs, "data": rb, "label": lbl_b})
+            self._last_drawn_curves.append({"freqs": freqs, "data": ra, "label": lbl_a})
             rb_grms = np.sqrt(max(0.0, grms_loglog(freqs, rb)))
             ra_grms = np.sqrt(max(0.0, grms_loglog(freqs, ra)))
 
-        ax.loglog(freqs, self._limit_asd_interp,
-                  color="#ff7f0e", linestyle=":", linewidth=2, label="Response Limit")
+        ax.plot(freqs, self._limit_asd_interp,
+                color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
+        self._last_drawn_curves.append({"freqs": freqs, "data": self._limit_asd_interp,
+                                        "label": limit_name})
+        self._draw_aux_lines(ax)
+        self._draw_picked_peaks(ax)
         leg = self._legend(ax)
         leg.set_title(f"Before: {rb_grms:.3g} g\nAfter:  {ra_grms:.3g} g")
 
@@ -1195,15 +1274,22 @@ UNITS
     def _draw_response_all_view(self):
         ax = self._ax
         freqs = self._frf_freqs
+        limit_name = self._limit_name_var.get().strip() or "Response Limit"
+        self._last_drawn_curves = []
         for key, (_, ra) in self._response_curves.items():
             col = self._color_map.get(key, "#aaaaaa")
             tag = " [L]" if key in self._limit_dofs_set else ""
             lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
-            ax.loglog(freqs, ra, color=col, label=lbl)
-        ax.loglog(freqs, self._limit_asd_interp,
-                  color="#ff7f0e", linestyle=":", linewidth=2, label="Response Limit")
+            ax.plot(freqs, ra, color=col, label=lbl)
+            self._last_drawn_curves.append({"freqs": freqs, "data": ra, "label": lbl})
+        ax.plot(freqs, self._limit_asd_interp,
+                color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
+        self._last_drawn_curves.append({"freqs": freqs, "data": self._limit_asd_interp,
+                                        "label": limit_name})
+        self._draw_aux_lines(ax)
+        self._draw_picked_peaks(ax)
         self._legend(ax)
-        self._format_plot(ax, title="All Responses (notched) vs Limit  ([L] = limit DOF)")
+        self._format_plot(ax, title=f"All Responses (notched) vs {limit_name}  ([L] = limit DOF)")
         ax.set_xlim(freqs[0], freqs[-1])
 
     def _draw_grms_view(self):
@@ -1227,6 +1313,458 @@ UNITS
             ])
         self._grms_sheet.set_sheet_data(rows)
 
+    # ── Aux reference lines ───────────────────────────────────────────────
+
+    def _draw_aux_lines(self, ax):
+        for ln in self._aux_lines:
+            if not ln.get('visible', True):
+                continue
+            try:
+                val = float(ln['value'])
+            except (KeyError, ValueError):
+                continue
+            kw = dict(color=ln.get('color', '#888888'),
+                      linestyle=ln.get('linestyle', '--'),
+                      linewidth=float(ln.get('linewidth', 1.0)),
+                      alpha=0.8)
+            if ln.get('axis', 'x') == 'x':
+                ax.axvline(val, **kw)
+            else:
+                ax.axhline(val, **kw)
+            lbl = ln.get('label', '').strip()
+            if lbl:
+                if ln.get('axis', 'x') == 'x':
+                    ax.text(val, ax.get_ylim()[1], f" {lbl}", color=ln.get('color', '#888888'),
+                            fontsize=7, va='top', ha='left', clip_on=True)
+                else:
+                    ax.text(ax.get_xlim()[0], val, f" {lbl}", color=ln.get('color', '#888888'),
+                            fontsize=7, va='bottom', ha='left', clip_on=True)
+
+    def _aux_lines_dialog(self):
+        import copy
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("X/Y Reference Lines")
+        dlg.geometry("660x380")
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
+
+        working = copy.deepcopy(self._aux_lines)
+        row_widgets = []
+
+        scroll = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        scroll.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 0))
+
+        hdr = ctk.CTkFrame(scroll, fg_color="transparent")
+        hdr.pack(fill=tk.X, pady=(0, 2))
+        for txt, w in [("Vis", 28), ("Axis", 50), ("Value", 80), ("Label", 170),
+                       ("Color", 80), ("Style", 80), ("LW", 50), ("", 28)]:
+            ctk.CTkLabel(hdr, text=txt, width=w, anchor=tk.W,
+                         font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=2)
+
+        def _make_row(ln):
+            from tkinter import colorchooser as cc
+            rf = ctk.CTkFrame(scroll, fg_color="transparent")
+            rf.pack(fill=tk.X, pady=1)
+
+            vis_var  = tk.BooleanVar(value=ln.get('visible', True))
+            axis_var = ctk.StringVar(value=ln.get('axis', 'x').upper())
+            val_var  = ctk.StringVar(value=str(ln.get('value', 0.0)))
+            lbl_var  = ctk.StringVar(value=ln.get('label', ''))
+            col_var  = ctk.StringVar(value=ln.get('color', '#888888'))
+            ls_var   = ctk.StringVar(value=ln.get('linestyle', '--'))
+            lw_var   = ctk.StringVar(value=str(ln.get('linewidth', 1.0)))
+
+            ctk.CTkCheckBox(rf, text="", variable=vis_var, width=28).pack(side=tk.LEFT, padx=2)
+            ctk.CTkOptionMenu(rf, variable=axis_var, values=["X", "Y"],
+                              width=50).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=val_var, width=80).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=lbl_var, width=170).pack(side=tk.LEFT, padx=2)
+
+            swatch = ctk.CTkButton(rf, text="", width=30, height=22,
+                                   fg_color=ln.get('color', '#888888'),
+                                   hover_color=ln.get('color', '#888888'),
+                                   command=lambda: None)
+
+            def _pick(cv=col_var, sw=swatch):
+                result = cc.askcolor(color=cv.get(), title="Pick Color", parent=dlg)
+                if result and result[1]:
+                    cv.set(result[1])
+                    sw.configure(fg_color=result[1], hover_color=result[1])
+
+            swatch.configure(command=_pick)
+            swatch.pack(side=tk.LEFT, padx=2)
+
+            ctk.CTkOptionMenu(rf, variable=ls_var,
+                              values=["-", "--", ":", "-."],
+                              width=80).pack(side=tk.LEFT, padx=2)
+            ctk.CTkEntry(rf, textvariable=lw_var, width=50).pack(side=tk.LEFT, padx=2)
+
+            def _del(r=rf):
+                r.destroy()
+                for item in row_widgets:
+                    if item['frame'] is r:
+                        row_widgets.remove(item)
+                        break
+
+            ctk.CTkButton(rf, text="x", width=28,
+                          fg_color="transparent", hover_color=("gray75", "gray30"),
+                          text_color=("gray40", "gray60"),
+                          command=_del).pack(side=tk.LEFT, padx=2)
+
+            row_widgets.append({
+                'frame': rf, 'vis': vis_var, 'axis': axis_var,
+                'value': val_var, 'label': lbl_var, 'color': col_var,
+                'linestyle': ls_var, 'linewidth': lw_var,
+            })
+
+        for ln in working:
+            _make_row(ln)
+
+        def _add():
+            _make_row({"axis": "x", "value": 100.0, "label": "",
+                       "color": "#888888", "linestyle": "--",
+                       "linewidth": 1.0, "visible": True})
+
+        add_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        add_row.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ctk.CTkButton(add_row, text="+ Add Line", width=100, command=_add).pack(side=tk.LEFT)
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=8, pady=(4, 10))
+
+        def _ok():
+            new_lines = []
+            for w in row_widgets:
+                try:
+                    val = float(w['value'].get())
+                except ValueError:
+                    continue
+                try:
+                    lw = float(w['linewidth'].get())
+                except ValueError:
+                    lw = 1.0
+                new_lines.append({
+                    "axis": w['axis'].get().lower(),
+                    "value": val,
+                    "label": w['label'].get(),
+                    "color": w['color'].get() or "#888888",
+                    "linestyle": w['linestyle'].get(),
+                    "linewidth": lw,
+                    "visible": w['vis'].get(),
+                })
+            self._aux_lines = new_lines
+            self._redraw()
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="OK", width=80, command=_ok).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="Cancel", width=80,
+                      command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+
+    # ── Peak picking ──────────────────────────────────────────────────────
+
+    def _draw_picked_peaks(self, ax):
+        mode = self._peak_label_var.get()
+        th = self._get_theme()
+        for pk in self._picked_peaks:
+            f, v = pk['freq'], pk['value']
+            if f <= 0 or v <= 0:
+                continue
+            ax.axvline(f, color='gray', linestyle=':', linewidth=0.8, alpha=0.6)
+            if mode == "Freq only":
+                txt = f"{f:.1f} Hz"
+            else:
+                txt = f"{f:.1f} Hz\n{v:.3g}"
+            ax.annotate(txt, xy=(f, v), xytext=(4, 4), textcoords='offset points',
+                        fontsize=7, color=th["text"], clip_on=True)
+
+    def _toggle_pick_mode(self):
+        self._pick_peaks_mode = not self._pick_peaks_mode
+        if self._pick_peaks_mode:
+            self._pick_btn.configure(fg_color=("#1f6aa5", "#1f6aa5"),
+                                     text="Pick Peaks (ON)")
+            self._canvas_widget.configure(cursor="cross")
+        else:
+            self._pick_btn.configure(fg_color=("gray75", "gray25"),
+                                     text="Pick Peaks")
+            self._canvas_widget.configure(cursor="")
+
+    def _clear_peaks(self):
+        self._picked_peaks.clear()
+        self._redraw()
+
+    def _on_canvas_click(self, event):
+        if not self._pick_peaks_mode:
+            return
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+        if event.xdata <= 0:
+            return
+
+        from scipy.signal import find_peaks as _find_peaks
+
+        click_lx = np.log10(max(event.xdata, 1e-12))
+
+        best = None
+        for curve in self._last_drawn_curves:
+            freqs = curve["freqs"]
+            data = curve["data"]
+            if len(data) < 3:
+                continue
+            peak_idx, _ = _find_peaks(data)
+            for i in peak_idx:
+                f, v = float(freqs[i]), float(data[i])
+                if f <= 0 or v <= 0:
+                    continue
+                d = abs(np.log10(f) - click_lx)
+                if best is None or d < best[0]:
+                    best = (d, f, v, curve["label"])
+
+        if best is None or best[0] > 0.3:
+            return
+        self._picked_peaks.append({
+            "freq": best[1], "value": best[2], "label": best[3],
+        })
+        self._redraw()
+
+    # ── Session save / load ───────────────────────────────────────────────
+
+    def _suggested_export_name(self):
+        stem = (self._title_var.get().strip()
+                or self._env_var.get().strip()
+                or "Response_Limiting")
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in stem)
+        return f"{safe.strip()}.xlsx"
+
+    def _save_session(self):
+        import json, datetime
+        if self._op2_path is None and self._input_asd_freqs is None:
+            messagebox.showwarning("Nothing to save",
+                                   "Load an OP2 or ASD data before saving a session.")
+            return
+        stem = (self._title_var.get().strip()
+                or self._env_var.get().strip()
+                or "rl_session")
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in stem)
+        path = filedialog.asksaveasfilename(
+            title="Save Session",
+            defaultextension=".rllimit.json",
+            filetypes=[("Response Limiting session", "*.rllimit.json"),
+                       ("All files", "*.*")],
+            initialfile=f"{safe.strip()}.rllimit.json",
+        )
+        if not path:
+            return
+
+        # Serialize node grid
+        nodes_data = []
+        for row in self._node_sheet.get_sheet_data():
+            try:
+                nid = int(str(row[0]).strip())
+            except (ValueError, TypeError):
+                continue
+            nodes_data.append({
+                "id": nid,
+                "label": str(row[1]).strip() if len(row) > 1 else "",
+                "x": str(row[2]).strip().upper() if len(row) > 2 else "",
+                "y": str(row[3]).strip().upper() if len(row) > 3 else "",
+                "z": str(row[4]).strip().upper() if len(row) > 4 else "",
+            })
+
+        data = {
+            "version": 1,
+            "tool": "Response Limiting",
+            "saved_at": datetime.datetime.now().isoformat(timespec='seconds'),
+            "op2_path": self._op2_path,
+            "units": self._units_var.get(),
+            "subcase": self._subcase_var.get(),
+            "input_asd": ({"freqs": self._input_asd_freqs.tolist(),
+                           "vals":  self._input_asd_vals.tolist()}
+                          if self._input_asd_freqs is not None else None),
+            "limit_asd": ({"freqs": self._limit_asd_freqs.tolist(),
+                           "vals":  self._limit_asd_vals.tolist()}
+                          if self._limit_asd_freqs is not None else None),
+            "nodes": nodes_data,
+            "notch_enabled": self._notch_enabled_var.get(),
+            "notch_db": self._notch_db_var.get(),
+            "scale_db": self._scale_var.get(),
+            "aux_lines": list(self._aux_lines),
+            "view": {
+                "view": self._view_var.get(),
+                "yscale": self._yscale_var.get(),
+                "title": self._title_var.get(),
+                "env": self._env_var.get(),
+                "limit_name": self._limit_name_var.get(),
+                "peak_label": self._peak_label_var.get(),
+            },
+            "picked_peaks": [
+                {"freq": pk["freq"], "value": pk["value"], "label": pk.get("label", "")}
+                for pk in self._picked_peaks
+            ],
+        }
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save Error", str(exc))
+            return
+        self._show_export_done_dialog(path)
+
+    def _open_session(self):
+        import json
+        path = filedialog.askopenfilename(
+            title="Open Session",
+            filetypes=[("Response Limiting session", "*.rllimit.json"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Load Error", f"Could not read session:\n{exc}")
+            return
+        if data.get('version') != 1 or data.get('tool') != "Response Limiting":
+            messagebox.showerror("Unsupported File",
+                                 "This file does not appear to be a Response Limiting session.")
+            return
+
+        view = data.get('view', {})
+        self._view_var.set(view.get('view', 'input'))
+        self._yscale_var.set(view.get('yscale', 'Log'))
+        self._title_var.set(view.get('title', ''))
+        self._env_var.set(view.get('env', ''))
+        self._limit_name_var.set(view.get('limit_name', 'Response Limit'))
+        self._peak_label_var.set(view.get('peak_label', 'Freq only'))
+
+        self._aux_lines = data.get('aux_lines', [])
+        self._picked_peaks = [
+            {"freq": pk["freq"], "value": pk["value"], "label": pk.get("label", "")}
+            for pk in data.get('picked_peaks', [])
+        ]
+
+        self._units_var.set(data.get('units', 'in/s²'))
+        self._notch_enabled_var.set(data.get('notch_enabled', False))
+        self._notch_db_var.set(data.get('notch_db', '6.0'))
+        self._notch_entry.configure(
+            state=tk.NORMAL if self._notch_enabled_var.get() else tk.DISABLED)
+        self._scale_var.set(data.get('scale_db', '0.0'))
+
+        inp = data.get('input_asd')
+        if inp:
+            self._input_asd_freqs = np.array(inp['freqs'])
+            self._input_asd_vals  = np.array(inp['vals'])
+            self._input_status.configure(
+                text=self._asd_status_text("(session)", self._input_asd_freqs),
+                text_color=("gray10", "gray90"))
+        lim = data.get('limit_asd')
+        if lim:
+            self._limit_asd_freqs = np.array(lim['freqs'])
+            self._limit_asd_vals  = np.array(lim['vals'])
+            self._limit_status.configure(
+                text=self._asd_status_text("(session)", self._limit_asd_freqs),
+                text_color=("gray10", "gray90"))
+
+        # Restore node grid
+        n = len(self._node_sheet.get_sheet_data())
+        if n:
+            self._node_sheet.delete_rows(list(range(n)))
+        for nd in data.get('nodes', []):
+            self._add_node_to_grid(nd['id'], nd.get('label', ''),
+                                   nd.get('x', ''), nd.get('y', ''), nd.get('z', ''))
+
+        if self._drawer_visible:
+            self._populate_drawer_tables()
+
+        op2_path = data.get('op2_path')
+        if op2_path and os.path.isfile(op2_path):
+            self._status_label.configure(text=f"Reloading OP2 from session…", text_color="gray")
+
+            def _work():
+                from pyNastran.op2.op2 import OP2
+                op2 = OP2(mode='nx', debug=False)
+                op2.read_op2(op2_path)
+                return op2
+
+            _saved_sc = data.get('subcase', '')
+
+            def _done(op2, error):
+                if error is not None:
+                    self._status_label.configure(
+                        text=f"OP2 reload failed: {error}", text_color="orange")
+                    return
+                cfg = RESPONSE_TYPES['Acceleration']
+                frf_dict = getattr(op2, cfg['frf_attr'], None) or {}
+                if not frf_dict:
+                    self._status_label.configure(text="No FRF data in OP2", text_color="orange")
+                    return
+                self._op2 = op2
+                self._op2_path = op2_path
+                sc_pairs = subcase_options(frf_dict)
+                self._subcase_opts = sc_pairs
+                labels = [lbl for _, lbl in sc_pairs]
+                self._sc_menu.configure(values=labels)
+                sc_to_set = _saved_sc if _saved_sc in labels else (labels[0] if labels else "(none)")
+                self._subcase_var.set(sc_to_set)
+                stem = os.path.splitext(os.path.basename(op2_path))[0]
+                self._file_label.configure(text=stem, text_color=("gray10", "gray90"))
+                self._schedule_recompute()
+
+            self._run_in_background("Reloading OP2…", _work, _done)
+        else:
+            if op2_path:
+                self._status_label.configure(
+                    text=f"Session loaded (OP2 not found: {os.path.basename(op2_path)})",
+                    text_color="orange")
+            self._schedule_recompute()
+
+    # ── Export done dialog ────────────────────────────────────────────────
+
+    def _show_export_done_dialog(self, path):
+        import subprocess
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("Export complete")
+        dlg.geometry("340x130")
+        dlg.resizable(False, False)
+        dlg.transient(self.frame.winfo_toplevel())
+
+        ctk.CTkLabel(dlg, text=f"Saved: {os.path.basename(path)}",
+                     anchor=tk.W).pack(padx=14, pady=(14, 8), fill=tk.X)
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(padx=14, pady=(0, 14), fill=tk.X)
+
+        def _open_file():
+            try:
+                if os.name == 'nt':
+                    os.startfile(path)
+                elif os.uname().sysname == 'Darwin':
+                    subprocess.run(["open", path], check=False)
+                else:
+                    subprocess.run(["xdg-open", path], check=False)
+            except Exception:
+                pass
+            dlg.destroy()
+
+        def _open_folder():
+            folder = os.path.dirname(path)
+            try:
+                if os.name == 'nt':
+                    os.startfile(folder)
+                elif os.uname().sysname == 'Darwin':
+                    subprocess.run(["open", folder], check=False)
+                else:
+                    subprocess.run(["xdg-open", folder], check=False)
+            except Exception:
+                pass
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="Open File", command=_open_file,
+                      width=90).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(btn_row, text="Open Folder", command=_open_folder,
+                      width=100).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkButton(btn_row, text="Close", command=dlg.destroy,
+                      width=70).pack(side=tk.LEFT)
+
     # ── Export ────────────────────────────────────────────────────────────
 
     def _export_excel(self):
@@ -1235,7 +1773,8 @@ UNITS
             return
         path = filedialog.asksaveasfilename(
             title="Save Excel", defaultextension=".xlsx",
-            filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")])
+            filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")],
+            initialfile=self._suggested_export_name())
         if not path:
             return
         try:
@@ -1284,23 +1823,26 @@ UNITS
                           round(max_db, 4)])
 
         wb.save(path)
-        self._status_label.configure(text=f"Saved: {os.path.basename(path)}",
-                                     text_color=("gray10", "gray90"))
+        self._show_export_done_dialog(path)
 
     def _export_csv(self):
         if self._notched_asd is None:
             messagebox.showwarning("No Data", "Compute notch first.")
             return
+        stem = "".join(c if c.isalnum() or c in " _-" else "_"
+                       for c in (self._title_var.get().strip()
+                                 or self._env_var.get().strip()
+                                 or "Response_Limiting"))
         path = filedialog.asksaveasfilename(
             title="Save CSV", defaultextension=".csv",
-            filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
+            filetypes=[("CSV", "*.csv"), ("All files", "*.*")],
+            initialfile=f"{stem.strip()}.csv")
         if not path:
             return
         import csv as _csv
         with open(path, 'w', newline='', encoding='utf-8') as f:
             writer = _csv.writer(f)
-            writer.writerow(["Freq (Hz)", "Notched ASD (g²/Hz)"])
+            writer.writerow(["Freq (Hz)", "Notched ASD (g^2/Hz)"])
             for freq, asd in zip(self._frf_freqs, self._notched_asd):
                 writer.writerow([float(freq), float(asd)])
-        self._status_label.configure(text=f"Saved: {os.path.basename(path)}",
-                                     text_color=("gray10", "gray90"))
+        self._show_export_done_dialog(path)
