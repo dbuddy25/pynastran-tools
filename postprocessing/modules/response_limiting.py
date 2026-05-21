@@ -76,9 +76,10 @@ WORKFLOW
   5. Results update live; use Export to save.
 
 NODE GRID
-  Paste format, one per line:  node_id  direction  (e.g.  1001 Z)
-    Direction defaults to all three (L) when omitted.
-    Imported direction letter sets only that DOF to L.
+  Add / import format, one per line:  node_id  [label]
+    e.g.  1001   or   1001 Tip mass   or   1001, Tip mass
+    Nodes arrive with all directions set to L.
+    Edit individual X / Y / Z cells in the grid to adjust.
 
 PLOT THEME
   ☾ / ☀ button toggles plot background independent of the system theme.
@@ -106,7 +107,7 @@ UNITS
         self._limit_asd_freqs = None
         self._limit_asd_vals  = None
 
-        self._plot_theme = "dark"   # "light" or "dark"
+        self._plot_theme = "light"   # "light" or "dark"
 
         # Computed results (on FRF frequency grid)
         self._frf_freqs       = None
@@ -218,18 +219,18 @@ UNITS
         self._left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
 
         # Node grid section
-        ctk.CTkLabel(self._left, text="Nodes  (S = Show, L = Limit [L])",
+        ctk.CTkLabel(self._left, text="Nodes  (S = Show, L = Limit)",
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W, pady=(4, 2))
 
         node_btns = ctk.CTkFrame(self._left, fg_color="transparent")
         node_btns.pack(fill=tk.X, pady=(0, 4))
         ctk.CTkButton(node_btns, text="Add…",       width=62,
                       command=self._add_node_dialog).pack(side=tk.LEFT, padx=(0, 2))
-        ctk.CTkButton(node_btns, text="Paste…",     width=62,
-                      command=self._paste_nodes).pack(side=tk.LEFT, padx=2)
         ctk.CTkButton(node_btns, text="Import CSV…",width=90,
                       command=self._import_nodes_csv).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(node_btns, text="Clear All",  width=76,
+        ctk.CTkButton(node_btns, text="Remove",     width=68,
+                      command=self._remove_selected_nodes).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(node_btns, text="Clear All",  width=72,
                       command=self._clear_all_nodes).pack(side=tk.LEFT, padx=2)
 
         self._node_sheet = Sheet(
@@ -282,7 +283,7 @@ UNITS
         plot_hdr = ctk.CTkFrame(right, fg_color="transparent")
         plot_hdr.pack(fill=tk.X)
         self._theme_btn = ctk.CTkButton(
-            plot_hdr, text="☀ Light", width=80,
+            plot_hdr, text="☾ Dark", width=80,
             command=self._toggle_theme)
         self._theme_btn.pack(side=tk.RIGHT, padx=4, pady=2)
 
@@ -582,84 +583,55 @@ UNITS
         self._schedule_recompute()
 
     def _add_node_dialog(self):
-        win = ctk.CTkToplevel(self.frame.winfo_toplevel())
-        win.title("Add Node")
-        win.geometry("300x180")
-        win.resizable(False, False)
-        win.transient(self.frame.winfo_toplevel())
-        win.grab_set()
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title("Add Nodes")
+        dlg.geometry("380x310")
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
 
-        ctk.CTkLabel(win, text="Node ID:").grid(row=0, column=0, padx=12, pady=(14, 4), sticky=tk.W)
-        nid_var = ctk.StringVar()
-        ctk.CTkEntry(win, textvariable=nid_var, width=120).grid(row=0, column=1, padx=12, pady=(14, 4))
+        ctk.CTkLabel(
+            dlg,
+            text="Enter one node per line.  Optional label:\n"
+                 "  1001        1001 Tip mass        1001, Tip mass",
+            justify=tk.LEFT, anchor=tk.W,
+        ).pack(padx=12, pady=(12, 4), fill=tk.X)
 
-        ctk.CTkLabel(win, text="Label:").grid(row=1, column=0, padx=12, pady=4, sticky=tk.W)
-        lbl_var = ctk.StringVar()
-        ctk.CTkEntry(win, textvariable=lbl_var, width=120).grid(row=1, column=1, padx=12, pady=4)
+        tb = ctk.CTkTextbox(dlg, wrap="none")
+        tb.pack(fill=tk.BOTH, expand=True, padx=12)
 
-        ctk.CTkLabel(win, text="Directions:").grid(row=2, column=0, padx=12, pady=4, sticky=tk.W)
-        dir_frame = ctk.CTkFrame(win, fg_color="transparent")
-        dir_frame.grid(row=2, column=1, padx=12, pady=4, sticky=tk.W)
-        x_var = ctk.BooleanVar(value=True)
-        y_var = ctk.BooleanVar(value=False)
-        z_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(dir_frame, text="X", variable=x_var, width=50).pack(side=tk.LEFT)
-        ctk.CTkCheckBox(dir_frame, text="Y", variable=y_var, width=50).pack(side=tk.LEFT)
-        ctk.CTkCheckBox(dir_frame, text="Z", variable=z_var, width=50).pack(side=tk.LEFT)
+        def _ok():
+            self._parse_and_add_nodes(tb.get("1.0", "end"))
+            dlg.destroy()
 
-        def _add():
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=12, pady=8)
+        ctk.CTkButton(btn_row, text="Add", command=_ok).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+        dlg.bind("<Return>", lambda _: _ok())
+
+    def _parse_and_add_nodes(self, text):
+        existing = set()
+        for r in self._node_sheet.get_sheet_data():
             try:
-                nid = int(nid_var.get().strip())
-            except ValueError:
-                messagebox.showerror("Invalid", "Node ID must be an integer.", parent=win)
-                return
-            self._add_node_to_grid(
-                nid, lbl_var.get().strip(),
-                x="L" if x_var.get() else "",
-                y="L" if y_var.get() else "",
-                z="L" if z_var.get() else "")
-            self._schedule_recompute()
-            win.destroy()
-
-        btn_r = ctk.CTkFrame(win, fg_color="transparent")
-        btn_r.grid(row=3, column=0, columnspan=2, pady=(8, 4))
-        ctk.CTkButton(btn_r, text="Add", width=80, command=_add).pack(side=tk.LEFT, padx=4)
-        ctk.CTkButton(btn_r, text="Cancel", width=80, command=win.destroy).pack(side=tk.LEFT, padx=4)
-
-    def _paste_nodes(self):
-        text = self._paste_dialog(
-            "Paste Nodes",
-            "One per line:  node_id  direction  [label]\n"
-            "Direction: X, Y, Z  (sets that DOF to L / Limit)\n"
-            "Omit direction to set all three to L.\n"
-            "e.g.   1001 Z   or   1042 X Y   or   1001")
-        if text is None:
-            return
+                existing.add(int(str(r[0]).strip()))
+            except (ValueError, TypeError):
+                pass
         added = 0
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#') or line.startswith('$'):
                 continue
-            parts = line.replace(',', ' ').split()
+            parts = [p.strip() for p in line.split(',', 1)] if ',' in line \
+                else line.split(None, 1)
             try:
                 nid = int(parts[0])
             except (ValueError, IndexError):
                 continue
-            # Gather direction tokens and label remainder
-            dirs = []
-            label_parts = []
-            for tok in parts[1:]:
-                if tok.upper() in _DOF_NAMES:
-                    dirs.append(tok.upper())
-                else:
-                    label_parts.append(tok)
-            label = " ".join(label_parts)
-            if not dirs:
-                dirs = _DOF_NAMES  # all three
-            x = "L" if "X" in dirs else ""
-            y = "L" if "Y" in dirs else ""
-            z = "L" if "Z" in dirs else ""
-            self._add_node_to_grid(nid, label, x=x, y=y, z=z)
+            if nid in existing:
+                continue
+            existing.add(nid)
+            label = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+            self._add_node_to_grid(nid, label, x="L", y="L", z="L")
             added += 1
         if added:
             self._status_label.configure(text=f"Added {added} node(s).",
@@ -669,40 +641,73 @@ UNITS
     def _import_nodes_csv(self):
         path = filedialog.askopenfilename(
             title="Import Nodes",
-            filetypes=[("Text/CSV", "*.txt *.csv"), ("All files", "*.*")])
+            filetypes=[("Text files", "*.txt"), ("CSV files", "*.csv"),
+                       ("All files", "*.*")])
         if not path:
             return
+        ext = os.path.splitext(path)[1].lower()
         try:
-            with open(path, encoding='utf-8') as f:
-                text = f.read()
-        except OSError as exc:
-            messagebox.showerror("Error", str(exc))
+            if ext == '.csv':
+                text = self._read_csv_as_text(path)
+            else:
+                text = self._read_text_node_file(path)
+        except Exception as exc:
+            messagebox.showerror("Import Error", str(exc))
             return
-        added = 0
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('$'):
-                continue
-            parts = line.replace(',', ' ').split()
+        self._parse_and_add_nodes(text)
+
+    @staticmethod
+    def _read_csv_as_text(path):
+        import csv as _csv
+        with open(path, newline='', encoding='utf-8-sig') as f:
+            sample = f.read(4096)
+            f.seek(0)
             try:
-                nid = int(parts[0])
-            except (ValueError, IndexError):
-                continue
-            dirs = [t.upper() for t in parts[1:] if t.upper() in _DOF_NAMES]
-            label_parts = [t for t in parts[1:] if t.upper() not in _DOF_NAMES]
-            label = " ".join(label_parts)
-            if not dirs:
-                dirs = _DOF_NAMES
-            self._add_node_to_grid(
-                nid, label,
-                x="L" if "X" in dirs else "",
-                y="L" if "Y" in dirs else "",
-                z="L" if "Z" in dirs else "")
-            added += 1
-        self._status_label.configure(text=f"Imported {added} node(s).",
-                                     text_color=("gray10", "gray90"))
-        if added:
-            self._schedule_recompute()
+                dialect = _csv.Sniffer().sniff(sample)
+                has_header = _csv.Sniffer().has_header(sample)
+            except _csv.Error:
+                dialect = _csv.excel
+                has_header = False
+            reader = _csv.reader(f, dialect)
+            if has_header:
+                next(reader, None)
+            lines = []
+            for row in reader:
+                if not row:
+                    continue
+                try:
+                    gid = int(str(row[0]).strip())
+                except (ValueError, IndexError):
+                    continue
+                label = row[1].strip() if len(row) > 1 and str(row[1]).strip() else ""
+                lines.append(f"{gid},{label}" if label else str(gid))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _read_text_node_file(path):
+        lines = []
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#') or line.startswith('$'):
+                    continue
+                parts = [p.strip() for p in line.split(',', 1)] if ',' in line \
+                    else line.split(None, 1)
+                try:
+                    gid = int(parts[0])
+                except (ValueError, IndexError):
+                    continue
+                label = parts[1].strip() if len(parts) > 1 and parts[1].strip() else ""
+                lines.append(f"{gid},{label}" if label else str(gid))
+        return "\n".join(lines)
+
+    def _remove_selected_nodes(self):
+        selected = self._node_sheet.get_selected_rows()
+        if not selected:
+            return
+        for r in sorted(selected, reverse=True):
+            self._node_sheet.delete_rows([r])
+        self._schedule_recompute()
 
     def _clear_all_nodes(self):
         n = len(self._node_sheet.get_sheet_data())
