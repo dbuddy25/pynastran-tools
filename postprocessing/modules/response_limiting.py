@@ -300,6 +300,8 @@ UNITS
             plot_hdr, text="Tables ▶", width=84,
             command=self._toggle_drawer)
         self._drawer_btn.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
+        ctk.CTkButton(plot_hdr, text="Copy Figure", width=100,
+                      command=self._copy_figure).pack(side=tk.RIGHT, padx=(0, 4), pady=2)
 
         self._fig = Figure(figsize=(8, 5))
         self._ax  = self._fig.add_subplot(111)
@@ -312,7 +314,7 @@ UNITS
         self._grms_sheet = Sheet(
             self._grms_frame,
             headers=["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
-                     "Resp @ Orig Input (g)", "Resp @ Notched Input (g)", "Max Notch (dB)"],
+                     "Resp @ Orig Input (GRMS)", "Resp @ Notched Input (GRMS)", "Max Notch (dB)"],
             height=300, show_row_index=False,
         )
         self._grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -429,6 +431,48 @@ UNITS
         self._theme_btn.configure(
             text="☾ Dark" if self._plot_theme == "light" else "☀ Light")
         self._redraw()
+
+    def _copy_figure(self):
+        import io, os, tempfile, subprocess
+        buf = io.BytesIO()
+        try:
+            self._fig.savefig(buf, format='png', dpi=200, bbox_inches='tight',
+                              facecolor=self._fig.get_facecolor())
+        except Exception as exc:
+            messagebox.showerror("Copy Error", f"Could not render figure:\n{exc}")
+            return
+        buf.seek(0)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                f.write(buf.getvalue())
+                tmp = f.name
+            if os.name == 'nt':
+                ps = (
+                    'Add-Type -Assembly System.Windows.Forms;'
+                    '[Windows.Forms.Clipboard]::SetImage('
+                    f'[System.Drawing.Image]::FromFile("{tmp}"))'
+                )
+                subprocess.run(['powershell', '-Command', ps], check=True)
+            elif os.uname().sysname == 'Darwin':
+                subprocess.run(
+                    ['osascript', '-e',
+                     f'set the clipboard to '
+                     f'(read (POSIX file "{tmp}") as «class PNGf»)'],
+                    check=True)
+            else:
+                subprocess.run(
+                    ['xclip', '-selection', 'clipboard',
+                     '-t', 'image/png', '-i', tmp],
+                    check=True)
+        except Exception as exc:
+            messagebox.showerror("Copy Error", str(exc))
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     # ── Help ──────────────────────────────────────────────────────────────
 
