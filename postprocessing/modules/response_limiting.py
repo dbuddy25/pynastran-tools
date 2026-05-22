@@ -2130,50 +2130,7 @@ UNITS
     # ── Export done dialog ────────────────────────────────────────────────
 
     def _show_export_done_dialog(self, path):
-        import subprocess
-        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
-        dlg.title("Export complete")
-        dlg.geometry("340x130")
-        dlg.resizable(False, False)
-        dlg.transient(self.frame.winfo_toplevel())
-
-        ctk.CTkLabel(dlg, text=f"Saved: {os.path.basename(path)}",
-                     anchor=tk.W).pack(padx=14, pady=(14, 8), fill=tk.X)
-
-        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
-        btn_row.pack(padx=14, pady=(0, 14), fill=tk.X)
-
-        def _open_file():
-            try:
-                if os.name == 'nt':
-                    os.startfile(path)
-                elif os.uname().sysname == 'Darwin':
-                    subprocess.run(["open", path], check=False)
-                else:
-                    subprocess.run(["xdg-open", path], check=False)
-            except Exception:
-                pass
-            dlg.destroy()
-
-        def _open_folder():
-            folder = os.path.dirname(path)
-            try:
-                if os.name == 'nt':
-                    os.startfile(folder)
-                elif os.uname().sysname == 'Darwin':
-                    subprocess.run(["open", folder], check=False)
-                else:
-                    subprocess.run(["xdg-open", folder], check=False)
-            except Exception:
-                pass
-            dlg.destroy()
-
-        ctk.CTkButton(btn_row, text="Open File", command=_open_file,
-                      width=90).pack(side=tk.LEFT, padx=(0, 6))
-        ctk.CTkButton(btn_row, text="Open Folder", command=_open_folder,
-                      width=100).pack(side=tk.LEFT, padx=(0, 6))
-        ctk.CTkButton(btn_row, text="Close", command=dlg.destroy,
-                      width=70).pack(side=tk.LEFT)
+        messagebox.showinfo("Saved", os.path.basename(path))
 
     # ── Export ────────────────────────────────────────────────────────────
 

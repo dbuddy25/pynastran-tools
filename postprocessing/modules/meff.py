@@ -4,8 +4,6 @@ Reads EFMFACS from an OP2 and displays per-mode fractions with
 cumulative sums for each direction (Tx-Rz).
 """
 import os
-import subprocess
-import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -154,51 +152,6 @@ def write_meff_single_sheet(ws, data, styles, op2_name=None, threshold=0.1,
     ws.sheet_view.showGridLines = False
 
 
-# ---------------------------------------------------------- post-export dialog
-
-def _open_path(path):
-    """Open a file or directory with the platform default handler."""
-    if sys.platform == 'darwin':
-        subprocess.Popen(['open', path])
-    elif sys.platform == 'win32':
-        os.startfile(path)
-    else:
-        subprocess.Popen(['xdg-open', path])
-
-
-class _ExportDoneDialog(tk.Toplevel):
-    """Modal dialog shown after a successful Excel export."""
-
-    def __init__(self, parent, message, file_path):
-        super().__init__(parent)
-        self.title("Exported")
-        self.resizable(False, False)
-        self._file_path = file_path
-
-        tk.Label(self, text=message, justify='left').pack(
-            padx=16, pady=(16, 8))
-
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(pady=(0, 16))
-
-        tk.Button(btn_frame, text="Open File",
-                  command=self._open_file).pack(side='left', padx=4)
-        tk.Button(btn_frame, text="Open Folder",
-                  command=self._open_folder).pack(side='left', padx=4)
-        tk.Button(btn_frame, text="Close",
-                  command=self.destroy).pack(side='left', padx=4)
-
-        self.transient(parent)
-        self.grab_set()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-
-    def _open_file(self):
-        _open_path(self._file_path)
-        self.destroy()
-
-    def _open_folder(self):
-        _open_path(os.path.dirname(self._file_path))
-        self.destroy()
 
 
 # ---------------------------------------------------------------- GUI module
@@ -507,9 +460,7 @@ REQUIREMENTS
 
         try:
             wb.save(path)
-            _ExportDoneDialog(
-                self.frame.winfo_toplevel(),
-                f"Saved to:\n{path}", path)
+            messagebox.showinfo("Saved", os.path.basename(path))
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
 
