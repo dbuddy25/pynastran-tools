@@ -899,7 +899,8 @@ LINE STYLES
     @staticmethod
     def _parse_asd_text(text_str):
         """Parse 2-column ASD text (freq, g²/Hz). Returns (freqs, g2hz) arrays or (None, None)."""
-        return parse_asd_text(text_str)
+        freqs, asds, _ = parse_asd_text(text_str)
+        return freqs, asds
 
     @staticmethod
     def _parse_asd_text_file(path):

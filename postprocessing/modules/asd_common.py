@@ -107,39 +107,50 @@ def lookup_subcase(result_dict, subcase_int):
 
 
 def parse_asd_text(text_str):
-    """Parse 2-column ASD text (freq, g²/Hz). Returns (freqs, asds) arrays or (None, None)."""
+    """Parse 2-column ASD text (freq, g²/Hz).
+
+    Returns (freqs, asds, name) where name is the string on the first
+    non-comment line if it is not parseable as two numbers, else None.
+    Returns (None, None, None) if fewer than 2 data rows are found.
+    """
     freqs, asds = [], []
+    name = None
+    data_started = False
     for line in text_str.splitlines():
         line = line.strip()
         if not line or line.startswith('#') or line.startswith('$'):
             continue
         parts = line.replace(',', ' ').split()
         if len(parts) < 2:
+            if not data_started and name is None:
+                name = line
             continue
         try:
             freqs.append(float(parts[0]))
             asds.append(float(parts[1]))
+            data_started = True
         except ValueError:
-            continue
+            if not data_started and name is None:
+                name = line
     if len(freqs) < 2:
-        return None, None
+        return None, None, None
     freqs_arr = np.array(freqs)
     asds_arr = np.array(asds)
     order = np.argsort(freqs_arr)
-    return freqs_arr[order], asds_arr[order]
+    return freqs_arr[order], asds_arr[order], name
 
 
 def parse_asd_file(path):
-    """Read and parse a 2-column ASD file. Returns (freqs, asds). Raises on error."""
+    """Read and parse a 2-column ASD file. Returns (freqs, asds, name). Raises on error."""
     try:
         with open(path, encoding='utf-8') as f:
             text = f.read()
     except OSError as exc:
         raise OSError(f"Could not read {path}: {exc}") from exc
-    freqs, asds = parse_asd_text(text)
+    freqs, asds, name = parse_asd_text(text)
     if freqs is None:
         raise ValueError(f"Need at least 2 frequency points in {path}")
-    return freqs, asds
+    return freqs, asds, name
 
 
 def interp_loglog(freqs_in, asd_in, query_freqs):

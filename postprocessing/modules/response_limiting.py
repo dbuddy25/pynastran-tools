@@ -821,11 +821,11 @@ UNITS
         if not path:
             return
         try:
-            freqs, asds = parse_asd_file(path)
+            freqs, asds, file_name = parse_asd_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
-        name = self._asd_status_text(os.path.basename(path), freqs)
+        name = file_name or self._asd_status_text(os.path.basename(path), freqs)
         self._inputs.append({"name": name, "freqs_raw": freqs, "vals_raw": asds, "db": "0.0"})
         self._active_input_idx = len(self._inputs) - 1
         self._refresh_input_selector()
@@ -839,12 +839,15 @@ UNITS
             "Paste Input ASD", "Paste 2-column data (freq  g²/Hz), one row per line:")
         if text is None:
             return
-        freqs, asds = parse_asd_text(text)
+        freqs, asds, text_name = parse_asd_text(text)
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
-        n = sum(1 for e in self._inputs if e['name'].startswith("(pasted)"))
-        name = self._asd_status_text(f"(pasted {n + 1})" if n else "(pasted)", freqs)
+        if text_name:
+            name = text_name
+        else:
+            n = sum(1 for e in self._inputs if e['name'].startswith("(pasted)"))
+            name = self._asd_status_text(f"(pasted {n + 1})" if n else "(pasted)", freqs)
         self._inputs.append({"name": name, "freqs_raw": freqs, "vals_raw": asds, "db": "0.0"})
         self._active_input_idx = len(self._inputs) - 1
         self._refresh_input_selector()
@@ -922,7 +925,7 @@ UNITS
         if not path:
             return
         try:
-            freqs, asds = parse_asd_file(path)
+            freqs, asds, _ = parse_asd_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
@@ -946,7 +949,7 @@ UNITS
             initial=initial)
         if text is None:
             return
-        freqs, asds = parse_asd_text(text)
+        freqs, asds, _ = parse_asd_text(text)
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
@@ -997,7 +1000,7 @@ UNITS
         if not path:
             return
         try:
-            freqs, asds = parse_asd_file(path)
+            freqs, asds, _ = parse_asd_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
@@ -1023,7 +1026,7 @@ UNITS
             initial=initial)
         if text is None:
             return
-        freqs, asds = parse_asd_text(text)
+        freqs, asds, _ = parse_asd_text(text)
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
