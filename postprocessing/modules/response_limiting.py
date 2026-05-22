@@ -966,8 +966,8 @@ UNITS
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
-        if file_name:
-            self._workmanship_name_var.set(file_name)
+        self._workmanship_name_var.set(
+            file_name or os.path.splitext(os.path.basename(path))[0])
         self._workmanship_freqs, self._workmanship_vals = freqs, asds
         self._workmanship_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
@@ -1045,8 +1045,8 @@ UNITS
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
-        if file_name:
-            self._limit_name_var.set(file_name)
+        self._limit_name_var.set(
+            file_name or os.path.splitext(os.path.basename(path))[0])
         self._limit_asd_freqs, self._limit_asd_vals = freqs, asds
         self._limit_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
