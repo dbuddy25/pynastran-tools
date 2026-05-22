@@ -343,7 +343,10 @@ UNITS
         # View section
         self._view_section = ctk.CTkFrame(self._left, fg_color="transparent")
         self._view_section.pack(fill=tk.X)
-        ctk.CTkLabel(self._view_section, text="View",
+
+        self._view_radios = ctk.CTkFrame(self._view_section, fg_color="transparent")
+        self._view_radios.pack(fill=tk.X)
+        ctk.CTkLabel(self._view_radios, text="View",
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W, pady=(0, 2))
 
         for val, label in [
@@ -352,7 +355,7 @@ UNITS
             ("response_all", "All responses overlay"),
             ("grms",         "GRMS Summary"),
         ]:
-            ctk.CTkRadioButton(self._view_section, text=label, variable=self._view_var,
+            ctk.CTkRadioButton(self._view_radios, text=label, variable=self._view_var,
                                value=val, command=self._redraw).pack(anchor=tk.W, pady=1)
 
         curve_row = ctk.CTkFrame(self._view_section, fg_color="transparent")
@@ -663,7 +666,7 @@ UNITS
             for pane in self._panes:
                 pane["view_menu"].pack(side=tk.LEFT, padx=4, pady=2)
             # Hide sidebar view radios (pane 0's view_menu takes over for pane 0)
-            self._view_section.pack_forget()
+            self._view_radios.pack_forget()
             self._split_btn.configure(text="◧ Single")
             self._draw_idle_plot()
             self._redraw()
@@ -671,9 +674,9 @@ UNITS
             # Exit split mode — destroy pane 2
             pane2 = self._panes.pop()
             pane2["frame"].destroy()
-            # Hide view menu in pane 0 header, re-show sidebar
+            # Hide view menu in pane 0 header, re-show sidebar radios
             self._panes[0]["view_menu"].pack_forget()
-            self._view_section.pack(fill=tk.X)
+            self._view_radios.pack(fill=tk.X)
             self._split_btn.configure(text="⊞ Split")
             self._redraw()
 
