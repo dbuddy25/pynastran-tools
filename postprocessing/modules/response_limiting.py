@@ -102,10 +102,13 @@ UNITS
         self._subcase_var = ctk.StringVar(value="(none)")
         self._units_var = ctk.StringVar(value="in/s²")
 
-        self._input_asd_freqs = None
-        self._input_asd_vals  = None
+        self._inputs: list = []        # [{name, freqs_raw, vals_raw, db}]
+        self._active_input_idx: int = -1
         self._limit_asd_freqs = None
         self._limit_asd_vals  = None
+        self._workmanship_freqs = None
+        self._workmanship_vals  = None
+        self._workmanship_envelope_var = tk.BooleanVar(value=False)
 
         self._plot_theme = "light"   # "light" or "dark"
 
@@ -133,7 +136,6 @@ UNITS
         self._aux_lines        = []
         self._pick_peaks_mode  = False
         self._picked_peaks     = []
-        self._last_drawn_curves = []
 
         self._drawer_visible = False
         self._debounce_id    = None
@@ -189,10 +191,11 @@ UNITS
         ctk.CTkLabel(inp, text="Input ASD:", width=72, anchor=tk.W).pack(side=tk.LEFT)
         ctk.CTkButton(inp, text="Load…",  width=60, command=self._load_input_asd).pack(side=tk.LEFT, padx=2)
         ctk.CTkButton(inp, text="Paste…", width=60, command=self._paste_input_asd).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(inp, text="Clear",  width=50, command=self._clear_input_asd).pack(side=tk.LEFT, padx=2)
-        self._input_status = ctk.CTkLabel(inp, text="(none)", text_color="gray",
-                                          width=200, anchor=tk.W)
-        self._input_status.pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(inp, text="Remove", width=68, command=self._remove_active_input).pack(side=tk.LEFT, padx=2)
+        self._input_selector = ctk.CTkOptionMenu(
+            inp, values=["(none)"], width=200,
+            command=self._on_input_selected)
+        self._input_selector.pack(side=tk.LEFT, padx=4)
 
         lim = ctk.CTkFrame(row1, fg_color="transparent")
         lim.pack(side=tk.LEFT)
@@ -203,6 +206,22 @@ UNITS
         self._limit_status = ctk.CTkLabel(lim, text="(none)", text_color="gray",
                                           width=200, anchor=tk.W)
         self._limit_status.pack(side=tk.LEFT, padx=4)
+
+        # Row 1b: Workmanship spec
+        row1b = ctk.CTkFrame(toolbar, fg_color="transparent")
+        row1b.pack(fill=tk.X, pady=1)
+        wm_frame = ctk.CTkFrame(row1b, fg_color="transparent")
+        wm_frame.pack(side=tk.LEFT, padx=(0, 16))
+        ctk.CTkLabel(wm_frame, text="Workmanship:", width=92, anchor=tk.W).pack(side=tk.LEFT)
+        ctk.CTkButton(wm_frame, text="Load…",  width=60, command=self._load_workmanship).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(wm_frame, text="Paste…", width=60, command=self._paste_workmanship).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(wm_frame, text="Clear",  width=50, command=self._clear_workmanship).pack(side=tk.LEFT, padx=2)
+        ctk.CTkCheckBox(wm_frame, text="Envelope input",
+                        variable=self._workmanship_envelope_var,
+                        command=self._on_workmanship_toggle).pack(side=tk.LEFT, padx=(10, 4))
+        self._workmanship_status = ctk.CTkLabel(wm_frame, text="(none)", text_color="gray",
+                                                width=180, anchor=tk.W)
+        self._workmanship_status.pack(side=tk.LEFT, padx=4)
 
         # Row 2: notch floor
         row2 = ctk.CTkFrame(toolbar, fg_color="transparent")
@@ -218,7 +237,7 @@ UNITS
 
         ctk.CTkLabel(row2, text="Input scale (dB):").pack(side=tk.LEFT)
         ctk.CTkEntry(row2, textvariable=self._scale_var, width=54).pack(side=tk.LEFT, padx=(4, 20))
-        self._scale_var.trace_add("write", lambda *_: self._schedule_recompute())
+        self._scale_var.trace_add("write", self._on_scale_change)
 
         self._export_excel_btn = ctk.CTkButton(row2, text="Export Excel…", width=110,
                                                 command=self._export_excel, state=tk.DISABLED)
@@ -312,7 +331,9 @@ UNITS
             fill=tk.X, pady=(2, 6))
 
         # View section
-        ctk.CTkLabel(self._left, text="View",
+        self._view_section = ctk.CTkFrame(self._left, fg_color="transparent")
+        self._view_section.pack(fill=tk.X)
+        ctk.CTkLabel(self._view_section, text="View",
                      font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W, pady=(0, 2))
 
         for val, label in [
@@ -321,10 +342,10 @@ UNITS
             ("response_all", "All responses overlay"),
             ("grms",         "GRMS Summary"),
         ]:
-            ctk.CTkRadioButton(self._left, text=label, variable=self._view_var,
+            ctk.CTkRadioButton(self._view_section, text=label, variable=self._view_var,
                                value=val, command=self._redraw).pack(anchor=tk.W, pady=1)
 
-        curve_row = ctk.CTkFrame(self._left, fg_color="transparent")
+        curve_row = ctk.CTkFrame(self._view_section, fg_color="transparent")
         curve_row.pack(fill=tk.X, pady=(4, 0))
         ctk.CTkLabel(curve_row, text="Curve:").pack(side=tk.LEFT)
         self._curve_menu = ctk.CTkOptionMenu(
@@ -340,7 +361,7 @@ UNITS
         right = ctk.CTkFrame(body, fg_color="transparent")
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Plot header with theme + drawer toggles
+        # Plot header with theme + drawer + split view toggles
         plot_hdr = ctk.CTkFrame(right, fg_color="transparent")
         plot_hdr.pack(fill=tk.X)
         self._theme_btn = ctk.CTkButton(
@@ -351,31 +372,97 @@ UNITS
             plot_hdr, text="Tables ▶", width=84,
             command=self._toggle_drawer)
         self._drawer_btn.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
-        ctk.CTkButton(plot_hdr, text="Copy Figure", width=100,
-                      command=self._copy_figure).pack(side=tk.RIGHT, padx=(0, 4), pady=2)
+        self._split_btn = ctk.CTkButton(
+            plot_hdr, text="⊞ Split", width=80,
+            command=self._toggle_split)
+        self._split_btn.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
 
-        self._fig = Figure(figsize=(8, 5))
-        self._ax  = self._fig.add_subplot(111)
-        self._canvas = FigureCanvasTkAgg(self._fig, master=right)
-        self._canvas_widget = self._canvas.get_tk_widget()
-        self._canvas_widget.pack(fill=tk.BOTH, expand=True)
-        NavigationToolbar2Tk(self._canvas, right).update()
-        self._canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        # Pane container (holds 1 or 2 stacked panes)
+        self._plots_container = ctk.CTkFrame(right, fg_color="transparent")
+        self._plots_container.pack(fill=tk.BOTH, expand=True)
 
-        self._grms_frame = ctk.CTkFrame(right)
-        self._grms_sheet = Sheet(
-            self._grms_frame,
-            headers=["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
-                     "Resp @ Orig Input (GRMS)", "Resp @ Notched Input (GRMS)", "Max Notch (dB)"],
-            height=300, show_row_index=False,
-        )
-        self._grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        self._grms_sheet.enable_bindings("column_width_resize")
+        # Primary pane — shares self._view_var with sidebar radios
+        self._panes = [self._make_pane(self._plots_container, view_var=self._view_var)]
+        self._panes[0]["frame"].pack(fill=tk.BOTH, expand=True)
 
         # Drawer content
         self._build_drawer()
 
         self._draw_idle_plot()
+
+    # ── Pane factory ──────────────────────────────────────────────────────
+
+    _VIEW_KEY_TO_LABEL = {
+        "input": "Input ASDs", "response_dof": "Response: single",
+        "response_all": "All responses", "grms": "GRMS Summary",
+    }
+    _VIEW_LABEL_TO_KEY = {v: k for k, v in _VIEW_KEY_TO_LABEL.items()}
+
+    def _make_pane(self, container, view_var=None):
+        """Create and return a plot-pane dict. view_var is shared with sidebar radios for pane 0."""
+        if view_var is None:
+            view_var = ctk.StringVar(value="input")
+
+        frame = ctk.CTkFrame(container, fg_color="transparent")
+
+        # Pane header: view selector (visible in split mode) + Copy Figure
+        hdr = ctk.CTkFrame(frame, fg_color="transparent")
+        hdr.pack(fill=tk.X)
+
+        # view_label_var holds the display string; synced bidirectionally with view_var (keys)
+        view_label_var = ctk.StringVar(
+            value=self._VIEW_KEY_TO_LABEL.get(view_var.get(), "Input ASDs"))
+        view_menu = ctk.CTkOptionMenu(
+            hdr, variable=view_label_var,
+            values=list(self._VIEW_KEY_TO_LABEL.values()),
+            width=150,
+            command=lambda lbl, vv=view_var: vv.set(self._VIEW_LABEL_TO_KEY.get(lbl, "input")))
+        view_menu.pack(side=tk.LEFT, padx=4, pady=2)
+        view_menu.pack_forget()  # hidden until split mode
+
+        copy_btn = ctk.CTkButton(hdr, text="Copy Figure", width=100,
+                                 command=lambda: None)
+        copy_btn.pack(side=tk.RIGHT, padx=4, pady=2)
+
+        fig = Figure(figsize=(8, 4))
+        ax = fig.add_subplot(111)
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.pack(fill=tk.BOTH, expand=True)
+        NavigationToolbar2Tk(canvas, frame).update()
+
+        grms_frame = ctk.CTkFrame(frame)
+        grms_sheet = Sheet(
+            grms_frame,
+            headers=["DOF", "Orig Input GRMS (g)", "Notched Input GRMS (g)",
+                     "Resp @ Orig Input (GRMS)", "Resp @ Notched Input (GRMS)", "Max Notch (dB)"],
+            height=300, show_row_index=False,
+        )
+        grms_sheet.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        grms_sheet.enable_bindings("column_width_resize")
+
+        pane = {
+            "frame": frame, "hdr": hdr,
+            "fig": fig, "ax": ax,
+            "canvas": canvas, "canvas_widget": canvas_widget,
+            "view_var": view_var, "view_label_var": view_label_var, "view_menu": view_menu,
+            "copy_btn": copy_btn,
+            "grms_frame": grms_frame, "grms_sheet": grms_sheet,
+            "last_drawn_curves": [],
+        }
+
+        copy_btn.configure(command=lambda p=pane: self._copy_figure(p))
+        canvas.mpl_connect("button_press_event",
+                           lambda event, p=pane: self._on_canvas_click(event, p))
+
+        # Sync view_label_var when view_var changes (e.g. sidebar radio click)
+        def _sync_label(*_, vv=view_var, lv=view_label_var):
+            lv.set(self._VIEW_KEY_TO_LABEL.get(vv.get(), lv.get()))
+        view_var.trace_add("write", _sync_label)
+
+        # Trigger redraw when view_label_var changes (covers both menu selection and sidebar)
+        view_label_var.trace_add("write", lambda *_, p=pane: self._redraw_pane(p))
+        return pane
 
     # ── Drawer ────────────────────────────────────────────────────────────
 
@@ -413,6 +500,22 @@ UNITS
         self._limit_tbl.column_width(1, 100)
         self._limit_tbl.extra_bindings([("end_edit_cell", self._on_limit_tbl_edit)])
 
+        ctk.CTkFrame(self._drawer, height=1, fg_color="gray40").pack(fill=tk.X, padx=4, pady=4)
+
+        ctk.CTkLabel(self._drawer, text="Workmanship",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor=tk.W, padx=8, pady=(4, 2))
+        self._workmanship_tbl = Sheet(
+            self._drawer,
+            headers=["Freq (Hz)", "ASD (g²/Hz)"],
+            height=180, show_row_index=False,
+            theme="dark" if ctk.get_appearance_mode() == "Dark" else "light",
+        )
+        self._workmanship_tbl.pack(fill=tk.X, padx=4, pady=(0, 6))
+        self._workmanship_tbl.enable_bindings("edit_cell", "column_width_resize", "single_select")
+        self._workmanship_tbl.column_width(0, 90)
+        self._workmanship_tbl.column_width(1, 100)
+        self._workmanship_tbl.extra_bindings([("end_edit_cell", self._on_workmanship_tbl_edit)])
+
     def _toggle_drawer(self):
         if self._drawer_visible:
             self._drawer.pack_forget()
@@ -425,10 +528,11 @@ UNITS
             self._populate_drawer_tables()
 
     def _populate_drawer_tables(self):
-        if self._input_asd_freqs is not None:
+        inp = self._active_input()
+        if inp is not None:
             self._input_tbl.set_sheet_data(
                 [[f"{f:.5g}", f"{a:.6g}"]
-                 for f, a in zip(self._input_asd_freqs, self._input_asd_vals)])
+                 for f, a in zip(inp['freqs_raw'], inp['vals_raw'])])
         else:
             self._input_tbl.set_sheet_data([])
         if self._limit_asd_freqs is not None:
@@ -437,8 +541,17 @@ UNITS
                  for f, a in zip(self._limit_asd_freqs, self._limit_asd_vals)])
         else:
             self._limit_tbl.set_sheet_data([])
+        if self._workmanship_freqs is not None:
+            self._workmanship_tbl.set_sheet_data(
+                [[f"{f:.5g}", f"{a:.6g}"]
+                 for f, a in zip(self._workmanship_freqs, self._workmanship_vals)])
+        else:
+            self._workmanship_tbl.set_sheet_data([])
 
     def _on_input_tbl_edit(self, event):
+        inp = self._active_input()
+        if inp is None:
+            return
         freqs, asds = [], []
         for row in self._input_tbl.get_sheet_data():
             try:
@@ -449,11 +562,10 @@ UNITS
         if len(freqs) < 2:
             return
         order = np.argsort(freqs)
-        self._input_asd_freqs = np.array(freqs)[order]
-        self._input_asd_vals  = np.array(asds)[order]
-        self._input_status.configure(
-            text=self._asd_status_text("(edited)", self._input_asd_freqs),
-            text_color=("gray10", "gray90"))
+        inp['freqs_raw'] = np.array(freqs)[order]
+        inp['vals_raw']  = np.array(asds)[order]
+        inp['name'] = self._asd_status_text("(edited)", inp['freqs_raw'])
+        self._refresh_input_selector()
         self._clear_results()
         self._schedule_recompute()
 
@@ -484,12 +596,15 @@ UNITS
             text="☾ Dark" if self._plot_theme == "light" else "☀ Light")
         self._redraw()
 
-    def _copy_figure(self):
+    def _copy_figure(self, pane=None):
         import io, os, tempfile, subprocess
+        if pane is None:
+            pane = self._panes[0]
+        fig = pane["fig"]
         buf = io.BytesIO()
         try:
-            self._fig.savefig(buf, format='png', dpi=200, bbox_inches='tight',
-                              facecolor=self._fig.get_facecolor())
+            fig.savefig(buf, format='png', dpi=200, bbox_inches='tight',
+                        facecolor=fig.get_facecolor())
         except Exception as exc:
             messagebox.showerror("Copy Error", f"Could not render figure:\n{exc}")
             return
@@ -526,6 +641,32 @@ UNITS
                 except Exception:
                     pass
 
+    # ── Split view toggle ─────────────────────────────────────────────────
+
+    def _toggle_split(self):
+        if len(self._panes) == 1:
+            # Enter split mode
+            pane2 = self._make_pane(self._plots_container)
+            self._panes.append(pane2)
+            pane2["frame"].pack(fill=tk.BOTH, expand=True)
+            # Show view menu in both pane headers
+            for pane in self._panes:
+                pane["view_menu"].pack(side=tk.LEFT, padx=4, pady=2)
+            # Hide sidebar view radios (pane 0's view_menu takes over for pane 0)
+            self._view_section.pack_forget()
+            self._split_btn.configure(text="◧ Single")
+            self._draw_idle_plot()
+            self._redraw()
+        else:
+            # Exit split mode — destroy pane 2
+            pane2 = self._panes.pop()
+            pane2["frame"].destroy()
+            # Hide view menu in pane 0 header, re-show sidebar
+            self._panes[0]["view_menu"].pack_forget()
+            self._view_section.pack(fill=tk.X)
+            self._split_btn.configure(text="⊞ Split")
+            self._redraw()
+
     # ── Help ──────────────────────────────────────────────────────────────
 
     def _open_help(self):
@@ -558,7 +699,7 @@ UNITS
     def _auto_compute(self):
         self._debounce_id = None
         if (self._op2 is not None
-                and self._input_asd_freqs is not None
+                and self._active_input() is not None
                 and self._limit_asd_freqs is not None
                 and self._any_limit_dofs()):
             self._compute_notch(silent=True)
@@ -684,10 +825,10 @@ UNITS
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
-        self._input_asd_freqs, self._input_asd_vals = freqs, asds
-        self._input_status.configure(
-            text=self._asd_status_text(os.path.basename(path), freqs),
-            text_color=("gray10", "gray90"))
+        name = self._asd_status_text(os.path.basename(path), freqs)
+        self._inputs.append({"name": name, "freqs_raw": freqs, "vals_raw": asds, "db": "0.0"})
+        self._active_input_idx = len(self._inputs) - 1
+        self._refresh_input_selector()
         if self._drawer_visible:
             self._populate_drawer_tables()
         self._clear_results()
@@ -702,8 +843,115 @@ UNITS
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
-        self._input_asd_freqs, self._input_asd_vals = freqs, asds
-        self._input_status.configure(
+        n = sum(1 for e in self._inputs if e['name'].startswith("(pasted)"))
+        name = self._asd_status_text(f"(pasted {n + 1})" if n else "(pasted)", freqs)
+        self._inputs.append({"name": name, "freqs_raw": freqs, "vals_raw": asds, "db": "0.0"})
+        self._active_input_idx = len(self._inputs) - 1
+        self._refresh_input_selector()
+        if self._drawer_visible:
+            self._populate_drawer_tables()
+        self._clear_results()
+        self._schedule_recompute()
+
+    def _remove_active_input(self):
+        if not self._inputs:
+            return
+        if 0 <= self._active_input_idx < len(self._inputs):
+            self._inputs.pop(self._active_input_idx)
+        self._active_input_idx = min(self._active_input_idx, len(self._inputs) - 1)
+        self._refresh_input_selector()
+        if self._drawer_visible:
+            self._populate_drawer_tables()
+        self._clear_results()
+        self._schedule_recompute()
+
+    # ── Input helpers ─────────────────────────────────────────────────────
+
+    def _active_input(self):
+        if 0 <= self._active_input_idx < len(self._inputs):
+            return self._inputs[self._active_input_idx]
+        return None
+
+    def _refresh_input_selector(self):
+        if self._inputs:
+            names = [e['name'] for e in self._inputs]
+            self._input_selector.configure(values=names)
+            idx = max(0, min(self._active_input_idx, len(self._inputs) - 1))
+            self._active_input_idx = idx
+            self._input_selector.set(names[idx])
+            # Load this input's saved dB into scale entry
+            self._scale_var.set(self._inputs[idx].get('db', '0.0'))
+        else:
+            self._active_input_idx = -1
+            self._input_selector.configure(values=["(none)"])
+            self._input_selector.set("(none)")
+            self._scale_var.set("0.0")
+
+    def _on_input_selected(self, name):
+        for i, inp in enumerate(self._inputs):
+            if inp['name'] == name:
+                self._active_input_idx = i
+                self._scale_var.set(inp.get('db', '0.0'))
+                break
+        if self._drawer_visible:
+            self._populate_drawer_tables()
+        self._clear_results()
+        self._schedule_recompute()
+
+    def _on_scale_change(self, *_):
+        inp = self._active_input()
+        if inp is not None:
+            inp['db'] = self._scale_var.get()
+        self._schedule_recompute()
+
+    def _effective_input(self, freqs, scale):
+        """Return interpolated + scaled effective input; applies workmanship envelope when toggled."""
+        inp = self._active_input()
+        base = interp_loglog(inp['freqs_raw'], inp['vals_raw'], freqs) * scale
+        if self._workmanship_envelope_var.get() and self._workmanship_vals is not None:
+            wm = interp_loglog(self._workmanship_freqs, self._workmanship_vals, freqs)
+            return np.maximum(base, wm)
+        return base
+
+    # ── Workmanship spec ──────────────────────────────────────────────────
+
+    def _load_workmanship(self):
+        path = filedialog.askopenfilename(
+            title="Load Workmanship Spec",
+            filetypes=[("Text/CSV", "*.txt *.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            freqs, asds = parse_asd_file(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Load Error", str(exc))
+            return
+        self._workmanship_freqs, self._workmanship_vals = freqs, asds
+        self._workmanship_status.configure(
+            text=self._asd_status_text(os.path.basename(path), freqs),
+            text_color=("gray10", "gray90"))
+        if self._drawer_visible:
+            self._populate_drawer_tables()
+        self._clear_results()
+        self._schedule_recompute()
+
+    def _paste_workmanship(self):
+        initial = ""
+        if self._workmanship_freqs is not None:
+            initial = "\n".join(f"{f:.5g}  {a:.6g}"
+                                for f, a in zip(self._workmanship_freqs, self._workmanship_vals))
+        text = self._paste_dialog(
+            "Paste / Edit Workmanship Spec",
+            "2-column data (freq  g²/Hz), one row per line:",
+            initial=initial)
+        if text is None:
+            return
+        freqs, asds = parse_asd_text(text)
+        if freqs is None:
+            messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
+            return
+        self._workmanship_freqs, self._workmanship_vals = freqs, asds
+        self._workmanship_status.configure(
             text=self._asd_status_text("(pasted)", freqs),
             text_color=("gray10", "gray90"))
         if self._drawer_visible:
@@ -711,10 +959,36 @@ UNITS
         self._clear_results()
         self._schedule_recompute()
 
-    def _clear_input_asd(self):
-        self._input_asd_freqs = self._input_asd_vals = None
-        self._input_status.configure(text="(none)", text_color="gray")
+    def _clear_workmanship(self):
+        self._workmanship_freqs = self._workmanship_vals = None
+        self._workmanship_status.configure(text="(none)", text_color="gray")
+        if self._drawer_visible:
+            self._workmanship_tbl.set_sheet_data([])
         self._clear_results()
+        self._schedule_recompute()
+
+    def _on_workmanship_toggle(self):
+        self._clear_results()
+        self._schedule_recompute()
+
+    def _on_workmanship_tbl_edit(self, event):
+        freqs, asds = [], []
+        for row in self._workmanship_tbl.get_sheet_data():
+            try:
+                freqs.append(float(row[0]))
+                asds.append(float(row[1]))
+            except (ValueError, IndexError, TypeError):
+                continue
+        if len(freqs) < 2:
+            return
+        order = np.argsort(freqs)
+        self._workmanship_freqs = np.array(freqs)[order]
+        self._workmanship_vals  = np.array(asds)[order]
+        self._workmanship_status.configure(
+            text=self._asd_status_text("(edited)", self._workmanship_freqs),
+            text_color=("gray10", "gray90"))
+        self._clear_results()
+        self._schedule_recompute()
 
     def _load_limit_asd(self):
         path = filedialog.askopenfilename(
@@ -999,7 +1273,7 @@ UNITS
             if not silent:
                 messagebox.showwarning("No OP2", "Load an FRF OP2 first.")
             return
-        if self._input_asd_freqs is None:
+        if self._active_input() is None:
             if not silent:
                 messagebox.showwarning("No Input ASD", "Load an Input ASD first.")
             return
@@ -1038,7 +1312,7 @@ UNITS
             scale_db = 0.0
         scale = 10.0 ** (scale_db / 10.0)
 
-        orig_interp  = interp_loglog(self._input_asd_freqs, self._input_asd_vals, freqs) * scale
+        orig_interp  = self._effective_input(freqs, scale)
         limit_interp = interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
 
         min_allowed = np.full(len(freqs), np.inf)
@@ -1117,7 +1391,8 @@ UNITS
         self._color_map        = {}
         self._label_map        = {}
         self._picked_peaks.clear()
-        self._last_drawn_curves = []
+        for pane in self._panes:
+            pane["last_drawn_curves"] = []
         self._export_excel_btn.configure(state=tk.DISABLED)
         self._export_csv_btn.configure(state=tk.DISABLED)
         self._curve_menu.configure(values=["(none)"])
@@ -1128,9 +1403,10 @@ UNITS
     def _get_theme(self):
         return _THEMES[self._plot_theme]
 
-    def _format_plot(self, ax, title="", ylabel="ASD (g²/Hz)"):
+    def _format_plot(self, pane, title="", ylabel="ASD (g²/Hz)"):
+        ax = pane["ax"]
         th = self._get_theme()
-        self._fig.set_facecolor(th["fig_bg"])
+        pane["fig"].set_facecolor(th["fig_bg"])
         ax.set_facecolor(th["plot_bg"])
         ax.tick_params(colors=th["text"])
         ax.xaxis.label.set_color(th["text"])
@@ -1163,43 +1439,50 @@ UNITS
 
     def _draw_idle_plot(self):
         th = self._get_theme()
-        self._fig.clf()
-        ax = self._fig.add_subplot(111)
-        self._ax = ax
-        self._format_plot(ax, title="Response Limiting")
-        ax.text(0.5, 0.5,
-                "1. Open FRF OP2\n2. Load Input ASD + Response Limit\n"
-                "3. Add nodes, set X/Y/Z to L\n"
-                "Results update automatically",
-                ha='center', va='center', transform=ax.transAxes,
-                color=th["text"], fontsize=11)
-        self._canvas.draw_idle()
+        for pane in self._panes:
+            pane["grms_frame"].pack_forget()
+            pane["canvas_widget"].pack(fill=tk.BOTH, expand=True)
+            pane["fig"].clf()
+            ax = pane["fig"].add_subplot(111)
+            pane["ax"] = ax
+            self._format_plot(pane, title="Response Limiting")
+            ax.text(0.5, 0.5,
+                    "1. Open FRF OP2\n2. Load Input ASD + Response Limit\n"
+                    "3. Add nodes, set X/Y/Z to L\n"
+                    "Results update automatically",
+                    ha='center', va='center', transform=ax.transAxes,
+                    color=th["text"], fontsize=11)
+            pane["canvas"].draw_idle()
 
     # ── View dispatch ──────────────────────────────────────────────────────
 
     def _redraw(self):
+        for pane in self._panes:
+            self._redraw_pane(pane)
+
+    def _redraw_pane(self, pane):
         if self._notched_asd is None:
             return
-        view = self._view_var.get()
+        view = pane["view_var"].get()
         if view == "grms":
-            self._canvas_widget.pack_forget()
-            self._grms_frame.pack(fill=tk.BOTH, expand=True)
-            self._draw_grms_view()
+            pane["canvas_widget"].pack_forget()
+            pane["grms_frame"].pack(fill=tk.BOTH, expand=True)
+            self._draw_grms_view(pane)
         else:
-            self._grms_frame.pack_forget()
-            self._canvas_widget.pack(fill=tk.BOTH, expand=True)
-            self._fig.clf()
-            self._ax = self._fig.add_subplot(111)
+            pane["grms_frame"].pack_forget()
+            pane["canvas_widget"].pack(fill=tk.BOTH, expand=True)
+            pane["fig"].clf()
+            pane["ax"] = pane["fig"].add_subplot(111)
             if view == "input":
-                self._draw_input_view()
+                self._draw_input_view(pane)
             elif view == "response_dof":
-                self._draw_response_dof_view()
+                self._draw_response_dof_view(pane)
             elif view == "response_all":
-                self._draw_response_all_view()
-            self._canvas.draw_idle()
+                self._draw_response_all_view(pane)
+            pane["canvas"].draw_idle()
 
-    def _draw_input_view(self):
-        ax = self._ax
+    def _draw_input_view(self, pane):
+        ax = pane["ax"]
         freqs = self._frf_freqs
         try:
             scale_db = float(self._scale_var.get())
@@ -1207,25 +1490,39 @@ UNITS
             scale_db = 0.0
         scale = 10.0 ** (scale_db / 10.0)
         lbl_scale = f" ({scale_db:+.3g} dB)" if scale_db != 0.0 else ""
-        self._last_drawn_curves = []
-        if self._input_asd_freqs is not None:
-            vals = self._input_asd_vals * scale
+        pane["last_drawn_curves"] = []
+        inp = self._active_input()
+        if inp is not None:
+            vals = inp['vals_raw'] * scale
             lbl = f"Original Input{lbl_scale}"
-            ax.plot(self._input_asd_freqs, vals, color="#1f77b4", label=lbl)
-            self._last_drawn_curves.append({"freqs": self._input_asd_freqs, "data": vals, "label": lbl})
+            ax.plot(inp['freqs_raw'], vals, color="#1f77b4", label=lbl)
+            pane["last_drawn_curves"].append({"freqs": inp['freqs_raw'], "data": vals, "label": lbl})
+        if self._workmanship_freqs is not None:
+            ax.plot(self._workmanship_freqs, self._workmanship_vals,
+                    color="#7f7f7f", linestyle="--", linewidth=1.2, label="Workmanship")
+            pane["last_drawn_curves"].append({"freqs": self._workmanship_freqs,
+                                              "data": self._workmanship_vals, "label": "Workmanship"})
+        if (self._workmanship_envelope_var.get() and self._workmanship_freqs is not None
+                and inp is not None):
+            eff_lbl = "Effective Input (enveloped)"
+            ax.plot(freqs, self._orig_asd_interp, color="#1f77b4", linewidth=2.5,
+                    linestyle="-", alpha=0.85, label=eff_lbl)
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": self._orig_asd_interp,
+                                              "label": eff_lbl})
         ax.plot(freqs, self._notched_asd, color="#d62728", label="Notched Input")
-        self._last_drawn_curves.append({"freqs": freqs, "data": self._notched_asd, "label": "Notched Input"})
+        pane["last_drawn_curves"].append({"freqs": freqs, "data": self._notched_asd,
+                                          "label": "Notched Input"})
         og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
         ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
         self._draw_aux_lines(ax)
         self._draw_picked_peaks(ax)
         self._legend(ax).set_title(
             f"Orig:    {og:.3g} g GRMS\nNotched: {ng:.3g} g GRMS")
-        self._format_plot(ax, title="Input ASD: Original vs Notched")
+        self._format_plot(pane, title="Input ASD: Original vs Notched")
         ax.set_xlim(freqs[0], freqs[-1])
 
-    def _draw_response_dof_view(self):
-        ax = self._ax
+    def _draw_response_dof_view(self, pane):
+        ax = pane["ax"]
         freqs = self._frf_freqs
         sel = self._curve_var.get()
         limit_name = self._limit_name_var.get().strip() or "Response Limit"
@@ -1240,7 +1537,7 @@ UNITS
         if selected_key is None and self._response_curves:
             selected_key = next(iter(self._response_curves))
 
-        self._last_drawn_curves = []
+        pane["last_drawn_curves"] = []
         rb_grms = ra_grms = 0.0
         if selected_key is not None:
             rb, ra = self._response_curves[selected_key]
@@ -1249,15 +1546,15 @@ UNITS
             lbl_a = "After notch"
             ax.plot(freqs, rb, color=col, linestyle="--", label=lbl_b)
             ax.plot(freqs, ra, color=col, label=lbl_a)
-            self._last_drawn_curves.append({"freqs": freqs, "data": rb, "label": lbl_b})
-            self._last_drawn_curves.append({"freqs": freqs, "data": ra, "label": lbl_a})
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": rb, "label": lbl_b})
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": ra, "label": lbl_a})
             rb_grms = np.sqrt(max(0.0, grms_loglog(freqs, rb)))
             ra_grms = np.sqrt(max(0.0, grms_loglog(freqs, ra)))
 
         ax.plot(freqs, self._limit_asd_interp,
                 color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
-        self._last_drawn_curves.append({"freqs": freqs, "data": self._limit_asd_interp,
-                                        "label": limit_name})
+        pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
+                                          "label": limit_name})
         self._draw_aux_lines(ax)
         self._draw_picked_peaks(ax)
         leg = self._legend(ax)
@@ -1268,31 +1565,31 @@ UNITS
                                        f"Node {selected_key[0]} {_DOF_NAMES[selected_key[1]]}")
         else:
             lbl = "(none)"
-        self._format_plot(ax, title=f"Response: {lbl}")
+        self._format_plot(pane, title=f"Response: {lbl}")
         ax.set_xlim(freqs[0], freqs[-1])
 
-    def _draw_response_all_view(self):
-        ax = self._ax
+    def _draw_response_all_view(self, pane):
+        ax = pane["ax"]
         freqs = self._frf_freqs
         limit_name = self._limit_name_var.get().strip() or "Response Limit"
-        self._last_drawn_curves = []
+        pane["last_drawn_curves"] = []
         for key, (_, ra) in self._response_curves.items():
             col = self._color_map.get(key, "#aaaaaa")
             tag = " [L]" if key in self._limit_dofs_set else ""
             lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
             ax.plot(freqs, ra, color=col, label=lbl)
-            self._last_drawn_curves.append({"freqs": freqs, "data": ra, "label": lbl})
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": ra, "label": lbl})
         ax.plot(freqs, self._limit_asd_interp,
                 color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
-        self._last_drawn_curves.append({"freqs": freqs, "data": self._limit_asd_interp,
-                                        "label": limit_name})
+        pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
+                                          "label": limit_name})
         self._draw_aux_lines(ax)
         self._draw_picked_peaks(ax)
         self._legend(ax)
-        self._format_plot(ax, title=f"All Responses (notched) vs {limit_name}  ([L] = limit DOF)")
+        self._format_plot(pane, title=f"All Responses (notched) vs {limit_name}  ([L] = limit DOF)")
         ax.set_xlim(freqs[0], freqs[-1])
 
-    def _draw_grms_view(self):
+    def _draw_grms_view(self, pane):
         freqs = self._frf_freqs
         og = np.sqrt(max(0.0, grms_loglog(freqs, self._orig_asd_interp)))
         ng = np.sqrt(max(0.0, grms_loglog(freqs, self._notched_asd)))
@@ -1311,7 +1608,7 @@ UNITS
                 f"{np.sqrt(max(0.0, grms_loglog(freqs, ra))):.4g}",
                 f"{max_db:.2f}",
             ])
-        self._grms_sheet.set_sheet_data(rows)
+        pane["grms_sheet"].set_sheet_data(rows)
 
     # ── Aux reference lines ───────────────────────────────────────────────
 
@@ -1479,20 +1776,19 @@ UNITS
 
     def _toggle_pick_mode(self):
         self._pick_peaks_mode = not self._pick_peaks_mode
+        cursor = "cross" if self._pick_peaks_mode else ""
         if self._pick_peaks_mode:
-            self._pick_btn.configure(fg_color=("#1f6aa5", "#1f6aa5"),
-                                     text="Pick Peaks (ON)")
-            self._canvas_widget.configure(cursor="cross")
+            self._pick_btn.configure(fg_color=("#1f6aa5", "#1f6aa5"), text="Pick Peaks (ON)")
         else:
-            self._pick_btn.configure(fg_color=("gray75", "gray25"),
-                                     text="Pick Peaks")
-            self._canvas_widget.configure(cursor="")
+            self._pick_btn.configure(fg_color=("gray75", "gray25"), text="Pick Peaks")
+        for pane in self._panes:
+            pane["canvas_widget"].configure(cursor=cursor)
 
     def _clear_peaks(self):
         self._picked_peaks.clear()
         self._redraw()
 
-    def _on_canvas_click(self, event):
+    def _on_canvas_click(self, event, pane):
         if not self._pick_peaks_mode:
             return
         if event.inaxes is None or event.xdata is None or event.ydata is None:
@@ -1505,7 +1801,7 @@ UNITS
         click_lx = np.log10(max(event.xdata, 1e-12))
 
         best = None
-        for curve in self._last_drawn_curves:
+        for curve in pane["last_drawn_curves"]:
             freqs = curve["freqs"]
             data = curve["data"]
             if len(data) < 3:
@@ -1537,7 +1833,7 @@ UNITS
 
     def _save_session(self):
         import json, datetime
-        if self._op2_path is None and self._input_asd_freqs is None:
+        if self._op2_path is None and not self._inputs:
             messagebox.showwarning("Nothing to save",
                                    "Load an OP2 or ASD data before saving a session.")
             return
@@ -1571,18 +1867,25 @@ UNITS
             })
 
         data = {
-            "version": 1,
+            "version": 2,
             "tool": "Response Limiting",
             "saved_at": datetime.datetime.now().isoformat(timespec='seconds'),
             "op2_path": self._op2_path,
             "units": self._units_var.get(),
             "subcase": self._subcase_var.get(),
-            "input_asd": ({"freqs": self._input_asd_freqs.tolist(),
-                           "vals":  self._input_asd_vals.tolist()}
-                          if self._input_asd_freqs is not None else None),
+            "inputs": [
+                {"name": e["name"], "freqs": e["freqs_raw"].tolist(),
+                 "vals": e["vals_raw"].tolist(), "db": e.get("db", "0.0")}
+                for e in self._inputs
+            ],
+            "active_input_idx": self._active_input_idx,
             "limit_asd": ({"freqs": self._limit_asd_freqs.tolist(),
                            "vals":  self._limit_asd_vals.tolist()}
                           if self._limit_asd_freqs is not None else None),
+            "workmanship": ({"freqs": self._workmanship_freqs.tolist(),
+                             "vals":  self._workmanship_vals.tolist()}
+                            if self._workmanship_freqs is not None else None),
+            "workmanship_envelope": self._workmanship_envelope_var.get(),
             "nodes": nodes_data,
             "notch_enabled": self._notch_enabled_var.get(),
             "notch_db": self._notch_db_var.get(),
@@ -1596,6 +1899,8 @@ UNITS
                 "limit_name": self._limit_name_var.get(),
                 "peak_label": self._peak_label_var.get(),
             },
+            "pane_views": [p["view_var"].get() for p in self._panes],
+            "split_active": len(self._panes) > 1,
             "picked_peaks": [
                 {"freq": pk["freq"], "value": pk["value"], "label": pk.get("label", "")}
                 for pk in self._picked_peaks
@@ -1623,7 +1928,7 @@ UNITS
         except Exception as exc:
             messagebox.showerror("Load Error", f"Could not read session:\n{exc}")
             return
-        if data.get('version') != 1 or data.get('tool') != "Response Limiting":
+        if data.get('tool') != "Response Limiting" or data.get('version') not in (1, 2):
             messagebox.showerror("Unsupported File",
                                  "This file does not appear to be a Response Limiting session.")
             return
@@ -1649,13 +1954,36 @@ UNITS
             state=tk.NORMAL if self._notch_enabled_var.get() else tk.DISABLED)
         self._scale_var.set(data.get('scale_db', '0.0'))
 
-        inp = data.get('input_asd')
-        if inp:
-            self._input_asd_freqs = np.array(inp['freqs'])
-            self._input_asd_vals  = np.array(inp['vals'])
-            self._input_status.configure(
-                text=self._asd_status_text("(session)", self._input_asd_freqs),
+        # Load inputs — support v1 (single input_asd) and v2 (inputs list)
+        self._inputs = []
+        if data.get('version') == 1:
+            inp = data.get('input_asd')
+            if inp:
+                freqs = np.array(inp['freqs'])
+                vals  = np.array(inp['vals'])
+                self._inputs = [{"name": self._asd_status_text("(session)", freqs),
+                                  "freqs_raw": freqs, "vals_raw": vals,
+                                  "db": data.get('scale_db', '0.0')}]
+                self._active_input_idx = 0
+        else:
+            for e in data.get('inputs', []):
+                freqs = np.array(e['freqs'])
+                vals  = np.array(e['vals'])
+                self._inputs.append({"name": e.get('name', self._asd_status_text("(session)", freqs)),
+                                     "freqs_raw": freqs, "vals_raw": vals,
+                                     "db": e.get('db', '0.0')})
+            self._active_input_idx = data.get('active_input_idx', 0 if self._inputs else -1)
+        self._refresh_input_selector()
+
+        wm = data.get('workmanship')
+        if wm:
+            self._workmanship_freqs = np.array(wm['freqs'])
+            self._workmanship_vals  = np.array(wm['vals'])
+            self._workmanship_status.configure(
+                text=self._asd_status_text("(session)", self._workmanship_freqs),
                 text_color=("gray10", "gray90"))
+        self._workmanship_envelope_var.set(data.get('workmanship_envelope', False))
+
         lim = data.get('limit_asd')
         if lim:
             self._limit_asd_freqs = np.array(lim['freqs'])
@@ -1674,6 +2002,17 @@ UNITS
 
         if self._drawer_visible:
             self._populate_drawer_tables()
+
+        # Restore split view and per-pane view modes
+        pane_views = data.get('pane_views', [self._view_var.get()])
+        split_active = data.get('split_active', False)
+        if split_active and len(self._panes) == 1:
+            self._toggle_split()
+        elif not split_active and len(self._panes) > 1:
+            self._toggle_split()
+        for i, pane in enumerate(self._panes):
+            if i < len(pane_views):
+                pane["view_var"].set(pane_views[i])
 
         op2_path = data.get('op2_path')
         if op2_path and os.path.isfile(op2_path):
