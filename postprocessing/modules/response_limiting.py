@@ -109,6 +109,10 @@ UNITS
         self._workmanship_freqs = None
         self._workmanship_vals  = None
         self._workmanship_envelope_var = tk.BooleanVar(value=False)
+        self._workmanship_name_var = ctk.StringVar(value="Workmanship")
+
+        self._subcase_names: dict = {}   # {sc_id: user override label}
+        self._subcase_name_var = ctk.StringVar(value="")
 
         self._plot_theme = "light"   # "light" or "dark"
 
@@ -174,6 +178,10 @@ UNITS
                                           command=self._on_subcase_change,
                                           width=160)
         self._sc_menu.pack(side=tk.LEFT)
+        ctk.CTkLabel(row0, text="Name:").pack(side=tk.LEFT, padx=(8, 2))
+        ctk.CTkEntry(row0, textvariable=self._subcase_name_var, width=140,
+                     placeholder_text="Subcase display name").pack(side=tk.LEFT)
+        self._subcase_name_var.trace_add("write", self._on_subcase_name_edit)
 
         self._status_label = ctk.CTkLabel(row0, text="Load an FRF OP2 to begin",
                                           text_color="gray")
@@ -219,6 +227,8 @@ UNITS
         ctk.CTkCheckBox(wm_frame, text="Envelope input",
                         variable=self._workmanship_envelope_var,
                         command=self._on_workmanship_toggle).pack(side=tk.LEFT, padx=(10, 4))
+        ctk.CTkLabel(wm_frame, text="Name:").pack(side=tk.LEFT, padx=(8, 2))
+        ctk.CTkEntry(wm_frame, textvariable=self._workmanship_name_var, width=120).pack(side=tk.LEFT, padx=2)
         self._workmanship_status = ctk.CTkLabel(wm_frame, text="(none)", text_color="gray",
                                                 width=180, anchor=tk.W)
         self._workmanship_status.pack(side=tk.LEFT, padx=4)
@@ -257,7 +267,7 @@ UNITS
                      placeholder_text="Environment / subtitle").pack(side=tk.LEFT, padx=(4, 12))
         ctk.CTkLabel(row3, text="Limit name:").pack(side=tk.LEFT)
         ctk.CTkEntry(row3, textvariable=self._limit_name_var, width=140).pack(side=tk.LEFT, padx=4)
-        for v in (self._title_var, self._env_var, self._limit_name_var):
+        for v in (self._title_var, self._env_var, self._limit_name_var, self._workmanship_name_var):
             v.trace_add("write", lambda *_: self._redraw())
 
         # Row 4: annotations / peak picking / session
@@ -805,6 +815,8 @@ UNITS
         self._draw_idle_plot()
 
     def _on_subcase_change(self, _=None):
+        sc_id = self._get_subcase_int()
+        self._subcase_name_var.set(self._subcase_names.get(sc_id, "") if sc_id is not None else "")
         self._clear_results()
         self._schedule_recompute()
 
@@ -814,6 +826,24 @@ UNITS
             if lbl == label:
                 return sc_id
         return None
+
+    def _on_subcase_name_edit(self, *_):
+        sc_id = self._get_subcase_int()
+        if sc_id is None:
+            return
+        val = self._subcase_name_var.get().strip()
+        if val:
+            self._subcase_names[sc_id] = val
+        else:
+            self._subcase_names.pop(sc_id, None)
+        self._redraw()
+
+    def _current_subcase_display(self) -> str:
+        sc_id = self._get_subcase_int()
+        if sc_id is not None and sc_id in self._subcase_names:
+            return self._subcase_names[sc_id]
+        label = self._subcase_var.get()
+        return label if label != "(none)" else ""
 
     # ── ASD loaders ───────────────────────────────────────────────────────
 
@@ -932,10 +962,12 @@ UNITS
         if not path:
             return
         try:
-            freqs, asds, _ = parse_asd_file(path)
+            freqs, asds, file_name = parse_asd_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
+        if file_name:
+            self._workmanship_name_var.set(file_name)
         self._workmanship_freqs, self._workmanship_vals = freqs, asds
         self._workmanship_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
@@ -956,10 +988,12 @@ UNITS
             initial=initial)
         if text is None:
             return
-        freqs, asds, _ = parse_asd_text(text)
+        freqs, asds, text_name = parse_asd_text(text)
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
+        if text_name:
+            self._workmanship_name_var.set(text_name)
         self._workmanship_freqs, self._workmanship_vals = freqs, asds
         self._workmanship_status.configure(
             text=self._asd_status_text("(pasted)", freqs),
@@ -1007,10 +1041,12 @@ UNITS
         if not path:
             return
         try:
-            freqs, asds, _ = parse_asd_file(path)
+            freqs, asds, file_name = parse_asd_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Error", str(exc))
             return
+        if file_name:
+            self._limit_name_var.set(file_name)
         self._limit_asd_freqs, self._limit_asd_vals = freqs, asds
         self._limit_status.configure(
             text=self._asd_status_text(os.path.basename(path), freqs),
@@ -1033,10 +1069,12 @@ UNITS
             initial=initial)
         if text is None:
             return
-        freqs, asds, _ = parse_asd_text(text)
+        freqs, asds, text_name = parse_asd_text(text)
         if freqs is None:
             messagebox.showerror("Parse Error", "Need at least 2 valid frequency rows.")
             return
+        if text_name:
+            self._limit_name_var.set(text_name)
         self._limit_asd_freqs, self._limit_asd_vals = freqs, asds
         self._limit_status.configure(
             text=self._asd_status_text("(pasted)", freqs),
@@ -1436,6 +1474,10 @@ UNITS
         ax.set_ylabel(ylabel)
         user_title = self._title_var.get().strip()
         env = self._env_var.get().strip()
+        sc_disp = self._current_subcase_display()
+        if sc_disp:
+            sc_tag = f"Subcase: {sc_disp}"
+            env = f"{env} · {sc_tag}" if env else sc_tag
         display_title = user_title or title
         if display_title:
             ax.set_title(display_title, color=th["text"], fontsize=12, weight="bold",
@@ -1507,19 +1549,21 @@ UNITS
         lbl_scale = f" ({scale_db:+.3g} dB)" if scale_db != 0.0 else ""
         pane["last_drawn_curves"] = []
         inp = self._active_input()
+        inp_name = inp['name'] if inp else "Input"
+        wm_name = self._workmanship_name_var.get().strip() or "Workmanship"
         if inp is not None:
             vals = inp['vals_raw'] * scale
-            lbl = f"Original Input{lbl_scale}"
+            lbl = f"{inp_name}{lbl_scale}"
             ax.plot(inp['freqs_raw'], vals, color="#1f77b4", label=lbl)
             pane["last_drawn_curves"].append({"freqs": inp['freqs_raw'], "data": vals, "label": lbl})
         if self._workmanship_freqs is not None:
             ax.plot(self._workmanship_freqs, self._workmanship_vals,
-                    color="#7f7f7f", linestyle="--", linewidth=1.2, label="Workmanship")
+                    color="#7f7f7f", linestyle="--", linewidth=1.2, label=wm_name)
             pane["last_drawn_curves"].append({"freqs": self._workmanship_freqs,
-                                              "data": self._workmanship_vals, "label": "Workmanship"})
+                                              "data": self._workmanship_vals, "label": wm_name})
         if (self._workmanship_envelope_var.get() and self._workmanship_freqs is not None
                 and inp is not None):
-            eff_lbl = "Effective Input (enveloped)"
+            eff_lbl = f"{inp_name} + {wm_name} Envelope"
             ax.plot(freqs, self._orig_asd_interp, color="#1f77b4", linewidth=2.5,
                     linestyle="-", alpha=0.85, label=eff_lbl)
             pane["last_drawn_curves"].append({"freqs": freqs, "data": self._orig_asd_interp,
@@ -1557,8 +1601,10 @@ UNITS
         if selected_key is not None:
             rb, ra = self._response_curves[selected_key]
             col = self._color_map.get(selected_key, "#1f77b4")
-            lbl_b = "Before notch"
-            lbl_a = "After notch"
+            node_lbl = self._label_map.get(selected_key,
+                                           f"Node {selected_key[0]} {_DOF_NAMES[selected_key[1]]}")
+            lbl_b = f"{node_lbl} — Before notch"
+            lbl_a = f"{node_lbl} — After notch"
             ax.plot(freqs, rb, color=col, linestyle="--", label=lbl_b)
             ax.plot(freqs, ra, color=col, label=lbl_a)
             pane["last_drawn_curves"].append({"freqs": freqs, "data": rb, "label": lbl_b})
@@ -1905,6 +1951,8 @@ UNITS
                              "vals":  self._workmanship_vals.tolist()}
                             if self._workmanship_freqs is not None else None),
             "workmanship_envelope": self._workmanship_envelope_var.get(),
+            "workmanship_name": self._workmanship_name_var.get(),
+            "subcase_names": {str(k): v for k, v in self._subcase_names.items()},
             "nodes": nodes_data,
             "notch_enabled": self._notch_enabled_var.get(),
             "notch_db": self._notch_db_var.get(),
@@ -2002,6 +2050,8 @@ UNITS
                 text=self._asd_status_text("(session)", self._workmanship_freqs),
                 text_color=("gray10", "gray90"))
         self._workmanship_envelope_var.set(data.get('workmanship_envelope', False))
+        self._workmanship_name_var.set(data.get('workmanship_name', 'Workmanship'))
+        self._subcase_names = {int(k): v for k, v in data.get('subcase_names', {}).items()}
 
         lim = data.get('limit_asd')
         if lim:
@@ -2063,6 +2113,8 @@ UNITS
                 self._sc_menu.configure(values=labels)
                 sc_to_set = _saved_sc if _saved_sc in labels else (labels[0] if labels else "(none)")
                 self._subcase_var.set(sc_to_set)
+                sc_id = self._get_subcase_int()
+                self._subcase_name_var.set(self._subcase_names.get(sc_id, "") if sc_id is not None else "")
                 stem = os.path.splitext(os.path.basename(op2_path))[0]
                 self._file_label.configure(text=stem, text_color=("gray10", "gray90"))
                 self._schedule_recompute()
