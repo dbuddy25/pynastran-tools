@@ -700,8 +700,7 @@ UNITS
         self._debounce_id = None
         if (self._op2 is not None
                 and self._active_input() is not None
-                and self._limit_asd_freqs is not None
-                and self._any_limit_dofs()):
+                and self._any_plot_dofs()):
             self._compute_notch(silent=True)
 
     def _any_limit_dofs(self):
@@ -709,6 +708,14 @@ UNITS
         for row in data:
             for col in _DOF_COLS:
                 if str(row[col]).upper() == "L":
+                    return True
+        return False
+
+    def _any_plot_dofs(self):
+        data = self._node_sheet.get_sheet_data()
+        for row in data:
+            for col in _DOF_COLS:
+                if str(row[col]).upper() in ("S", "L"):
                     return True
         return False
 
@@ -1280,16 +1287,18 @@ UNITS
             if not silent:
                 messagebox.showwarning("No Input ASD", "Load an Input ASD first.")
             return
-        if self._limit_asd_freqs is None:
-            if not silent:
-                messagebox.showwarning("No Limit ASD", "Load a Response Limit ASD first.")
-            return
 
         plot_dofs, limit_dofs, color_map, label_map = self._get_grid_dofs()
-        if not limit_dofs:
+        if not plot_dofs:
+            if not silent:
+                messagebox.showwarning("No DOFs",
+                                       "Add nodes and set at least one X/Y/Z cell to S or L.")
+            return
+        if self._limit_asd_freqs is not None and not limit_dofs:
             if not silent:
                 messagebox.showwarning("No Limit DOFs",
-                                       "Set at least one X/Y/Z cell to L in the node grid.")
+                                       "Limit ASD is loaded but no DOFs are set to L.\n"
+                                       "Set at least one X/Y/Z cell to L, or clear the Limit ASD.")
             return
 
         sc = self._get_subcase_int()
@@ -1316,33 +1325,36 @@ UNITS
         scale = 10.0 ** (scale_db / 10.0)
 
         orig_interp  = self._effective_input(freqs, scale)
-        limit_interp = interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
+        has_limit    = self._limit_asd_freqs is not None
+        limit_interp = (interp_loglog(self._limit_asd_freqs, self._limit_asd_vals, freqs)
+                        if has_limit else None)
 
-        min_allowed = np.full(len(freqs), np.inf)
-        missing     = []
+        missing        = []
         limit_dofs_set = set()
 
-        for nid, dof_idx in limit_dofs:
-            hits = np.where(entity_ids == nid)[0]
-            if not len(hits):
-                missing.append(f"{nid} {_DOF_NAMES[dof_idx]}")
-                continue
-            H_g = frf_tbl.data[:, hits[0], dof_idx] / unit_factor
-            H2  = H_g.real**2 + H_g.imag**2
-            with np.errstate(divide='ignore', invalid='ignore'):
-                min_allowed = np.minimum(
-                    min_allowed, np.where(H2 > 0, limit_interp / H2, np.inf))
-            limit_dofs_set.add((nid, dof_idx))
-
-        notched = np.minimum(orig_interp, min_allowed)
-        notched = np.where(np.isinf(notched), orig_interp, notched)
-
-        if self._notch_enabled_var.get():
-            try:
-                db = float(self._notch_db_var.get())
-            except ValueError:
-                db = 6.0
-            notched = np.maximum(notched, orig_interp * 10**(-db / 10.0))
+        if has_limit and limit_dofs:
+            min_allowed = np.full(len(freqs), np.inf)
+            for nid, dof_idx in limit_dofs:
+                hits = np.where(entity_ids == nid)[0]
+                if not len(hits):
+                    missing.append(f"{nid} {_DOF_NAMES[dof_idx]}")
+                    continue
+                H_g = frf_tbl.data[:, hits[0], dof_idx] / unit_factor
+                H2  = H_g.real**2 + H_g.imag**2
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    min_allowed = np.minimum(
+                        min_allowed, np.where(H2 > 0, limit_interp / H2, np.inf))
+                limit_dofs_set.add((nid, dof_idx))
+            notched = np.minimum(orig_interp, min_allowed)
+            notched = np.where(np.isinf(notched), orig_interp, notched)
+            if self._notch_enabled_var.get():
+                try:
+                    db = float(self._notch_db_var.get())
+                except ValueError:
+                    db = 6.0
+                notched = np.maximum(notched, orig_interp * 10**(-db / 10.0))
+        else:
+            notched = orig_interp
 
         response_curves = {}
         for nid, dof_idx in plot_dofs:
@@ -1554,10 +1566,11 @@ UNITS
             rb_grms = np.sqrt(max(0.0, grms_loglog(freqs, rb)))
             ra_grms = np.sqrt(max(0.0, grms_loglog(freqs, ra)))
 
-        ax.plot(freqs, self._limit_asd_interp,
-                color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
-        pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
-                                          "label": limit_name})
+        if self._limit_asd_interp is not None:
+            ax.plot(freqs, self._limit_asd_interp,
+                    color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
+                                              "label": limit_name})
         self._draw_aux_lines(ax)
         self._draw_picked_peaks(ax)
         leg = self._legend(ax)
@@ -1582,14 +1595,17 @@ UNITS
             lbl = self._label_map.get(key, f"Node {key[0]} {_DOF_NAMES[key[1]]}") + tag
             ax.plot(freqs, ra, color=col, label=lbl)
             pane["last_drawn_curves"].append({"freqs": freqs, "data": ra, "label": lbl})
-        ax.plot(freqs, self._limit_asd_interp,
-                color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
-        pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
-                                          "label": limit_name})
+        if self._limit_asd_interp is not None:
+            ax.plot(freqs, self._limit_asd_interp,
+                    color="#ff7f0e", linestyle=":", linewidth=2, label=limit_name)
+            pane["last_drawn_curves"].append({"freqs": freqs, "data": self._limit_asd_interp,
+                                              "label": limit_name})
         self._draw_aux_lines(ax)
         self._draw_picked_peaks(ax)
         self._legend(ax)
-        self._format_plot(pane, title=f"All Responses (notched) vs {limit_name}  ([L] = limit DOF)")
+        title = (f"All Responses vs {limit_name}  ([L] = limit DOF)"
+                 if self._limit_asd_interp is not None else "All Responses")
+        self._format_plot(pane, title=title)
         ax.set_xlim(freqs[0], freqs[-1])
 
     def _draw_grms_view(self, pane):
