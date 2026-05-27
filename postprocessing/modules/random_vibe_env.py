@@ -306,7 +306,7 @@ class RandomVibeEnvModule:
         body.pack(fill=tk.BOTH, expand=True)
 
         # Left: calculation details
-        left = ctk.CTkFrame(body, width=370)
+        left = ctk.CTkFrame(body, width=450)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(4, 0), pady=4)
         left.pack_propagate(False)
 
@@ -317,7 +317,7 @@ class RandomVibeEnvModule:
 
         self._details_box = ctk.CTkTextbox(
             left, wrap="none", state="disabled",
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=12),
         )
         self._details_box.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
