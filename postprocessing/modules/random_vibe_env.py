@@ -15,6 +15,7 @@ import customtkinter as ctk
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+import matplotlib.ticker as ticker
 
 from .asd_common import _THEMES, grms_loglog, interp_loglog
 
@@ -452,6 +453,8 @@ class RandomVibeEnvModule:
             color=t["text"],
         )
         ax.tick_params(colors=t["text"])
+        ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:.0f}"))
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:g}"))
         for spine in ax.spines.values():
             spine.set_edgecolor(t["spine"])
 
