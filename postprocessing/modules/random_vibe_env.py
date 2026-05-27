@@ -9,7 +9,7 @@ First supported spec: SMC-S-016 (2014), Appendix B.
 
 import math
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 import numpy as np
@@ -601,6 +601,19 @@ class RandomVibeEnvModule:
         _lname, db_offset, _dur = spec["test_levels"][self._level_idx]
         ra_scaled = ra * 10.0 ** (db_offset / 10.0)
 
+        raw      = self._weight_var.get().strip()
+        unit_str = self._unit_var.get()
+        default_name = f"{self._spec_key} {_lname} {raw}{unit_str}"
+
+        name = simpledialog.askstring(
+            "Export Name",
+            "Environment name (first line of file):",
+            initialvalue=default_name,
+            parent=self.frame.winfo_toplevel(),
+        )
+        if name is None:
+            return
+
         path = filedialog.asksaveasfilename(
             title="Export Reduced ASD Profile",
             defaultextension=".txt",
@@ -609,30 +622,11 @@ class RandomVibeEnvModule:
         if not path:
             return
 
-        grms_out = math.sqrt(max(grms_loglog(rf, ra_scaled), 0.0))
-        raw      = self._weight_var.get().strip()
-        unit_str = self._unit_var.get()
-
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(f"# {self._spec_key} — Weight-Adjusted RV Environment\n")
-                f.write(f"# Source: {spec['source']}\n")
-                f.write(f"# Baseline:  {spec['baseline_ref']}\n")
-                f.write(f"# Reduction: {spec['reduction_ref']}\n")
-                f.write(f"# Weight:    {raw} {unit_str}"
-                        f"  ({self._weight_lb:.1f} lb)\n")
-                f.write(f"# Level:     {_lname}"
-                        f"  ({'+' if db_offset >= 0 else ''}{db_offset:.0f} dB)\n")
-                if details.get("reduced"):
-                    f.write(f"# Reduction: {details['reduction_db']:.1f} dB"
-                            f"  (Eq. B.9)\n")
-                else:
-                    f.write(f"# Reduction: none  (W <= 50 lb)\n")
-                f.write(f"# GRMS:      {grms_out:.2f} g\n")
-                f.write("#\n")
-                f.write("# Freq (Hz)    ASD (g^2/Hz)\n")
+                f.write(f"{name}\n")
                 for freq, asd_val in zip(rf, ra_scaled):
-                    f.write(f"{freq:10.2f}  {asd_val:.6g}\n")
+                    f.write(f"{freq:.2f}  {asd_val:.6g}\n")
         except OSError as exc:
             messagebox.showerror("Export Error", str(exc))
             return
