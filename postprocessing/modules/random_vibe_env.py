@@ -226,7 +226,7 @@ class RandomVibeEnvModule:
 
     def __init__(self, parent):
         self.frame = ctk.CTkFrame(parent)
-        self._theme = "dark"
+        self._theme = "light"
 
         self._spec_key      = list(_SPECS.keys())[0]
         self._level_idx     = 0
@@ -284,6 +284,11 @@ class RandomVibeEnvModule:
         ctk.CTkButton(
             toolbar, text="Export", width=70,
             command=self._export,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ctk.CTkButton(
+            toolbar, text="Copy Figure", width=100,
+            command=self._copy_figure,
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         ctk.CTkButton(
@@ -454,7 +459,21 @@ class RandomVibeEnvModule:
         )
         ax.tick_params(colors=t["text"])
         ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:.0f}"))
+        ax.xaxis.set_minor_formatter(ticker.NullFormatter())
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:g}"))
+        ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+
+        # Y limits: snap to nearest decade below min and above max
+        all_asd = list(spec_asd)
+        if red_asd is not None:
+            all_asd.extend(red_asd)
+        pos = [v for v in all_asd if v > 0]
+        if pos:
+            y_lo = 10 ** math.floor(math.log10(min(pos)))
+            y_hi = 10 ** math.ceil(math.log10(max(pos)))
+            if y_lo < y_hi:
+                ax.set_ylim(y_lo, y_hi)
+
         for spine in ax.spines.values():
             spine.set_edgecolor(t["spine"])
 
@@ -621,6 +640,48 @@ class RandomVibeEnvModule:
         messagebox.showinfo("Exported", f"Saved to:\n{path}")
 
     # ── misc ──────────────────────────────────────────────────────────────────
+
+    def _copy_figure(self):
+        import io, os, tempfile, subprocess
+        buf = io.BytesIO()
+        try:
+            self._fig.savefig(buf, format='png', dpi=200, bbox_inches='tight',
+                              facecolor=self._fig.get_facecolor())
+        except Exception as exc:
+            messagebox.showerror("Copy Error", f"Could not render figure:\n{exc}")
+            return
+        buf.seek(0)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                f.write(buf.getvalue())
+                tmp = f.name
+            if os.name == 'nt':
+                ps = (
+                    'Add-Type -Assembly System.Windows.Forms;'
+                    '[Windows.Forms.Clipboard]::SetImage('
+                    f'[System.Drawing.Image]::FromFile("{tmp}"))'
+                )
+                subprocess.run(['powershell', '-Command', ps], check=True)
+            elif os.uname().sysname == 'Darwin':
+                subprocess.run(
+                    ['osascript', '-e',
+                     f'set the clipboard to '
+                     f'(read (POSIX file "{tmp}") as «class PNGf»)'],
+                    check=True)
+            else:
+                subprocess.run(
+                    ['xclip', '-selection', 'clipboard',
+                     '-t', 'image/png', '-i', tmp],
+                    check=True)
+        except Exception as exc:
+            messagebox.showerror("Copy Error", str(exc))
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     def _toggle_theme(self):
         self._theme = "light" if self._theme == "dark" else "dark"
