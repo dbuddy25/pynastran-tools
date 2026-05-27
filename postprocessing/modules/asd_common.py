@@ -7,6 +7,26 @@ so response_limiting.py can reuse them without duplication.
 import numpy as np
 
 
+_THEMES = {
+    "dark": {
+        "fig_bg":    "#2b2b2b",
+        "plot_bg":   "#1e1e1e",
+        "grid":      "#3a3a3a",
+        "text":      "#c0c0c0",
+        "spine":     "#505050",
+        "legend_bg": "#383838",
+    },
+    "light": {
+        "fig_bg":    "#f5f5f5",
+        "plot_bg":   "white",
+        "grid":      "#cccccc",
+        "text":      "#222222",
+        "spine":     "#888888",
+        "legend_bg": "white",
+    },
+}
+
+
 RESPONSE_TYPES = {
     "Acceleration": {
         "psd_attr": "accelerations",

@@ -73,21 +73,31 @@ try:
 except Exception:
     _response_limiting_available = False
 
+# RandomVibeEnvModule — lazy import with fallback
+_random_vibe_available = True
+try:
+    from modules.random_vibe_env import RandomVibeEnvModule
+except Exception:
+    _random_vibe_available = False
+
 from miles_equation import MilesEquationTool
 
 
 from _version import __version__
 
 
-def show_guide(parent, title, text):
+def show_guide(parent, title, text, *, font=None, width=550, height=420):
     """Open a non-modal guide dialog with read-only text."""
     win = ctk.CTkToplevel(parent)
     win.title(title)
-    win.geometry("550x420")
+    win.geometry(f"{width}x{height}")
     win.resizable(True, True)
     win.transient(parent)
 
-    tb = ctk.CTkTextbox(win, wrap="word")
+    tb_kwargs = {"wrap": "word"}
+    if font is not None:
+        tb_kwargs["font"] = font
+    tb = ctk.CTkTextbox(win, **tb_kwargs)
     tb.pack(fill="both", expand=True, padx=10, pady=(10, 5))
     tb.insert("1.0", text)
     tb.configure(state="disabled")
@@ -131,6 +141,7 @@ class Sidebar(ctk.CTkFrame):
         # Hand Calcs section
         self._add_section("Hand Calcs")
         self._add_tool("miles", "Miles Eq — RMS Disp")
+        self._add_tool("random_vibe", "RV Environment")
 
     def _add_section(self, label):
         ctk.CTkLabel(
@@ -240,6 +251,12 @@ class StructuresToolsApp(ctk.CTk):
 
         self._tools['miles'] = MilesEquationTool(self._content)
 
+        if _random_vibe_available:
+            rv = RandomVibeEnvModule(self._content)
+            self._tools['random_vibe'] = rv.frame
+        else:
+            self._sidebar.disable_tool("random_vibe")
+
         self._active_tool = None
 
     def _build_intro(self):
@@ -265,7 +282,7 @@ class StructuresToolsApp(ctk.CTk):
         categories = (
             "Pre-Processing — Mass Scale, Renumber, Thermal CTE",
             "Post-Processing — MEFFMASS, ESE Breakdown, CBUSH Forces, Mass Breakdown, ASD Overlay, Response Limiting",
-            "Hand Calcs — Miles Equation",
+            "Hand Calcs — Miles Equation, RV Environment",
         )
         for i, cat in enumerate(categories):
             ctk.CTkLabel(

@@ -36,16 +36,7 @@ _NODE_COLORS = (
     "#d62728", "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f",
 )
 
-_THEMES = {
-    "dark": {
-        "fig_bg": "#2b2b2b", "plot_bg": "#1e1e1e", "grid": "#3a3a3a",
-        "text": "#c0c0c0", "spine": "#505050", "legend_bg": "#383838",
-    },
-    "light": {
-        "fig_bg": "#f5f5f5", "plot_bg": "white", "grid": "#cccccc",
-        "text": "#222222", "spine": "#888888", "legend_bg": "white",
-    },
-}
+from .asd_common import _THEMES
 
 # Cell colours for S / L states
 _COL_S  = {"bg": "#1f6aa5", "fg": "white"}   # show only

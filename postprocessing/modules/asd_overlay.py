@@ -37,24 +37,7 @@ _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 _SC_LINES = ("-", "--", "-.", ":")  # linestyle cycle when multiple subcases selected
 _DARK_BG = "#2b2b2b"
-_THEMES = {
-    "dark": {
-        "fig_bg":    "#2b2b2b",
-        "plot_bg":   "#1e1e1e",
-        "grid":      "#3a3a3a",
-        "text":      "#c0c0c0",
-        "spine":     "#505050",
-        "legend_bg": "#383838",
-    },
-    "light": {
-        "fig_bg":    "#f5f5f5",
-        "plot_bg":   "white",
-        "grid":      "#cccccc",
-        "text":      "#222222",
-        "spine":     "#888888",
-        "legend_bg": "white",
-    },
-}
+from .asd_common import _THEMES
 
 
 class AsdOverlayModule:
