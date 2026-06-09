@@ -315,6 +315,9 @@ NOTES
     check model, not a replacement for your production files.
   - Remember to add TEMP/TEMPD load cards for the thermal
     excursion (e.g. delta-T = 1 degree).
+  - Ensure STRESS(PLOT)=ALL (or STRESS=ALL) is in Case
+    Control so the run outputs stress -- the tool flags this
+    if no STRESS request is found.
   - Temperature-dependent materials (MATT1, etc.) are NOT
     modified -- remove those references manually if needed.
 """
@@ -327,6 +330,7 @@ NOTES
         self._original_ctes = {}     # {mid: {'cte': {...}, 'tref': float}}
         self._rbe_info = []          # list of dicts per rigid element
         self._original_rbe = {}      # {eid: {'alpha': float, 'tref': float}}
+        self._stress_requested = None  # STRESS output present in Case Control?
 
         self._target_cte_var = tk.StringVar(value='1.0e-6')
         self._target_tref_var = tk.StringVar(value='0.0')
@@ -430,6 +434,11 @@ NOTES
             self, text="", font=ctk.CTkFont(size=12))
         self._summary_label.pack(fill=tk.X, padx=10, pady=(0, 0))
 
+        # Case Control recommendation (e.g. missing STRESS output request)
+        self._reco_label = ctk.CTkLabel(
+            self, text="", anchor=tk.W, font=ctk.CTkFont(size=12))
+        self._reco_label.pack(fill=tk.X, padx=10, pady=(0, 0))
+
         self._status_label = ctk.CTkLabel(
             self, text="", font=ctk.CTkFont(size=12), anchor=tk.W)
         self._status_label.pack(fill=tk.X, padx=10, pady=(0, 5))
@@ -479,6 +488,8 @@ NOTES
         self._extract_rigids()
         self._populate_sheet()
         self._populate_rigids_sheet()
+        self._stress_requested = self._stress_in_case_control()
+        self._update_stress_reco()
         self._status_label.configure(text="")
         self._path_label.configure(
             text=os.path.basename(path), text_color=("gray10", "gray90"))
@@ -604,6 +615,38 @@ NOTES
             if (info['alpha'] or 0.0) != 0.0:
                 self._rbe_sheet.highlight_rows(
                     rows=[i], bg="#4a3000", fg="#ffcc00")
+
+    # ------------------------------------------------------ Case Control check
+    def _stress_in_case_control(self):
+        """True if any subcase requests STRESS output.
+
+        Subcase 0 is the Case Control global default (applies to all
+        subcases), so a STRESS there counts for the whole deck.
+        """
+        cc = getattr(self.model, 'case_control_deck', None)
+        if cc is None:
+            return False
+        try:
+            for _sid, sub in cc.subcases.items():
+                res = sub.has_parameter('STRESS')
+                if any(res) if isinstance(res, (list, tuple)) else bool(res):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _update_stress_reco(self):
+        """Show a recommendation if no STRESS output request was found."""
+        if self._stress_requested:
+            self._reco_label.configure(
+                text="STRESS output requested in Case Control ✓",
+                text_color="gray")
+        else:
+            self._reco_label.configure(
+                text=("⚠ No STRESS output request in Case Control — "
+                      "add  STRESS(PLOT)=ALL  so the check produces stress to "
+                      "inspect."),
+                text_color="#d9822b")
 
     # ---------------------------------------------------------- Row select
     def _on_row_select(self, event=None):
@@ -761,12 +804,17 @@ NOTES
                     text=(f"✓ {base} verified — matches input except "
                           f"CTE ({n_mat} mat) / ALPHA ({n_rbe} RBE2)"),
                     text_color="#2e9e44")
+                stress_note = (
+                    "" if self._stress_requested else
+                    "\n\n⚠ No STRESS output request in Case Control — "
+                    "add STRESS(PLOT)=ALL before running so the check "
+                    "produces stress to inspect.")
                 messagebox.showinfo(
                     "Success",
                     f"Wrote uniform-CTE model to:\n{base}\n\n"
                     f"CTE = {target_cte:.6e}{tref_msg}\n\n"
                     "✓ Output verified: identical to input except the "
-                    "CTE/ALPHA edits.")
+                    f"CTE/ALPHA edits.{stress_note}")
 
         self._run_in_background(f"Writing {base}…", _work, _done)
 
