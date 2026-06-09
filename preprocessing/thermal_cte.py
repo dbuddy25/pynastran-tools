@@ -328,7 +328,7 @@ NOTES
         self._rbe_info = []          # list of dicts per rigid element
         self._original_rbe = {}      # {eid: {'alpha': float, 'tref': float}}
 
-        self._target_cte_var = tk.StringVar(value='1.0e-5')
+        self._target_cte_var = tk.StringVar(value='1.0e-6')
         self._target_tref_var = tk.StringVar(value='0.0')
         self._set_tref_var = ctk.BooleanVar(master=self, value=False)
 
@@ -377,39 +377,49 @@ NOTES
             state=tk.DISABLED, placeholder_text="0.0")
         self._tref_entry.pack(side=tk.LEFT, padx=(5, 0))
 
-        # --- Materials table ---
-        ctk.CTkLabel(self, text="Materials", anchor=tk.W,
+        # --- Resizable tables: drag the sash to resize the RBE2 pane ---
+        paned = tk.PanedWindow(
+            self, orient=tk.VERTICAL, sashrelief="raised", sashwidth=6,
+            bg="gray70")
+        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Materials pane
+        mat_pane = ctk.CTkFrame(paned, fg_color="transparent")
+        ctk.CTkLabel(mat_pane, text="Materials", anchor=tk.W,
                      font=ctk.CTkFont(size=12, weight="bold")).pack(
-            fill=tk.X, padx=10, pady=(8, 0))
+            fill=tk.X, padx=5, pady=(0, 0))
         headers = ["MID", "Type", "CTE-1", "CTE-2", "CTE-3", "TREF"]
         self._sheet = Sheet(
-            self, headers=headers,
+            mat_pane, headers=headers,
             show_top_left=False, show_row_index=False, height=300,
         )
-        self._sheet.pack(fill=tk.BOTH, expand=True, padx=5, pady=(2, 5))
+        self._sheet.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
         self._sheet.disable_bindings()
         self._sheet.enable_bindings(
             "single_select", "copy", "arrowkeys",
             "column_width_resize", "row_height_resize",
         )
         self._sheet.readonly_columns(columns=list(range(len(headers))))
+        paned.add(mat_pane, minsize=120, stretch="always")
 
-        # --- Rigid elements table ---
-        ctk.CTkLabel(self, text="Rigid Elements (RBE2)", anchor=tk.W,
+        # Rigid elements pane
+        rbe_pane = ctk.CTkFrame(paned, fg_color="transparent")
+        ctk.CTkLabel(rbe_pane, text="Rigid Elements (RBE2)", anchor=tk.W,
                      font=ctk.CTkFont(size=12, weight="bold")).pack(
-            fill=tk.X, padx=10, pady=(4, 0))
+            fill=tk.X, padx=5, pady=(0, 0))
         rbe_headers = ["EID", "Type", "ALPHA", "TREF"]
         self._rbe_sheet = Sheet(
-            self, headers=rbe_headers,
+            rbe_pane, headers=rbe_headers,
             show_top_left=False, show_row_index=False, height=150,
         )
-        self._rbe_sheet.pack(fill=tk.X, padx=5, pady=(2, 5))
+        self._rbe_sheet.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
         self._rbe_sheet.disable_bindings()
         self._rbe_sheet.enable_bindings(
             "single_select", "copy", "arrowkeys",
             "column_width_resize", "row_height_resize",
         )
         self._rbe_sheet.readonly_columns(columns=list(range(len(rbe_headers))))
+        paned.add(rbe_pane, minsize=80, stretch="always")
 
         # --- Detail + Summary + Status ---
         self._detail_label = ctk.CTkLabel(
@@ -656,94 +666,84 @@ NOTES
         if not out_path:
             return
 
-        # Apply uniform CTE (and optionally TREF) to all CTE materials
-        for mid, mat in self.model.materials.items():
-            if mat.type not in _CTE_MAT_TYPES:
-                continue
-            _set_uniform_cte(mat, target_cte)
-            if set_tref and target_tref is not None:
-                _set_tref(mat, target_tref)
-
-        # Apply the same uniform ALPHA (and optionally TREF) to rigid elements
-        for eid, rbe in self.model.rigid_elements.items():
-            if rbe.type not in _RBE_TYPES:
-                continue
-            _set_rbe_alpha(rbe, target_cte)
-            if set_tref and target_tref is not None:
-                _set_tref(rbe, target_tref)
-
-        # Write the modified model
-        try:
-            self.model.write_bdf(out_path, size=8, is_double=False)
-        except Exception:
-            import traceback
-            messagebox.showerror(
-                "Write Error",
-                f"Could not write BDF:\n{traceback.format_exc()}")
-            self._restore_originals()
-            return
-
-        # Restore original values so display/re-export stays correct
-        self._restore_originals()
-
-        # Verify the output matches the input except for the CTE/ALPHA edits.
-        self._verify_output(out_path, target_cte, target_tref, set_tref)
-
-    def _restore_originals(self):
-        """Put original CTE/TREF values back on the model."""
-        for mid, orig in self._original_ctes.items():
-            mat = self.model.materials.get(mid)
-            if mat is None:
-                continue
-            _restore_cte(mat, orig['cte'])
-            _set_tref(mat, orig['tref'])
-        for eid, orig in self._original_rbe.items():
-            rbe = self.model.rigid_elements.get(eid)
-            if rbe is None:
-                continue
-            _restore_rbe_alpha(rbe, orig['alpha'])
-            _set_tref(rbe, orig['tref'])
-
-    # ----------------------------------------------------- Output verification
-    def _verify_output(self, out_path, target_cte, target_tref, set_tref):
-        """Re-read the written BDF and confirm it matches the input.
-
-        The restored in-memory model is the original input; we round-trip it
-        through the SAME size=8 write/read as the output so non-target cards
-        compare apples-to-apples, then diff. Heavy I/O runs off the UI thread.
-        """
         base = os.path.basename(out_path)
         n_mat = len(self._mat_info)
         n_rbe = len(self._rbe_info)
         tref_msg = f"\nTREF = {target_tref}" if set_tref else ""
 
+        # Progress popup (indeterminate) shown while writing + verifying.
+        # The worker only writes phase['text'] (a plain string); a main-thread
+        # pump reflects it into the label, keeping all Tk calls on the UI thread.
+        phase = {'text': f"Writing {base}…"}
+        popup, plabel, pbar = self._make_progress_popup(
+            "Writing BDF", phase['text'])
+
+        def _pump():
+            if not popup.winfo_exists():
+                return
+            plabel.configure(text=phase['text'])
+            popup.after(120, _pump)
+        popup.after(120, _pump)
+
         def _work():
             tmp = tempfile.NamedTemporaryFile(suffix='.bdf', delete=False)
             tmp.close()
             try:
-                # Baseline: original model through the identical size=8 path.
+                # Apply uniform CTE/ALPHA to materials and rigid elements.
+                phase['text'] = "Applying uniform CTE / ALPHA…"
+                for mid, mat in self.model.materials.items():
+                    if mat.type in _CTE_MAT_TYPES:
+                        _set_uniform_cte(mat, target_cte)
+                        if set_tref and target_tref is not None:
+                            _set_tref(mat, target_tref)
+                for eid, rbe in self.model.rigid_elements.items():
+                    if rbe.type in _RBE_TYPES:
+                        _set_rbe_alpha(rbe, target_cte)
+                        if set_tref and target_tref is not None:
+                            _set_tref(rbe, target_tref)
+
+                # Write the modified model, then restore so the in-memory model
+                # (the verification baseline) is the original input again.
+                phase['text'] = f"Writing {base}…"
+                self.model.write_bdf(out_path, size=8, is_double=False)
+                self._restore_originals()
+
+                # Baseline: original through the identical size=8 round-trip.
+                phase['text'] = "Building baseline (size=8 round-trip)…"
                 self.model.write_bdf(tmp.name, size=8, is_double=False)
                 baseline = make_model(_CARDS_TO_SKIP)
                 read_bdf_safe(baseline, tmp.name)
+
+                phase['text'] = "Re-reading output to verify…"
                 out_model = make_model(_CARDS_TO_SKIP)
                 read_bdf_safe(out_model, out_path)
+
+                phase['text'] = "Comparing output to input…"
                 return _compare_models(
                     baseline, out_model, target_cte, target_tref, set_tref)
             finally:
+                # Always leave the in-memory model in its original state.
+                self._restore_originals()
                 try:
                     os.remove(tmp.name)
                 except OSError:
                     pass
 
         def _done(issues, error):
+            pbar.stop()
+            if popup.winfo_exists():
+                try:
+                    popup.grab_release()
+                except Exception:
+                    pass
+                popup.destroy()
             self._write_btn.configure(state=tk.NORMAL)
             if error is not None:
                 self._status_label.configure(
-                    text=f"Wrote {base} — could not verify output",
-                    text_color="orange")
-                messagebox.showwarning(
-                    "Verification Error",
-                    f"Wrote the BDF but could not verify it:\n{error}")
+                    text=f"Write/verify failed for {base}", text_color="red")
+                messagebox.showerror(
+                    "Write Error",
+                    f"Could not write/verify the BDF:\n{error}")
                 return
             if issues:
                 self._status_label.configure(
@@ -768,8 +768,58 @@ NOTES
                     "✓ Output verified: identical to input except the "
                     "CTE/ALPHA edits.")
 
-        self._run_in_background(
-            f"Verifying {base}…", _work, _done)
+        self._run_in_background(f"Writing {base}…", _work, _done)
+
+    def _restore_originals(self):
+        """Put original CTE/TREF values back on the model."""
+        for mid, orig in self._original_ctes.items():
+            mat = self.model.materials.get(mid)
+            if mat is None:
+                continue
+            _restore_cte(mat, orig['cte'])
+            _set_tref(mat, orig['tref'])
+        for eid, orig in self._original_rbe.items():
+            rbe = self.model.rigid_elements.get(eid)
+            if rbe is None:
+                continue
+            _restore_rbe_alpha(rbe, orig['alpha'])
+            _set_tref(rbe, orig['tref'])
+
+    # ------------------------------------------------------- Progress popup
+    def _make_progress_popup(self, title, initial_text):
+        """Create a small modal popup with an indeterminate progress bar.
+
+        Returns (window, label, progressbar). The caller drives the label text
+        and destroys the window when done.
+        """
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.resizable(False, False)
+        win.transient(self.winfo_toplevel())
+
+        label = ctk.CTkLabel(win, text=initial_text, anchor=tk.W,
+                             font=ctk.CTkFont(size=12))
+        label.pack(fill=tk.X, padx=20, pady=(24, 10))
+
+        bar = ctk.CTkProgressBar(win, mode="indeterminate", width=320)
+        bar.pack(padx=20, pady=(0, 22))
+        bar.start()
+
+        # Center over the parent window.
+        win.update_idletasks()
+        w, h = 380, 130
+        try:
+            parent = self.winfo_toplevel()
+            px, py = parent.winfo_rootx(), parent.winfo_rooty()
+            pw, ph = parent.winfo_width(), parent.winfo_height()
+            win.geometry(f"{w}x{h}+{px + (pw - w) // 2}+{py + (ph - h) // 2}")
+        except Exception:
+            win.geometry(f"{w}x{h}")
+
+        win.lift()
+        # Grab once the window is viewable (avoids a not-yet-mapped TclError).
+        win.after(150, lambda: win.winfo_exists() and win.grab_set())
+        return win, label, bar
 
     def _run_in_background(self, label, work_fn, done_fn):
         """Run *work_fn* off the UI thread; call *done_fn(result, error)* after.
