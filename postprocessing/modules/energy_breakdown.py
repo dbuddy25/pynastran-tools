@@ -615,7 +615,8 @@ class EnergyBreakdownModule:
         # Raw data from OP2
         self._modes = None        # array of mode numbers
         self._freqs = None        # array of frequencies
-        self._ese_by_eid = None   # {eid: array[nmodes] of percent}
+        self._ese_by_eid = None   # {eid: array[nmodes] of strain ENERGY}
+        self._total_energy = None  # array[nmodes] model total strain energy
 
         # Mappings from BDF
         self._eid_to_pid = {}
@@ -881,12 +882,21 @@ REQUIREMENTS
         self._run_in_background("Loading OP2\u2026", _work, _done)
 
     def _collect_strain_energy(self, op2):
-        """Discover all *_strain_energy attributes and collect ESE% per element.
+        """Discover all *_strain_energy attributes and collect ESE energy per element.
 
-        Returns {eid: array[nmodes]} of percent values.
+        Returns {eid: array[nmodes]} of absolute strain-ENERGY values (column 0
+        of the pyNastran ESE table) and sets ``self._total_energy`` to the model
+        total strain energy per mode (the sum over all captured elements).
+
+        Percentages are derived later from this single, consistent total — we do
+        NOT trust the per-element percent column. In superelement/DMIG models the
+        percent column does not sum to 100 across the various ESE tables, so
+        summing it produced group totals well above 100 %. Recomputing from energy
+        against one denominator makes every breakdown a true fraction of the model
+        total (groups sum to <= 100 %, the remainder shown as "Unattributed").
         """
         nmodes = len(self._modes)
-        ese_by_eid = {}
+        energy_by_eid = {}
 
         # Modern pyNastran (1.4+): data lives in op2.op2_results.strain_energy
         se = getattr(getattr(op2, 'op2_results', None), 'strain_energy', None)
@@ -910,35 +920,40 @@ REQUIREMENTS
                 if eids.ndim == 2:
                     eids = eids[0]
                 # data shape: (nmodes, nelems, ncols)
-                # column index 1 = percent of total
+                # column index 0 = strain_energy, 1 = percent, 2 = density
                 data = result.data
-                if data.ndim != 3 or data.shape[2] < 2:
+                if data.ndim != 3 or data.shape[2] < 1:
                     continue
 
-                percent_data = data[:, :, 1]  # (nmodes, nelems)
+                energy_data = data[:, :, 0]  # (nmodes, nelems)
 
                 for j, eid in enumerate(eids):
-                    # Skip DMIG sentinel entries (eid=100000000 or non-int)
+                    # Skip DMIG / aggregate sentinel entries (eid=1e8 or non-int)
                     try:
                         eid_int = int(eid)
                     except (ValueError, TypeError):
                         continue
                     if eid_int >= 100000000:
                         continue
+                    # Same eid in another ESE table: keep the first, never
+                    # double-add (double-adding was a source of >100 % totals).
+                    if eid_int in energy_by_eid:
+                        continue
 
-                    pct = percent_data[:, j]
-                    n = min(len(pct), nmodes)
-                    if eid_int in ese_by_eid:
-                        # Sum contributions if element appears in multiple tables
-                        ese_by_eid[eid_int][:n] += pct[:n]
-                    else:
-                        arr = np.zeros(nmodes)
-                        arr[:n] = pct[:n]
-                        ese_by_eid[eid_int] = arr
+                    e = energy_data[:, j]
+                    n = min(len(e), nmodes)
+                    arr = np.zeros(nmodes)
+                    arr[:n] = e[:n]
+                    energy_by_eid[eid_int] = arr
 
                 break  # Only process first valid result per element type
 
-        return ese_by_eid
+        # Model total strain energy per mode = sum over all captured elements.
+        total = np.zeros(nmodes)
+        for arr in energy_by_eid.values():
+            total += arr
+        self._total_energy = total
+        return energy_by_eid
 
     # ---------------------------------------------------------- BDF loading
     def _open_bdf(self):
@@ -1102,6 +1117,7 @@ REQUIREMENTS
         self._modes = None
         self._freqs = None
         self._ese_by_eid = None
+        self._total_energy = None
 
         # BDF mappings
         self._eid_to_pid = {}
@@ -1141,6 +1157,17 @@ REQUIREMENTS
         nmodes = len(self._modes)
         group_by = self._group_by_var.get()
 
+        # Model total strain energy per mode -> single percentage denominator.
+        total = self._total_energy
+        if total is None:
+            total = np.zeros(nmodes)
+            for arr in self._ese_by_eid.values():
+                total += arr
+        safe_total = np.where(np.abs(total) < 1e-30, 1.0, total)
+
+        def to_pct(arr):
+            return 100.0 * arr / safe_total
+
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
             mapping = self._eid_to_pid
@@ -1154,30 +1181,27 @@ REQUIREMENTS
             label_fn = None
 
         if mapping is None:
-            # No grouping: show total only
-            total = np.zeros(nmodes)
-            for pct in self._ese_by_eid.values():
-                total += pct
-            return ['All Elements'], {'All Elements': total}
+            # No grouping: every element in one bucket -> 100 %
+            grouped = np.zeros(nmodes)
+            for arr in self._ese_by_eid.values():
+                grouped += arr
+            return ['All Elements'], {'All Elements': to_pct(grouped)}
 
-        # Group elements (unmapped elements silently excluded)
-        raw_groups = {}   # {group_id: array[nmodes]}
+        # Bucket each element's ENERGY into its group; track the grouped total
+        # so the leftover (elements with no group) becomes "Unattributed".
+        raw_groups = {}   # {group_id: array[nmodes]} in energy units
+        grouped_total = np.zeros(nmodes)
 
-        for eid, pct in self._ese_by_eid.items():
+        for eid, energy in self._ese_by_eid.items():
             gid = mapping.get(eid)
-            if gid is not None:
-                # For Include File grouping, only count elements that also have
-                # a property mapping.  Rigid elements (RBE2/RBE3) and property-
-                # less mass elements (CONM2) live in _eid_to_file but not
-                # _eid_to_pid; if Nastran reports non-zero ESE for them (common
-                # with DMIG models) they inflate the file total above 100 %.
-                if group_by == "Include File" and eid not in self._eid_to_pid:
-                    continue
-                if gid not in raw_groups:
-                    raw_groups[gid] = np.zeros(nmodes)
-                raw_groups[gid] += pct
+            if gid is None:
+                continue
+            if gid not in raw_groups:
+                raw_groups[gid] = np.zeros(nmodes)
+            raw_groups[gid] += energy
+            grouped_total += energy
 
-        # Apply custom group merges
+        # Apply custom group merges (still in energy units)
         if self._custom_groups:
             merged_groups = {}
             consumed_ids = set()
@@ -1231,7 +1255,19 @@ REQUIREMENTS
         else:
             labels = sorted(final_groups.keys(), key=self._group_sort_key)
 
-        return labels, final_groups
+        # Convert energy buckets -> percent of the model total.
+        pct_groups = {lbl: to_pct(arr) for lbl, arr in final_groups.items()}
+
+        # Energy not attributed to any group (rigids/no-PID for Property
+        # grouping, unmapped elements for Include grouping) -> explicit column,
+        # so the displayed Total still sums to 100 % with nothing hidden.
+        unattributed = total - grouped_total
+        unattr_pct = to_pct(unattributed)
+        if np.any(np.abs(unattr_pct) >= 0.05):
+            pct_groups['Unattributed'] = unattr_pct
+            labels = labels + ['Unattributed']
+
+        return labels, pct_groups
 
     @staticmethod
     def _group_sort_key(label):
