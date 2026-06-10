@@ -927,6 +927,12 @@ REQUIREMENTS
 
                 energy_data = data[:, :, 0]  # (nmodes, nelems)
 
+                # Accumulate WITHIN this table first. A table may list an element
+                # on multiple rows (e.g. composite PCOMP plies); those rows are
+                # the element's energy split up and must be SUMMED to the element
+                # total. (Summing per-ply is correct; the bug was summing the same
+                # element ACROSS two different tables — handled below.)
+                table_energy = {}
                 for j, eid in enumerate(eids):
                     # Skip DMIG / aggregate sentinel entries (eid=1e8 or non-int)
                     try:
@@ -935,16 +941,19 @@ REQUIREMENTS
                         continue
                     if eid_int >= 100000000:
                         continue
-                    # Same eid in another ESE table: keep the first, never
-                    # double-add (double-adding was a source of >100 % totals).
-                    if eid_int in energy_by_eid:
-                        continue
-
                     e = energy_data[:, j]
                     n = min(len(e), nmodes)
-                    arr = np.zeros(nmodes)
-                    arr[:n] = e[:n]
-                    energy_by_eid[eid_int] = arr
+                    arr = table_energy.get(eid_int)
+                    if arr is None:
+                        arr = np.zeros(nmodes)
+                        table_energy[eid_int] = arr
+                    arr[:n] += e[:n]
+
+                # Merge into the global map: first table wins for a given eid,
+                # so an element duplicated across tables is counted only once.
+                for eid_int, arr in table_energy.items():
+                    if eid_int not in energy_by_eid:
+                        energy_by_eid[eid_int] = arr
 
                 break  # Only process first valid result per element type
 
