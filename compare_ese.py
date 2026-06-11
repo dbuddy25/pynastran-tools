@@ -55,15 +55,22 @@ def read_op2_ese(op2_path):
         data = getattr(r, 'data', None)
         if data is None or getattr(data, 'ndim', 0) != 3 or data.shape[2] < 2:
             continue
-        eids = r.element
-        eids = eids[0] if getattr(eids, 'ndim', 1) == 2 else eids
+        el = r.element
+        two_d = getattr(el, 'ndim', 1) == 2
         nm = min(nmodes, data.shape[0])
-        for j, e in enumerate(eids):
-            ei = int(e)
-            if not (0 < ei < 100000000) or ei in energy:
-                continue
-            energy[ei] = np.asarray(data[:nm, j, 0])
-            percent[ei] = np.asarray(data[:nm, j, 1])
+        # pyNastran stores a per-mode element order; pair each mode's data row
+        # with THAT mode's element order (element[mi]), not element[0].
+        for mi in range(nm):
+            eids_row = el[mi] if two_d else el
+            for j in range(min(len(eids_row), data.shape[1])):
+                ei = int(eids_row[j])
+                if not (0 < ei < 100000000):
+                    continue
+                if ei not in energy:
+                    energy[ei] = np.zeros(nmodes)
+                    percent[ei] = np.zeros(nmodes)
+                energy[ei][mi] = data[mi, j, 0]
+                percent[ei][mi] = data[mi, j, 1]
     return modes, energy, percent
 
 

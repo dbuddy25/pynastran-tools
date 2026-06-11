@@ -1113,15 +1113,15 @@ REQUIREMENTS
             # a phantom EKE copy -> skip it (don't count kinetic energy as strain).
             result = chosen
             if result is not None:
-                eids = result.element
-                # element array is 2D (ntimes, nelems) in pyNastran 1.4+
-                # Use first time step — element IDs are the same across all modes
-                if eids.ndim == 2:
-                    eids = eids[0]
+                # CRITICAL: pyNastran stores a DIFFERENT element order per mode
+                # in result.element[itime]. Using element[0] for every mode (as
+                # we used to) pairs each mode's energies with the WRONG element
+                # IDs and leaks the eid=1e8 total row onto a real element,
+                # doubling that mode. Keep the 2D array and pair each mode's
+                # energy row with ITS OWN element order.
+                eids2d = result.element
                 # data shape: (ntimes, nelems, ncols); column 0 = strain energy.
-                # Use the absolute ENERGY column. pyNastran's percent column
-                # (col 1) is wrong on repeated-eigenvalue modes; the energy
-                # column is correct, and %ESE = energy/total recovers Femap.
+                # Use the absolute ENERGY column; %ESE = energy/total (aggregation).
                 data = result.data
                 if data.ndim != 3 or data.shape[2] < 1:
                     skipped_types += 1
@@ -1129,11 +1129,9 @@ REQUIREMENTS
 
                 energy_data = data[:, :, 0]  # (ntimes, nelems) — absolute energy
 
-                # Align this table's rows to self._modes by matching mode numbers.
-                # pyNastran sets result.modes (== result._times) to the actual
-                # mode number of each data row; assuming row i == mode i is wrong
-                # when ESE is output for only a subset of modes (every value would
-                # shift to the wrong mode and the tail zero-pad, silently).
+                # Map each self._modes entry to its data-ROW index via the row's
+                # actual mode number (result.modes); positional i==i is wrong when
+                # ESE is output for only a subset of modes.
                 ese_modes = getattr(result, 'modes', None)
                 if ese_modes is None:
                     ese_modes = getattr(result, '_times', None)
@@ -1153,37 +1151,37 @@ REQUIREMENTS
                             row_for_mode.append(None)
                     if any(r is None for r in row_for_mode):
                         mode_mismatch = True
-                else:
-                    # No usable per-row mode list (or count mismatch): can't trust
-                    # positional alignment — flag it rather than silently shifting.
-                    if data.shape[0] != nmodes:
-                        mode_mismatch = True
+                elif data.shape[0] != nmodes:
+                    mode_mismatch = True
 
-                # Count each element's ENERGY once (first row wins). Exclude
-                # non-element rows: aggregate/total rows (eid <= 0) and DMIG /
-                # superelement sentinels (eid >= 1e8).
-                for j, eid in enumerate(eids):
-                    try:
-                        eid_int = int(eid)
-                    except (ValueError, TypeError):
+                # For each mode, pair that mode's element order (eids2d[ridx]) with
+                # that mode's energy row (energy_data[ridx]) — element[ridx][j] and
+                # data[ridx][j] are written together, so they are aligned. Exclude
+                # non-element rows: eid <= 0 and eid >= 1e8 (the total row).
+                two_d = getattr(eids2d, 'ndim', 1) == 2
+                for mi in range(nmodes):
+                    ridx = (row_for_mode[mi] if row_for_mode is not None
+                            else (mi if mi < data.shape[0] else None))
+                    if ridx is None:
                         continue
-                    if eid_int <= 0 or eid_int >= 100000000:
-                        continue
-                    if eid_int in energy_by_eid:
-                        dup_rows += 1
-                        continue
-                    e = energy_data[:, j]
-                    arr = np.zeros(nmodes)
-                    if row_for_mode is not None:
-                        # Place each table row under its matching eigenvalue mode.
-                        for mi, ridx in enumerate(row_for_mode):
-                            if ridx is not None:
-                                arr[mi] = e[ridx]
-                    else:
-                        # Best-effort positional fill (mismatch already flagged).
-                        n = min(len(e), nmodes)
-                        arr[:n] = e[:n]
-                    energy_by_eid[eid_int] = arr
+                    eids_row = eids2d[ridx] if two_d else eids2d
+                    energy_row = energy_data[ridx]
+                    nj = min(len(eids_row), len(energy_row))
+                    for j in range(nj):
+                        try:
+                            eid_int = int(eids_row[j])
+                        except (ValueError, TypeError):
+                            continue
+                        if eid_int <= 0 or eid_int >= 100000000:
+                            continue
+                        arr = energy_by_eid.get(eid_int)
+                        if arr is None:
+                            arr = np.zeros(nmodes)
+                            energy_by_eid[eid_int] = arr
+                        elif arr[mi] != 0.0:
+                            dup_rows += 1     # same eid twice in one mode's rows
+                            continue
+                        arr[mi] = energy_row[j]
 
         self._dup_rows = dup_rows
         self._mode_mismatch = mode_mismatch
