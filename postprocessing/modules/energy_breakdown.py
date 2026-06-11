@@ -619,6 +619,7 @@ class EnergyBreakdownModule:
         self._total_energy = None  # unused (percent-based, Femap-faithful)
         self._nonbdf_eids = []    # ESE rows with no matching BDF element
         self._nonbdf_pct = 0.0    # max % of total energy on those rows
+        self._dup_rows = 0        # duplicate ESE element rows counted once
 
         # Mappings from BDF
         self._eid_to_pid = {}
@@ -900,6 +901,7 @@ REQUIREMENTS
         """
         nmodes = len(self._modes)
         pct_by_eid = {}
+        dup_rows = 0  # ESE rows for an element already seen (counted once)
 
         # Modern pyNastran (1.4+): data lives in op2.op2_results.strain_energy
         se = getattr(getattr(op2, 'op2_results', None), 'strain_energy', None)
@@ -930,12 +932,12 @@ REQUIREMENTS
 
                 percent_data = data[:, :, 1]  # (nmodes, nelems) — vector 80001
 
-                # Accumulate WITHIN this table first. A table may list an element
-                # on multiple rows (e.g. composite PCOMP plies); those rows are
-                # the element's percent split up and must be SUMMED to the element
-                # total. (Summing per-ply is correct; double-counting an element
-                # ACROSS two different tables is the bug — handled below.)
-                table_pct = {}
+                # Count each element's percent ONCE (first row wins) — exactly
+                # like Femap, which reads one per-element value from vector 80001.
+                # Element IDs are globally unique in Nastran, so any repeat row
+                # for an eid (within a table or across tables) is a duplicate and
+                # must NOT be added — summing repeats was double-counting elements
+                # and pushing group totals past 100 % (e.g. an exact 200 %).
                 for j, eid in enumerate(eids):
                     # Skip DMIG / aggregate sentinel entries (eid=1e8 or non-int)
                     try:
@@ -944,21 +946,18 @@ REQUIREMENTS
                         continue
                     if eid_int >= 100000000:
                         continue
+                    if eid_int in pct_by_eid:
+                        dup_rows += 1
+                        continue
                     p = percent_data[:, j]
                     n = min(len(p), nmodes)
-                    arr = table_pct.get(eid_int)
-                    if arr is None:
-                        arr = np.zeros(nmodes)
-                        table_pct[eid_int] = arr
-                    arr[:n] += p[:n]
-
-                # Merge into the global map: first table wins for a given eid,
-                # so an element duplicated across tables is counted only once.
-                for eid_int, arr in table_pct.items():
-                    if eid_int not in pct_by_eid:
-                        pct_by_eid[eid_int] = arr
+                    arr = np.zeros(nmodes)
+                    arr[:n] = p[:n]
+                    pct_by_eid[eid_int] = arr
 
                 break  # Only process first valid result per element type
+
+        self._dup_rows = dup_rows
 
         self._total_energy = None  # unused in the percent-based (Femap) approach
         return pct_by_eid
@@ -1379,22 +1378,26 @@ REQUIREMENTS
         if len(table_data) > 1:
             self._sheet.readonly_rows(rows=list(range(1, len(table_data))))
 
-        # Data-integrity note: ESE rows that aren't real BDF elements were
-        # excluded (pyNastran subtotal/total rows). A handful is normal; a large
-        # count suggests the OP2 and BDF don't correspond.
+        # Data-integrity note. Duplicate element rows (counted once) and
+        # non-element rows (pyNastran subtotals/totals, excluded) are reported
+        # so any double-count or OP2/BDF mismatch is visible rather than silent.
         n = len(getattr(self, '_nonbdf_eids', []))
-        if n and self._bdf_loaded:
+        dups = getattr(self, '_dup_rows', 0)
+        notes = []
+        if dups:
+            notes.append(f"{dups} duplicate ESE row(s) counted once")
+        if n:
             pct = getattr(self, '_nonbdf_pct', 0.0)
             if n > 50:
-                self._status_label.configure(
-                    text=(f"⚠ {n} ESE rows not found in BDF "
-                          f"(~{pct:.0f}% of energy) — possible OP2/BDF mismatch"),
-                    text_color="#d9822b")
+                notes.append(f"⚠ {n} rows not in BDF (~{pct:.0f}% of energy) "
+                             "— possible OP2/BDF mismatch")
             else:
-                self._status_label.configure(
-                    text=(f"Excluded {n} non-element ESE row(s) "
-                          f"(pyNastran subtotal/total rows)"),
-                    text_color="gray")
+                notes.append(f"{n} non-element row(s) excluded")
+        if notes and self._bdf_loaded:
+            warn = (n > 50)
+            self._status_label.configure(
+                text="  |  ".join(notes),
+                text_color="#d9822b" if warn else "gray")
 
         self._apply_highlights()
 
