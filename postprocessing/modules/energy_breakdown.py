@@ -618,8 +618,12 @@ class EnergyBreakdownModule:
         self._ese_by_eid = None   # {eid: array[nmodes] of ESE PERCENT (vec 80001)}
         self._total_energy = None  # unused (percent-based, Femap-faithful)
         self._nonbdf_eids = []    # ESE rows with no matching BDF element
-        self._nonbdf_pct = 0.0    # max % of total energy on those rows
+        self._nonbdf_pct = 0.0    # mean % of total energy on those rows
         self._dup_rows = 0        # duplicate ESE element rows counted once
+        self._nonbdf_total_dev = 0.0  # max |flat total - 100| when no BDF loaded
+        self._mode_mismatch = False  # ESE rows could not be aligned to modes
+        self._multi_subcase = False  # >1 subcase in an ESE table (rest skipped)
+        self._skipped_types = 0   # element types skipped (no percent column)
 
         # Mappings from BDF
         self._eid_to_pid = {}
@@ -902,6 +906,9 @@ REQUIREMENTS
         nmodes = len(self._modes)
         pct_by_eid = {}
         dup_rows = 0  # ESE rows for an element already seen (counted once)
+        mode_mismatch = False  # set if rows can't be aligned to self._modes
+        multi_subcase = False  # set if any ESE table has >1 subcase
+        skipped_types = 0      # element types skipped for missing percent col
 
         # Modern pyNastran (1.4+): data lives in op2.op2_results.strain_energy
         se = getattr(getattr(op2, 'op2_results', None), 'strain_energy', None)
@@ -915,22 +922,69 @@ REQUIREMENTS
             if not isinstance(result_dict, dict) or not result_dict:
                 continue
 
+            if len(result_dict) > 1:
+                multi_subcase = True
+            # Prefer the subcase whose data row count matches the eigenvalue
+            # mode count; fall back to the first valid result. Processing only
+            # the first subcase silently dropped multi-subcase modal runs.
+            chosen = None
+            fallback = None
             for subcase_id, result in result_dict.items():
                 if not hasattr(result, 'data') or not hasattr(result, 'element'):
                     continue
-
+                rdata = getattr(result, 'data', None)
+                if fallback is None:
+                    fallback = result
+                if (rdata is not None and getattr(rdata, 'ndim', 0) == 3
+                        and rdata.shape[0] == nmodes):
+                    chosen = result
+                    break
+            result = chosen if chosen is not None else fallback
+            if result is not None:
                 eids = result.element
                 # element array is 2D (ntimes, nelems) in pyNastran 1.4+
                 # Use first time step — element IDs are the same across all modes
                 if eids.ndim == 2:
                     eids = eids[0]
-                # data shape: (nmodes, nelems, ncols)
+                # data shape: (ntimes, nelems, ncols)
                 # column index 0 = strain_energy, 1 = percent, 2 = density
                 data = result.data
                 if data.ndim != 3 or data.shape[2] < 2:
+                    # No percent column — count the skip so it isn't lost silently.
+                    skipped_types += 1
                     continue
 
-                percent_data = data[:, :, 1]  # (nmodes, nelems) — vector 80001
+                percent_data = data[:, :, 1]  # (ntimes, nelems) — vector 80001
+
+                # Align this table's rows to self._modes by matching mode numbers.
+                # pyNastran sets result.modes (== result._times) to the actual
+                # mode number of each data row; assuming row i == mode i is wrong
+                # when ESE is output for only a subset of modes (every value would
+                # shift to the wrong mode and the tail zero-pad, silently).
+                ese_modes = getattr(result, 'modes', None)
+                if ese_modes is None:
+                    ese_modes = getattr(result, '_times', None)
+                row_for_mode = None
+                if ese_modes is not None and len(ese_modes) == data.shape[0]:
+                    mode_to_row = {}
+                    for ridx, mval in enumerate(ese_modes):
+                        try:
+                            mode_to_row[int(mval)] = ridx
+                        except (ValueError, TypeError):
+                            pass
+                    row_for_mode = []
+                    for mnum in self._modes:
+                        try:
+                            row_for_mode.append(mode_to_row.get(int(mnum)))
+                        except (ValueError, TypeError):
+                            row_for_mode.append(None)
+                    if any(r is None for r in row_for_mode):
+                        mode_mismatch = True
+                else:
+                    # No usable per-row mode list (or count mismatch): can't trust
+                    # positional alignment — flag it rather than silently shifting.
+                    if data.shape[0] != nmodes:
+                        mode_mismatch = True
 
                 # Count each element's percent ONCE (first row wins) — exactly
                 # like Femap, which reads one per-element value from vector 80001.
@@ -950,14 +1004,22 @@ REQUIREMENTS
                         dup_rows += 1
                         continue
                     p = percent_data[:, j]
-                    n = min(len(p), nmodes)
                     arr = np.zeros(nmodes)
-                    arr[:n] = p[:n]
+                    if row_for_mode is not None:
+                        # Place each table row under its matching eigenvalue mode.
+                        for mi, ridx in enumerate(row_for_mode):
+                            if ridx is not None:
+                                arr[mi] = p[ridx]
+                    else:
+                        # Best-effort positional fill (mismatch already flagged).
+                        n = min(len(p), nmodes)
+                        arr[:n] = p[:n]
                     pct_by_eid[eid_int] = arr
 
-                break  # Only process first valid result per element type
-
         self._dup_rows = dup_rows
+        self._mode_mismatch = mode_mismatch
+        self._multi_subcase = multi_subcase
+        self._skipped_types = skipped_types
 
         self._total_energy = None  # unused in the percent-based (Femap) approach
         return pct_by_eid
@@ -1125,6 +1187,13 @@ REQUIREMENTS
         self._freqs = None
         self._ese_by_eid = None
         self._total_energy = None
+        self._nonbdf_eids = []
+        self._nonbdf_pct = 0.0
+        self._dup_rows = 0
+        self._nonbdf_total_dev = 0.0
+        self._mode_mismatch = False
+        self._multi_subcase = False
+        self._skipped_types = 0
 
         # BDF mappings
         self._eid_to_pid = {}
@@ -1186,7 +1255,10 @@ REQUIREMENTS
                 known_total += arr
         self._nonbdf_eids = nonbdf_eids
         # nonbdf is already in percent units -> the % of total energy excluded.
-        self._nonbdf_pct = float(np.max(np.abs(nonbdf))) if nonbdf_eids else 0.0
+        # Report a representative figure (mean across modes), not the worst
+        # single mode, so the caveat doesn't over-state the excluded energy.
+        self._nonbdf_pct = float(np.mean(nonbdf)) if nonbdf_eids else 0.0
+        self._nonbdf_total_dev = 0.0
 
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
@@ -1201,7 +1273,12 @@ REQUIREMENTS
             label_fn = None
 
         if mapping is None:
-            # No grouping: sum every captured element's percent (~100 %)
+            # No grouping: sum every captured element's percent (~100 %).
+            # Without a BDF we cannot drop pyNastran's non-element rows, so the
+            # total may exceed 100 %; record the worst-mode deviation so the
+            # table can surface an honest caveat.
+            if not self._bdf_loaded:
+                self._nonbdf_total_dev = float(np.max(np.abs(known_total - 100.0)))
             return ['All Elements'], {'All Elements': known_total.copy()}
 
         # Bucket each element's PERCENT into its group; track the grouped total
@@ -1389,15 +1466,33 @@ REQUIREMENTS
         if n:
             pct = getattr(self, '_nonbdf_pct', 0.0)
             if n > 50:
-                notes.append(f"⚠ {n} rows not in BDF (~{pct:.0f}% of energy) "
-                             "— possible OP2/BDF mismatch")
+                notes.append(f"⚠ {n} rows not in BDF (~{pct:.0f}% of energy, "
+                             f"avg/mode) — possible OP2/BDF mismatch")
             else:
                 notes.append(f"{n} non-element row(s) excluded")
-        if notes and self._bdf_loaded:
-            warn = (n > 50)
+        # ESE-table integrity warnings (independent of BDF state).
+        ese_warn = False
+        if getattr(self, '_mode_mismatch', False):
+            notes.append("⚠ ESE modes could not be aligned to eigenvalues "
+                         "— values may be mis-assigned")
+            ese_warn = True
+        if getattr(self, '_multi_subcase', False):
+            notes.append("⚠ multiple ESE subcases — only one shown")
+            ese_warn = True
+        skipped = getattr(self, '_skipped_types', 0)
+        if skipped:
+            notes.append(f"{skipped} element type(s) skipped (no percent column)")
+
+        if notes and (self._bdf_loaded or ese_warn or skipped):
+            warn = (n > 50) or ese_warn
             self._status_label.configure(
                 text="  |  ".join(notes),
                 text_color="#d9822b" if warn else "gray")
+        elif not self._bdf_loaded and getattr(self, '_nonbdf_total_dev', 0.0) > 0.5:
+            self._status_label.configure(
+                text="⚠ No BDF loaded — cannot separate non-element rows; "
+                     "totals may exceed 100%",
+                text_color="#d9822b")
 
         self._apply_highlights()
 
@@ -1457,12 +1552,29 @@ REQUIREMENTS
         else:
             mapping = self._eid_to_file
 
-        # Collect all unique group IDs that appear in the energy data
+        # Collect all unique group IDs that appear in the energy data.
+        # Elements with no group id for this grouping (e.g. no-PID CELAS2/
+        # rigids under Property grouping) land in the "Unattributed" column and
+        # have nothing selectable here, so count them to warn the user instead
+        # of silently dropping them from the dialog.
         available = set()
+        orphan_count = 0
         for eid in self._ese_by_eid:
             gid = mapping.get(eid)
             if gid is not None:
                 available.add(gid)
+            else:
+                orphan_count += 1
+
+        if orphan_count:
+            grouping_label = ("property id" if group_by == "Property ID"
+                              else "include file")
+            messagebox.showinfo(
+                "Unattributed Elements",
+                f"{orphan_count} element(s) have no {grouping_label} for this "
+                "grouping and may appear in the “Unattributed” column. "
+                "They have no group id to select here and cannot be merged "
+                "under this grouping.")
 
         # Build display labels for the dialog
         id_labels = {}
