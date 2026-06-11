@@ -3,4 +3,6 @@ customtkinter>=5.0
 tksheet>=7.0
 numpy
 scipy
-pyvista>=0.43              # optional, for 3D partition preview
+matplotlib                # ASD overlay, response limiting, random vibe plots
+openpyxl                  # Excel export (ESE, mass, CBUSH, meff)
+pyvista>=0.43             # optional, for 3D partition preview
