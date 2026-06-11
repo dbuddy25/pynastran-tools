@@ -89,18 +89,21 @@ def main(op2_path):
     if not found:
         print("  (none found)")
 
-    # CLEANED %ESE — exactly what the tool now sums: SORT1 only, excluding the
-    # non-element pseudo-rows (eid <= 0 and eid >= 1e8). This should sum to ~100
-    # per mode and match Femap's per-mode totals.
-    print("\n=== CLEANED %ESE the tool sums (SORT1, no eid<=0 / eid>=1e8) ===")
+    # CLEANED %ESE — EXACTLY what the tool sums: SORT1 only, exclude eid<=0 and
+    # eid>=1e8, and DEDUP each eid (first row wins, like the tool). The grand
+    # total should equal the GUI flat 'All Elements' view. For any table whose
+    # cleaned sum exceeds ~110 % in a mode (a "doubled" table), split it by eid
+    # block to reveal whether its energy lives in two separate ID ranges (= two
+    # representations of the same structure, the likely double-count source).
+    print("\n=== CLEANED %ESE the tool sums (SORT1, no eid<=0/eid>=1e8, deduped) ===")
     grand = None
+    seen = set()
     for attr in sorted(dir(se)):
         if not attr.endswith('_strain_energy'):
             continue
         d = getattr(se, attr, None)
         if not isinstance(d, dict) or not d:
             continue
-        # pick SORT1 (key[2] == 1) when keys are tuples, else first
         r = None
         for key, res in d.items():
             if isinstance(key, tuple) and len(key) >= 3 and key[2] == 1:
@@ -113,18 +116,46 @@ def main(op2_path):
             continue
         eids = r.element
         eids = eids[0] if getattr(eids, 'ndim', 1) == 2 else eids
-        keep = np.array([0 < int(e) < 100000000 for e in eids])
-        psum = data[:6, :, 1][:, keep].sum(axis=1)
-        print(f"  {attr}: cleaned %ESE/mode[:6]={np.round(psum, 1).tolist()}")
+        nm6 = min(6, data.shape[0])
+        keep_eids = []
+        keep_cols = []
+        dups = 0
+        for j, e in enumerate(eids):
+            ei = int(e)
+            if not (0 < ei < 100000000):
+                continue
+            if ei in seen:
+                dups += 1
+                continue
+            seen.add(ei)
+            keep_eids.append(ei)
+            keep_cols.append(j)
+        keep_cols = np.array(keep_cols, dtype=int)
+        keep_eids = np.array(keep_eids)
+        psum = (data[:nm6, :, 1][:, keep_cols].sum(axis=1)
+                if len(keep_cols) else np.zeros(nm6))
+        print(f"  {attr}: unique={len(keep_eids)} dup_rows={dups}  "
+              f"eid {int(keep_eids.min()) if len(keep_eids) else '-'}.."
+              f"{int(keep_eids.max()) if len(keep_eids) else '-'}")
+        print(f"      cleaned %ESE/mode[:6]={np.round(psum, 1).tolist()}")
+        # Split a doubled table by eid median to localize the double-count.
+        if len(keep_eids) and np.max(psum) > 110:
+            med = int(np.median(keep_eids))
+            lo = keep_cols[keep_eids < med]
+            hi = keep_cols[keep_eids >= med]
+            lo_s = data[:nm6, :, 1][:, lo].sum(axis=1) if len(lo) else np.zeros(nm6)
+            hi_s = data[:nm6, :, 1][:, hi].sum(axis=1) if len(hi) else np.zeros(nm6)
+            print(f"      SPLIT eid<{med}: {np.round(lo_s, 1).tolist()}")
+            print(f"      SPLIT eid>={med}: {np.round(hi_s, 1).tolist()}")
         grand = psum if grand is None else grand + psum
     if grand is not None:
-        print(f"\n  >>> GRAND TOTAL cleaned %ESE/mode[:6]={np.round(grand, 1).tolist()}")
-        print("      (should be ~100 per mode and match Femap's 'Total' column)")
+        print(f"\n  >>> GRAND TOTAL deduped %ESE/mode[:6]={np.round(grand, 1).tolist()}")
+        print("      (this should equal the GUI flat 'All Elements' view)")
 
     print("\nKey questions answered by the above:")
-    print("  - Any table with >1 key  -> SORT1/SORT2 (one subcase), not two")
-    print("  - raw PERCENT_sum > 100  -> caused by eid<=0 / eid>=1e8 pseudo-rows")
-    print("  - GRAND TOTAL cleaned ~100 -> the tool's %ESE now matches Femap")
+    print("  - dup_rows > 0 on a table     -> same-id duplicates (tool dedups them)")
+    print("  - a table's SPLIT both ~equal -> energy in TWO id ranges = two reps")
+    print("  - GRAND TOTAL still >100       -> double-count is distinct ids, not dups")
 
 
 if __name__ == '__main__':

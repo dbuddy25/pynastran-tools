@@ -928,16 +928,20 @@ REQUIREMENTS
             if not isinstance(result_dict, dict) or not result_dict:
                 continue
 
-            # The result key is (isubcase, analysis_code, sort_method, count,...).
-            # SORT1 and SORT2 of one subcase appear as two keys differing only in
-            # sort_method (field 2) — that is NOT two subcases. Track distinct
-            # logical subcases (ignoring sort_method) so we only warn for genuine
-            # multi-subcase runs, and prefer the SORT1 result (SORT2's data layout
-            # differs and would be misread).
+            # The result key is (isubcase, analysis_code, field2, count, ...).
+            # When both ESE and EKE are requested in Case Control, pyNastran
+            # files a phantom KINETIC-energy copy into strain_energy as a 2nd
+            # key with field2 == 2 (its percent column equals the kinetic_energy
+            # percent — confirmed on the pyNastran mailing list). field2 == 1 is
+            # the real ESE. ALWAYS take the ESE (field2 == 1) result; never the
+            # EKE copy. An element type with ONLY a field2 == 2 key (e.g. CONM2:
+            # a mass has kinetic energy but no strain energy) is skipped.
             chosen = None
             fallback = None
+            has_tuple_key = False
             for key, result in result_dict.items():
                 if isinstance(key, tuple) and len(key) >= 3:
+                    has_tuple_key = True
                     subcases.add(key[:2] + key[3:])
                 else:
                     subcases.add(key)
@@ -946,9 +950,9 @@ REQUIREMENTS
                 if fallback is None:
                     fallback = result
                 if isinstance(key, tuple) and len(key) >= 3 and key[2] == 1:
-                    chosen = result  # SORT1
-            if chosen is None:
-                # No SORT1 tuple key — fall back to a row-count match, else first.
+                    chosen = result  # ESE
+            if chosen is None and not has_tuple_key:
+                # Older pyNastran (non-tuple keys): row-count match, else first.
                 for key, result in result_dict.items():
                     if not hasattr(result, 'data') or not hasattr(result, 'element'):
                         continue
@@ -957,7 +961,11 @@ REQUIREMENTS
                             and rdata.shape[0] == nmodes):
                         chosen = result
                         break
-            result = chosen if chosen is not None else fallback
+                if chosen is None:
+                    chosen = fallback
+            # If tuple keys exist but none is ESE (field2==1), this type has only
+            # a phantom EKE copy -> skip it (don't count kinetic energy as strain).
+            result = chosen
             if result is not None:
                 eids = result.element
                 # element array is 2D (ntimes, nelems) in pyNastran 1.4+
