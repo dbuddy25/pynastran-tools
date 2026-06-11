@@ -89,10 +89,42 @@ def main(op2_path):
     if not found:
         print("  (none found)")
 
+    # CLEANED %ESE — exactly what the tool now sums: SORT1 only, excluding the
+    # non-element pseudo-rows (eid <= 0 and eid >= 1e8). This should sum to ~100
+    # per mode and match Femap's per-mode totals.
+    print("\n=== CLEANED %ESE the tool sums (SORT1, no eid<=0 / eid>=1e8) ===")
+    grand = None
+    for attr in sorted(dir(se)):
+        if not attr.endswith('_strain_energy'):
+            continue
+        d = getattr(se, attr, None)
+        if not isinstance(d, dict) or not d:
+            continue
+        # pick SORT1 (key[2] == 1) when keys are tuples, else first
+        r = None
+        for key, res in d.items():
+            if isinstance(key, tuple) and len(key) >= 3 and key[2] == 1:
+                r = res
+                break
+        if r is None:
+            r = next(iter(d.values()))
+        data = getattr(r, 'data', None)
+        if data is None or getattr(data, 'ndim', 0) != 3 or data.shape[2] < 2:
+            continue
+        eids = r.element
+        eids = eids[0] if getattr(eids, 'ndim', 1) == 2 else eids
+        keep = np.array([0 < int(e) < 100000000 for e in eids])
+        psum = data[:6, :, 1][:, keep].sum(axis=1)
+        print(f"  {attr}: cleaned %ESE/mode[:6]={np.round(psum, 1).tolist()}")
+        grand = psum if grand is None else grand + psum
+    if grand is not None:
+        print(f"\n  >>> GRAND TOTAL cleaned %ESE/mode[:6]={np.round(grand, 1).tolist()}")
+        print("      (should be ~100 per mode and match Femap's 'Total' column)")
+
     print("\nKey questions answered by the above:")
-    print("  - Any table with >1 key  -> source of the 'multiple subcases' note")
-    print("  - PERCENT_sum/mode > 100 -> percents normalized per-partition")
-    print("  - a KINETIC/NOT-18 table -> EKE is mixed into strain_energy")
+    print("  - Any table with >1 key  -> SORT1/SORT2 (one subcase), not two")
+    print("  - raw PERCENT_sum > 100  -> caused by eid<=0 / eid>=1e8 pseudo-rows")
+    print("  - GRAND TOTAL cleaned ~100 -> the tool's %ESE now matches Femap")
 
 
 if __name__ == '__main__':

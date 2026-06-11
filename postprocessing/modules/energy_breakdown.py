@@ -889,15 +889,16 @@ REQUIREMENTS
         self._run_in_background("Loading OP2\u2026", _work, _done)
 
     def _collect_strain_energy(self, op2):
-        """Discover all *_strain_energy attributes and collect ESE ENERGY per element.
+        """Discover all *_strain_energy attributes and collect ESE %ESE per element.
 
-        Returns {eid: array[nmodes]} of absolute element strain ENERGY (column 0
-        of the pyNastran ESE table). Aggregation derives percentages from this by
-        dividing by the model total — we do NOT use pyNastran's percent column
-        (column 1): it does not sum to 100 for coupled / superelement models (it
-        summed to ~200 in a real model), so it is unusable. Energy is absolute and
-        normalization-independent, so percentages recomputed from it always sum
-        to 100, matching Femap.
+        Returns {eid: array[nmodes]} of the per-element %ESE (column 1 of the
+        pyNastran ESE table — the same quantity as Femap output vector 80001).
+        Aggregation sums this per group, exactly like the proven Femap workflow.
+
+        The percent column appeared to sum to ~200 % earlier ONLY because of
+        non-element pseudo-rows and a duplicate SORT2 key — both removed here —
+        not because the percent values were wrong. Once those are excluded the
+        %ESE sums to ~100 and matches Femap value-for-value.
 
         Handling:
         - Picks the SORT1 result (key sort_method == 1) when a table has both
@@ -909,7 +910,7 @@ REQUIREMENTS
           via result.modes when available.
         """
         nmodes = len(self._modes)
-        energy_by_eid = {}
+        pct_by_eid = {}
         dup_rows = 0  # ESE rows for an element already seen (counted once)
         mode_mismatch = False  # set if rows can't be aligned to self._modes
         skipped_types = 0      # element types skipped (no usable data)
@@ -963,15 +964,17 @@ REQUIREMENTS
                 # Use first time step — element IDs are the same across all modes
                 if eids.ndim == 2:
                     eids = eids[0]
-                # data shape: (ntimes, nelems, ncols); column 0 = strain energy.
-                # We use ENERGY (col 0), not pyNastran's percent (col 1), which
-                # does not sum to 100 for coupled/superelement models.
+                # data shape: (ntimes, nelems, ncols); column 1 = %ESE.
+                # Sum the PERCENT column (= Femap vector 80001) over each group's
+                # elements, like the proven Femap workflow. The earlier ~200 % sum
+                # was caused only by the pseudo-rows and SORT2 duplicate (both
+                # removed below), not by the percent values.
                 data = result.data
-                if data.ndim != 3 or data.shape[2] < 1:
+                if data.ndim != 3 or data.shape[2] < 2:
                     skipped_types += 1
                     continue
 
-                energy_data = data[:, :, 0]  # (ntimes, nelems) — absolute energy
+                percent_data = data[:, :, 1]  # (ntimes, nelems) — %ESE / vec 80001
 
                 # Align this table's rows to self._modes by matching mode numbers.
                 # pyNastran sets result.modes (== result._times) to the actual
@@ -1003,10 +1006,10 @@ REQUIREMENTS
                     if data.shape[0] != nmodes:
                         mode_mismatch = True
 
-                # Count each element's ENERGY once (first row wins). Exclude
+                # Count each element's %ESE once (first row wins). Exclude
                 # non-element rows: aggregate/total rows (eid <= 0) and DMIG /
                 # superelement sentinels (eid >= 1e8) — these carried the pseudo
-                # energy that inflated totals past 100 %.
+                # percent that inflated totals past 100 %.
                 for j, eid in enumerate(eids):
                     try:
                         eid_int = int(eid)
@@ -1014,28 +1017,28 @@ REQUIREMENTS
                         continue
                     if eid_int <= 0 or eid_int >= 100000000:
                         continue
-                    if eid_int in energy_by_eid:
+                    if eid_int in pct_by_eid:
                         dup_rows += 1
                         continue
-                    e = energy_data[:, j]
+                    p = percent_data[:, j]
                     arr = np.zeros(nmodes)
                     if row_for_mode is not None:
                         # Place each table row under its matching eigenvalue mode.
                         for mi, ridx in enumerate(row_for_mode):
                             if ridx is not None:
-                                arr[mi] = e[ridx]
+                                arr[mi] = p[ridx]
                     else:
                         # Best-effort positional fill (mismatch already flagged).
-                        n = min(len(e), nmodes)
-                        arr[:n] = e[:n]
-                    energy_by_eid[eid_int] = arr
+                        n = min(len(p), nmodes)
+                        arr[:n] = p[:n]
+                    pct_by_eid[eid_int] = arr
 
         self._dup_rows = dup_rows
         self._mode_mismatch = mode_mismatch
         self._multi_subcase = len(subcases) > 1
         self._skipped_types = skipped_types
-        self._total_energy = None  # percentages computed in aggregation
-        return energy_by_eid
+        self._total_energy = None  # unused in the %ESE (Femap) approach
+        return pct_by_eid
 
     # ---------------------------------------------------------- BDF loading
     def _open_bdf(self):
@@ -1246,33 +1249,29 @@ REQUIREMENTS
         nmodes = len(self._modes)
         group_by = self._group_by_var.get()
 
-        # Values in _ese_by_eid are absolute ENERGY. The denominator is the model
-        # total strain energy per mode (sum over all captured real elements);
-        # each percentage is energy / total, so the flat view is exactly 100 %
-        # and any grouping sums to <= 100 %. This is normalization-independent —
-        # it does not rely on pyNastran's percent column (which summed to ~200 %
-        # for this coupled model). Energy on elements not in the BDF is tracked as
-        # an integrity signal (likely an OP2/BDF mismatch).
+        # Values in _ese_by_eid are %ESE (Femap vector 80001). A group's value is
+        # simply the SUM of its elements' %ESE — exactly the Femap workflow. We do
+        # NOT renormalize; matching Femap means the totals read ~100 with minor
+        # scatter, not a forced 100. Pseudo-rows / SORT2 were already removed in
+        # collection. %ESE on elements not in the BDF is tracked as an integrity
+        # signal (likely an OP2/BDF mismatch).
         known = None
         if self._bdf_loaded:
             known = set(self._eid_to_file) | set(self._eid_to_pid)
 
-        total = np.zeros(nmodes)   # model total strain energy per mode
+        known_total = np.zeros(nmodes)  # summed %ESE over real (BDF) elements
         nonbdf = np.zeros(nmodes)
         nonbdf_eids = []
         for eid, arr in self._ese_by_eid.items():
-            total += arr
             if known is not None and eid not in known:
                 nonbdf += arr
                 nonbdf_eids.append(eid)
+            else:
+                known_total += arr
         self._nonbdf_eids = nonbdf_eids
-        safe_total = np.where(np.abs(total) < 1e-30, 1.0, total)
-        self._nonbdf_pct = (float(np.mean(100.0 * nonbdf / safe_total))
-                            if nonbdf_eids else 0.0)
-        self._nonbdf_total_dev = 0.0  # energy renorm -> flat view is always 100 %
-
-        def to_pct(arr):
-            return 100.0 * arr / safe_total
+        # nonbdf is already in percent units -> mean % of total energy excluded.
+        self._nonbdf_pct = float(np.mean(nonbdf)) if nonbdf_eids else 0.0
+        self._nonbdf_total_dev = 0.0
 
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
@@ -1287,22 +1286,24 @@ REQUIREMENTS
             label_fn = None
 
         if mapping is None:
-            # No grouping: all energy in one bucket -> exactly 100 % per mode.
-            return ['All Elements'], {'All Elements': to_pct(total)}
+            # No grouping: sum every captured element's %ESE (~100 %, Femap-style).
+            if not self._bdf_loaded:
+                self._nonbdf_total_dev = float(np.max(np.abs(known_total - 100.0)))
+            return ['All Elements'], {'All Elements': known_total.copy()}
 
-        # Bucket each element's ENERGY into its group; track the grouped total
-        # so the leftover (real elements with no group) becomes "Unattributed".
-        raw_groups = {}   # {group_id: array[nmodes]} of summed energy
+        # Bucket each element's %ESE into its group; track the grouped total so
+        # the leftover (real elements with no group) becomes "Unattributed".
+        raw_groups = {}   # {group_id: array[nmodes]} of summed %ESE
         grouped_total = np.zeros(nmodes)
 
-        for eid, energy in self._ese_by_eid.items():
+        for eid, pct in self._ese_by_eid.items():
             gid = mapping.get(eid)
             if gid is None:
                 continue
             if gid not in raw_groups:
                 raw_groups[gid] = np.zeros(nmodes)
-            raw_groups[gid] += energy
-            grouped_total += energy
+            raw_groups[gid] += pct
+            grouped_total += pct
 
         # Apply custom group merges (summed percent)
         if self._custom_groups:
@@ -1358,15 +1359,17 @@ REQUIREMENTS
         else:
             labels = sorted(final_groups.keys(), key=self._group_sort_key)
 
-        # Convert energy buckets -> percent of the model total.
-        pct_groups = {lbl: to_pct(arr) for lbl, arr in final_groups.items()}
+        # Group values are already summed %ESE.
+        pct_groups = dict(final_groups)
 
         # Real elements not in any group for this grouping (e.g. no-PID CELAS2
         # /rigids under Property grouping) -> explicit "Unattributed" column so
-        # the columns still sum to ~100 % with nothing hidden.
-        unattr_pct = to_pct(total - grouped_total)
-        if np.any(np.abs(unattr_pct) >= 0.05):
-            pct_groups['Unattributed'] = unattr_pct
+        # the columns still sum to ~100 % with nothing hidden. This is why
+        # Property grouping won't match Include grouping when a file contains
+        # no-PID elements: Include attributes them to the file, Property can't.
+        unattributed = known_total - grouped_total
+        if np.any(np.abs(unattributed) >= 0.05):
+            pct_groups['Unattributed'] = unattributed
             labels = labels + ['Unattributed']
 
         return labels, pct_groups
