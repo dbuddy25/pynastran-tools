@@ -152,6 +152,54 @@ def main(op2_path):
         print(f"\n  >>> GRAND TOTAL deduped %ESE/mode[:6]={np.round(grand, 1).tolist()}")
         print("      (this should equal the GUI flat 'All Elements' view)")
 
+    # ENERGY-based %ESE — compute percent ourselves from the ENERGY column
+    # (col 0) instead of trusting pyNastran's percent column (col 1). If the
+    # percent column is buggy on some modes but the energy column is clean,
+    # this recovers the correct %ESE and should match Femap on EVERY mode.
+    print("\n=== ENERGY-based %ESE (computed as energy/total, col 0) ===")
+    seen2 = set()
+    etype = {}      # attr -> energy array[nm6]
+    total_e = None
+    for attr in sorted(dir(se)):
+        if not attr.endswith('_strain_energy'):
+            continue
+        d = getattr(se, attr, None)
+        if not isinstance(d, dict) or not d:
+            continue
+        r = None
+        for key, res in d.items():
+            if isinstance(key, tuple) and len(key) >= 3 and key[2] == 1:
+                r = res
+                break
+        if r is None:
+            r = next(iter(d.values()))
+        data = getattr(r, 'data', None)
+        if data is None or getattr(data, 'ndim', 0) != 3 or data.shape[2] < 1:
+            continue
+        eids = r.element
+        eids = eids[0] if getattr(eids, 'ndim', 1) == 2 else eids
+        nm6 = min(6, data.shape[0])
+        cols = []
+        for j, e in enumerate(eids):
+            ei = int(e)
+            if 0 < ei < 100000000 and ei not in seen2:
+                seen2.add(ei)
+                cols.append(j)
+        cols = np.array(cols, dtype=int)
+        esum = (data[:nm6, :, 0][:, cols].sum(axis=1)
+                if len(cols) else np.zeros(nm6))
+        etype[attr] = esum
+        total_e = esum if total_e is None else total_e + esum
+    if total_e is not None:
+        safe = np.where(np.abs(total_e) < 1e-30, 1.0, total_e)
+        for attr, esum in etype.items():
+            pct = 100.0 * esum / safe
+            print(f"  {attr}: energy-%ESE/mode[:6]={np.round(pct, 1).tolist()}")
+        print(f"\n  >>> ENERGY-based GRAND TOTAL/mode[:6]="
+              f"{np.round(100.0 * total_e / safe, 1).tolist()}  (always ~100)")
+        print("      Compare these per-type numbers to Femap. If they MATCH on")
+        print("      the doubled modes too, the fix is to use the energy column.")
+
     print("\nKey questions answered by the above:")
     print("  - dup_rows > 0 on a table     -> same-id duplicates (tool dedups them)")
     print("  - a table's SPLIT both ~equal -> energy in TWO id ranges = two reps")
