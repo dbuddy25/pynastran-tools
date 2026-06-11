@@ -889,26 +889,31 @@ REQUIREMENTS
         self._run_in_background("Loading OP2\u2026", _work, _done)
 
     def _collect_strain_energy(self, op2):
-        """Discover all *_strain_energy attributes and collect ESE percent per element.
+        """Discover all *_strain_energy attributes and collect ESE ENERGY per element.
 
-        Returns {eid: array[nmodes]} of the per-element ESE PERCENT-of-total
-        (column 1 of the pyNastran ESE table — the same quantity as Femap output
-        vector 80001).
+        Returns {eid: array[nmodes]} of absolute element strain ENERGY (column 0
+        of the pyNastran ESE table). Aggregation derives percentages from this by
+        dividing by the model total — we do NOT use pyNastran's percent column
+        (column 1): it does not sum to 100 for coupled / superelement models (it
+        summed to ~200 in a real model), so it is unusable. Energy is absolute and
+        normalization-independent, so percentages recomputed from it always sum
+        to 100, matching Femap.
 
-        This mirrors the proven Femap "Mode Identification" workflow, which sums
-        vector 80001 (percent) over the real elements in each group. We collect
-        percent per element here; aggregation sums it over the elements that map
-        to a group. Because only real BDF elements are bucketed, pyNastran's
-        non-element bookkeeping rows (per-type subtotals / per-subcase totals)
-        never enter the math — they were the cause of the earlier >100 % and the
-        large "Unattributed" totals.
+        Handling:
+        - Picks the SORT1 result (key sort_method == 1) when a table has both
+          SORT1 and SORT2 — they are one subcase in two sort orders, not two
+          subcases.
+        - Excludes non-element rows: aggregate/total rows (eid <= 0) and DMIG /
+          superelement sentinels (eid >= 1e8).
+        - Counts each element once (first row wins); aligns rows to self._modes
+          via result.modes when available.
         """
         nmodes = len(self._modes)
-        pct_by_eid = {}
+        energy_by_eid = {}
         dup_rows = 0  # ESE rows for an element already seen (counted once)
         mode_mismatch = False  # set if rows can't be aligned to self._modes
-        multi_subcase = False  # set if any ESE table has >1 subcase
-        skipped_types = 0      # element types skipped for missing percent col
+        skipped_types = 0      # element types skipped (no usable data)
+        subcases = set()       # distinct logical subcases (ignoring SORT1/SORT2)
 
         # Modern pyNastran (1.4+): data lives in op2.op2_results.strain_energy
         se = getattr(getattr(op2, 'op2_results', None), 'strain_energy', None)
@@ -922,23 +927,35 @@ REQUIREMENTS
             if not isinstance(result_dict, dict) or not result_dict:
                 continue
 
-            if len(result_dict) > 1:
-                multi_subcase = True
-            # Prefer the subcase whose data row count matches the eigenvalue
-            # mode count; fall back to the first valid result. Processing only
-            # the first subcase silently dropped multi-subcase modal runs.
+            # The result key is (isubcase, analysis_code, sort_method, count,...).
+            # SORT1 and SORT2 of one subcase appear as two keys differing only in
+            # sort_method (field 2) — that is NOT two subcases. Track distinct
+            # logical subcases (ignoring sort_method) so we only warn for genuine
+            # multi-subcase runs, and prefer the SORT1 result (SORT2's data layout
+            # differs and would be misread).
             chosen = None
             fallback = None
-            for subcase_id, result in result_dict.items():
+            for key, result in result_dict.items():
+                if isinstance(key, tuple) and len(key) >= 3:
+                    subcases.add(key[:2] + key[3:])
+                else:
+                    subcases.add(key)
                 if not hasattr(result, 'data') or not hasattr(result, 'element'):
                     continue
-                rdata = getattr(result, 'data', None)
                 if fallback is None:
                     fallback = result
-                if (rdata is not None and getattr(rdata, 'ndim', 0) == 3
-                        and rdata.shape[0] == nmodes):
-                    chosen = result
-                    break
+                if isinstance(key, tuple) and len(key) >= 3 and key[2] == 1:
+                    chosen = result  # SORT1
+            if chosen is None:
+                # No SORT1 tuple key — fall back to a row-count match, else first.
+                for key, result in result_dict.items():
+                    if not hasattr(result, 'data') or not hasattr(result, 'element'):
+                        continue
+                    rdata = getattr(result, 'data', None)
+                    if (rdata is not None and getattr(rdata, 'ndim', 0) == 3
+                            and rdata.shape[0] == nmodes):
+                        chosen = result
+                        break
             result = chosen if chosen is not None else fallback
             if result is not None:
                 eids = result.element
@@ -946,15 +963,15 @@ REQUIREMENTS
                 # Use first time step — element IDs are the same across all modes
                 if eids.ndim == 2:
                     eids = eids[0]
-                # data shape: (ntimes, nelems, ncols)
-                # column index 0 = strain_energy, 1 = percent, 2 = density
+                # data shape: (ntimes, nelems, ncols); column 0 = strain energy.
+                # We use ENERGY (col 0), not pyNastran's percent (col 1), which
+                # does not sum to 100 for coupled/superelement models.
                 data = result.data
-                if data.ndim != 3 or data.shape[2] < 2:
-                    # No percent column — count the skip so it isn't lost silently.
+                if data.ndim != 3 or data.shape[2] < 1:
                     skipped_types += 1
                     continue
 
-                percent_data = data[:, :, 1]  # (ntimes, nelems) — vector 80001
+                energy_data = data[:, :, 0]  # (ntimes, nelems) — absolute energy
 
                 # Align this table's rows to self._modes by matching mode numbers.
                 # pyNastran sets result.modes (== result._times) to the actual
@@ -986,43 +1003,39 @@ REQUIREMENTS
                     if data.shape[0] != nmodes:
                         mode_mismatch = True
 
-                # Count each element's percent ONCE (first row wins) — exactly
-                # like Femap, which reads one per-element value from vector 80001.
-                # Element IDs are globally unique in Nastran, so any repeat row
-                # for an eid (within a table or across tables) is a duplicate and
-                # must NOT be added — summing repeats was double-counting elements
-                # and pushing group totals past 100 % (e.g. an exact 200 %).
+                # Count each element's ENERGY once (first row wins). Exclude
+                # non-element rows: aggregate/total rows (eid <= 0) and DMIG /
+                # superelement sentinels (eid >= 1e8) — these carried the pseudo
+                # energy that inflated totals past 100 %.
                 for j, eid in enumerate(eids):
-                    # Skip DMIG / aggregate sentinel entries (eid=1e8 or non-int)
                     try:
                         eid_int = int(eid)
                     except (ValueError, TypeError):
                         continue
-                    if eid_int >= 100000000:
+                    if eid_int <= 0 or eid_int >= 100000000:
                         continue
-                    if eid_int in pct_by_eid:
+                    if eid_int in energy_by_eid:
                         dup_rows += 1
                         continue
-                    p = percent_data[:, j]
+                    e = energy_data[:, j]
                     arr = np.zeros(nmodes)
                     if row_for_mode is not None:
                         # Place each table row under its matching eigenvalue mode.
                         for mi, ridx in enumerate(row_for_mode):
                             if ridx is not None:
-                                arr[mi] = p[ridx]
+                                arr[mi] = e[ridx]
                     else:
                         # Best-effort positional fill (mismatch already flagged).
-                        n = min(len(p), nmodes)
-                        arr[:n] = p[:n]
-                    pct_by_eid[eid_int] = arr
+                        n = min(len(e), nmodes)
+                        arr[:n] = e[:n]
+                    energy_by_eid[eid_int] = arr
 
         self._dup_rows = dup_rows
         self._mode_mismatch = mode_mismatch
-        self._multi_subcase = multi_subcase
+        self._multi_subcase = len(subcases) > 1
         self._skipped_types = skipped_types
-
-        self._total_energy = None  # unused in the percent-based (Femap) approach
-        return pct_by_eid
+        self._total_energy = None  # percentages computed in aggregation
+        return energy_by_eid
 
     # ---------------------------------------------------------- BDF loading
     def _open_bdf(self):
@@ -1233,32 +1246,33 @@ REQUIREMENTS
         nmodes = len(self._modes)
         group_by = self._group_by_var.get()
 
-        # Femap-faithful: each value is the per-element ESE PERCENT (vector
-        # 80001); a group's value is simply the SUM of its elements' percents.
-        # Only real BDF elements are bucketed, so pyNastran's non-element rows
-        # (per-type subtotals / per-subcase totals) never enter — they are
-        # tracked separately (self._nonbdf_*) as a data-integrity signal: a few
-        # such rows are pyNastran aggregates; many would indicate an OP2/BDF
-        # mismatch. "known" is the set of real element IDs from the BDF.
+        # Values in _ese_by_eid are absolute ENERGY. The denominator is the model
+        # total strain energy per mode (sum over all captured real elements);
+        # each percentage is energy / total, so the flat view is exactly 100 %
+        # and any grouping sums to <= 100 %. This is normalization-independent —
+        # it does not rely on pyNastran's percent column (which summed to ~200 %
+        # for this coupled model). Energy on elements not in the BDF is tracked as
+        # an integrity signal (likely an OP2/BDF mismatch).
         known = None
         if self._bdf_loaded:
             known = set(self._eid_to_file) | set(self._eid_to_pid)
 
-        known_total = np.zeros(nmodes)  # summed percent over real elements
+        total = np.zeros(nmodes)   # model total strain energy per mode
         nonbdf = np.zeros(nmodes)
         nonbdf_eids = []
         for eid, arr in self._ese_by_eid.items():
+            total += arr
             if known is not None and eid not in known:
                 nonbdf += arr
                 nonbdf_eids.append(eid)
-            else:
-                known_total += arr
         self._nonbdf_eids = nonbdf_eids
-        # nonbdf is already in percent units -> the % of total energy excluded.
-        # Report a representative figure (mean across modes), not the worst
-        # single mode, so the caveat doesn't over-state the excluded energy.
-        self._nonbdf_pct = float(np.mean(nonbdf)) if nonbdf_eids else 0.0
-        self._nonbdf_total_dev = 0.0
+        safe_total = np.where(np.abs(total) < 1e-30, 1.0, total)
+        self._nonbdf_pct = (float(np.mean(100.0 * nonbdf / safe_total))
+                            if nonbdf_eids else 0.0)
+        self._nonbdf_total_dev = 0.0  # energy renorm -> flat view is always 100 %
+
+        def to_pct(arr):
+            return 100.0 * arr / safe_total
 
         # Select the appropriate mapping
         if group_by == "Property ID" and self._bdf_loaded:
@@ -1273,27 +1287,22 @@ REQUIREMENTS
             label_fn = None
 
         if mapping is None:
-            # No grouping: sum every captured element's percent (~100 %).
-            # Without a BDF we cannot drop pyNastran's non-element rows, so the
-            # total may exceed 100 %; record the worst-mode deviation so the
-            # table can surface an honest caveat.
-            if not self._bdf_loaded:
-                self._nonbdf_total_dev = float(np.max(np.abs(known_total - 100.0)))
-            return ['All Elements'], {'All Elements': known_total.copy()}
+            # No grouping: all energy in one bucket -> exactly 100 % per mode.
+            return ['All Elements'], {'All Elements': to_pct(total)}
 
-        # Bucket each element's PERCENT into its group; track the grouped total
+        # Bucket each element's ENERGY into its group; track the grouped total
         # so the leftover (real elements with no group) becomes "Unattributed".
-        raw_groups = {}   # {group_id: array[nmodes]} of summed percent
+        raw_groups = {}   # {group_id: array[nmodes]} of summed energy
         grouped_total = np.zeros(nmodes)
 
-        for eid, pct in self._ese_by_eid.items():
+        for eid, energy in self._ese_by_eid.items():
             gid = mapping.get(eid)
             if gid is None:
                 continue
             if gid not in raw_groups:
                 raw_groups[gid] = np.zeros(nmodes)
-            raw_groups[gid] += pct
-            grouped_total += pct
+            raw_groups[gid] += energy
+            grouped_total += energy
 
         # Apply custom group merges (summed percent)
         if self._custom_groups:
@@ -1349,16 +1358,15 @@ REQUIREMENTS
         else:
             labels = sorted(final_groups.keys(), key=self._group_sort_key)
 
-        # Group values are already summed percent.
-        pct_groups = dict(final_groups)
+        # Convert energy buckets -> percent of the model total.
+        pct_groups = {lbl: to_pct(arr) for lbl, arr in final_groups.items()}
 
         # Real elements not in any group for this grouping (e.g. no-PID CELAS2
         # /rigids under Property grouping) -> explicit "Unattributed" column so
-        # the columns still sum to ~100 % with nothing hidden. Computed from the
-        # real-element total only, so pyNastran's non-element rows are excluded.
-        unattributed = known_total - grouped_total
-        if np.any(np.abs(unattributed) >= 0.05):
-            pct_groups['Unattributed'] = unattributed
+        # the columns still sum to ~100 % with nothing hidden.
+        unattr_pct = to_pct(total - grouped_total)
+        if np.any(np.abs(unattr_pct) >= 0.05):
+            pct_groups['Unattributed'] = unattr_pct
             labels = labels + ['Unattributed']
 
         return labels, pct_groups
