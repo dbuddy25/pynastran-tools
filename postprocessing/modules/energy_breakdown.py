@@ -4,6 +4,7 @@ Reads element strain energy (ESE%) from an OP2 file and displays
 per-mode percentages grouped by include file or property ID.
 """
 import os
+import re
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -599,6 +600,88 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# ---------------------------------------------------------- ESE punch parser
+
+_PUNCH_EIG_RE = re.compile(
+    r'EIGENVALUE\s*=\s*([-+0-9.EeDd+]+)\s+MODE\s*=\s*(\d+)', re.I)
+
+
+def _punch_float(s):
+    """Parse a Nastran sci/Fortran float (handles a 'D' exponent)."""
+    return float(s.replace('D', 'E').replace('d', 'e'))
+
+
+def parse_ese_punch(path, progress=None):
+    """Parse a Nastran ESE punch (.pch) file written with ESE(PUNCH).
+
+    Returns (modes, freqs, energy_by_eid):
+      modes         : np.array of mode numbers (in file order)
+      freqs         : np.array of frequencies (Hz), from sqrt(eigenvalue)/2pi
+      energy_by_eid : {eid: np.array[nmodes]} of element strain ENERGY
+
+    Reads ELEMENT STRAIN ENERGIES blocks only (kinetic-energy blocks are
+    skipped). Element-ID rows are ``eid  strain_energy  density  seq#``; the
+    percent column is NOT in the punch, so %ESE is derived from energy later.
+    Non-element rows (eid <= 0, eid >= 1e8 total row) are excluded. Streams the
+    file line-by-line so multi-GB punches don't blow memory. ``progress`` is an
+    optional callback(text) for UI status updates.
+    """
+    mode_index = {}
+    mode_list = []
+    eig_list = []
+    raw = {}                      # eid -> {col: energy}
+    is_ese = False
+    cur_col = None
+    nlines = 0
+
+    with open(path, 'r', errors='replace') as f:
+        for line in f:
+            nlines += 1
+            if progress is not None and nlines % 2000000 == 0:
+                progress(f"Parsing punch… {nlines // 1000000}M lines")
+            if line.startswith('$'):
+                u = line.upper()
+                if 'STRAIN ENERGIES' in u:
+                    is_ese = True
+                elif 'ENERGIES' in u:        # kinetic energy or other -> skip
+                    is_ese = False
+                elif 'EIGENVALUE' in u and 'MODE' in u:
+                    m = _PUNCH_EIG_RE.search(line)
+                    if m:
+                        modenum = int(m.group(2))
+                        if modenum not in mode_index:
+                            mode_index[modenum] = len(mode_list)
+                            mode_list.append(modenum)
+                            eig_list.append(_punch_float(m.group(1)))
+                        cur_col = mode_index[modenum]
+                continue
+            if not is_ese or cur_col is None:
+                continue
+            p = line.split()
+            if len(p) < 2:
+                continue
+            try:
+                eid = int(p[0])
+                energy = _punch_float(p[1])
+            except ValueError:
+                continue
+            if eid <= 0 or eid >= 100000000:
+                continue
+            raw.setdefault(eid, {})[cur_col] = energy
+
+    nmodes = len(mode_list)
+    energy_by_eid = {}
+    for eid, md in raw.items():
+        arr = np.zeros(nmodes)
+        for col, e in md.items():
+            arr[col] = e
+        energy_by_eid[eid] = arr
+
+    modes = np.array(mode_list)
+    freqs = np.sqrt(np.abs(np.array(eig_list))) / (2.0 * np.pi)
+    return modes, freqs, energy_by_eid
+
+
 # ---------------------------------------------------------------- GUI module
 
 class EnergyBreakdownModule:
@@ -694,6 +777,10 @@ REQUIREMENTS
         self._op2_btn = ctk.CTkButton(toolbar, text="Open OP2\u2026", width=100,
                                       command=self._open_op2)
         self._op2_btn.pack(side=tk.LEFT)
+
+        self._punch_btn = ctk.CTkButton(toolbar, text="Open Punch\u2026",
+                                        width=100, command=self._open_punch)
+        self._punch_btn.pack(side=tk.LEFT, padx=(5, 0))
 
         self._bdf_btn = ctk.CTkButton(toolbar, text="Open BDF\u2026", width=100,
                                       command=self._open_bdf)
@@ -809,6 +896,7 @@ REQUIREMENTS
         """
         self._status_label.configure(text=label, text_color="gray")
         self._op2_btn.configure(state=tk.DISABLED)
+        self._punch_btn.configure(state=tk.DISABLED)
         self._bdf_btn.configure(state=tk.DISABLED)
 
         container = {}  # mutable container for thread results
@@ -824,6 +912,7 @@ REQUIREMENTS
                 self.frame.after(50, _poll)
             else:
                 self._op2_btn.configure(state=tk.NORMAL)
+                self._punch_btn.configure(state=tk.NORMAL)
                 self._bdf_btn.configure(state=tk.NORMAL)
                 done_fn(container.get('result'), container.get('error'))
 
@@ -887,6 +976,63 @@ REQUIREMENTS
             self._refresh_table()
 
         self._run_in_background("Loading OP2\u2026", _work, _done)
+
+    def _open_punch(self):
+        """Read ESE from a Nastran punch (.pch) \u2014 version-proof, no pyNastran.
+
+        Use this for OP2 files pyNastran can't read (e.g. newer NX versions).
+        Generate it with ESE(PUNCH)=ALL in Case Control.
+        """
+        path = filedialog.askopenfilename(
+            title="Open ESE Punch File",
+            filetypes=[("Punch files", "*.pch *.punch"), ("All files", "*.*")])
+        if not path:
+            return
+
+        def _work():
+            return parse_ese_punch(
+                path, progress=lambda t: self.frame.after(
+                    0, lambda: self._status_label.configure(
+                        text=t, text_color="gray")))
+
+        def _done(result, error):
+            if error is not None:
+                messagebox.showerror("Error",
+                                     f"Could not read punch file:\n{error}")
+                self._status_label.configure(text="Load failed",
+                                             text_color="red")
+                return
+            modes, freqs, ese_by_eid = result
+            if not ese_by_eid:
+                messagebox.showwarning(
+                    "No Strain Energy Data",
+                    "No ELEMENT STRAIN ENERGIES blocks found in this punch.\n\n"
+                    "Generate it with:  ESE(PUNCH) = ALL")
+                self._status_label.configure(text="No ESE data",
+                                             text_color="red")
+                return
+
+            self._op2_path = path
+            self._modes = modes
+            self._freqs = freqs
+            self._ese_by_eid = ese_by_eid
+            # Punch carries no non-element/aggregate rows we keep, and percent
+            # is computed from energy, so the read-integrity flags don't apply.
+            self._dup_rows = 0
+            self._nonbdf_eids = []
+            self._mode_mismatch = False
+            self._multi_subcase = False
+            self._skipped_types = 0
+
+            status = (f"Punch: {os.path.basename(path)} "
+                      f"({len(ese_by_eid)} elements, {len(modes)} modes)")
+            if self._bdf_path:
+                status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
+            self._status_label.configure(text=status,
+                                         text_color=("gray10", "gray90"))
+            self._refresh_table()
+
+        self._run_in_background("Parsing punch\u2026", _work, _done)
 
     def _collect_strain_energy(self, op2):
         """Discover all *_strain_energy attributes and collect ESE ENERGY per element.
