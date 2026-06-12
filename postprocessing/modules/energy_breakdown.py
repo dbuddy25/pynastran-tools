@@ -834,7 +834,10 @@ class RangeGroupsDialog(ctk.CTkToplevel):
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
-                w.writerow(['Group Name', 'Start', 'End', 'Start', 'End'])
+                # Repeat Start,End several times so it's obvious more are allowed,
+                # plus a note. The whole header row is skipped on import.
+                w.writerow(['Group Name'] + ['Start', 'End'] * 6 +
+                           ['(add as many Start,End pairs as needed)'])
                 if self._groups:
                     for name, ranges in self._groups.items():
                         flat = []
@@ -842,7 +845,7 @@ class RangeGroupsDialog(ctk.CTkToplevel):
                             flat += [lo, hi]
                         w.writerow([name] + flat)
                 else:
-                    w.writerow(['Example', 1000, 1999, 2500, 2500])
+                    w.writerow(['Example', 1000, 1999, 2500, 2500, 5000, 5999])
             messagebox.showinfo("Exported", f"Template saved to:\n{path}",
                                 parent=self)
         except Exception as exc:
@@ -2288,9 +2291,58 @@ REQUIREMENTS
 
         try:
             wb.save(path)
-            messagebox.showinfo("Saved", os.path.basename(path))
+            prompt_open_after_save(self.frame.winfo_toplevel(), path)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
+
+
+def _open_file(path):
+    """Open a file with the OS default application (cross-platform)."""
+    import subprocess
+    import sys
+    if sys.platform == 'darwin':
+        subprocess.run(['open', path])
+    elif os.name == 'nt':
+        os.startfile(path)   # noqa: only exists on Windows
+    else:
+        subprocess.run(['xdg-open', path])
+
+
+def _reveal_file(path):
+    """Open the folder containing a file, selecting it where supported."""
+    import subprocess
+    import sys
+    folder = os.path.dirname(os.path.abspath(path))
+    if sys.platform == 'darwin':
+        subprocess.run(['open', '-R', path])
+    elif os.name == 'nt':
+        # explorer returns nonzero even on success — don't check.
+        subprocess.run(['explorer', '/select,', os.path.normpath(path)])
+    else:
+        subprocess.run(['xdg-open', folder])
+
+
+def prompt_open_after_save(parent, path):
+    """Modal 'Saved' dialog offering Open File / Open Folder / Close."""
+    dlg = ctk.CTkToplevel(parent)
+    dlg.title("Saved")
+    dlg.geometry("420x150")
+    dlg.transient(parent)
+    dlg.resizable(False, False)
+    ctk.CTkLabel(dlg, text=f"Saved to:\n{os.path.basename(path)}",
+                 justify="center").pack(pady=(20, 12), padx=14)
+    row = ctk.CTkFrame(dlg, fg_color="transparent")
+    row.pack(pady=(0, 16))
+    ctk.CTkButton(row, text="Open File", width=110,
+                  command=lambda: (dlg.destroy(), _open_file(path))
+                  ).pack(side=tk.LEFT, padx=5)
+    ctk.CTkButton(row, text="Open Folder", width=110,
+                  command=lambda: (dlg.destroy(), _reveal_file(path))
+                  ).pack(side=tk.LEFT, padx=5)
+    ctk.CTkButton(row, text="Close", width=90, fg_color="gray50",
+                  command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+    # Grab focus after the window is mapped (CTkToplevel needs the delay).
+    dlg.after(120, dlg.grab_set)
 
 
 def main():
