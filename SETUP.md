@@ -4,16 +4,23 @@ For a machine that has **Python 3** installed. No PyInstaller build, no giant ex
 
 ## Quick start (Windows)
 
-1. Copy/clone this project folder onto your machine.
+1. Copy/unzip this project folder onto your machine.
 2. Double-click one of:
-   - **`run_ese.bat`** — just the ESE (strain energy) tool. Lighter.
-   - **`run_suite.bat`** — the full Structures Tools suite.
+   - **`launch_ese.bat`** — just the ESE (strain energy) tool. Lighter.
+   - **`launch_structures_tools.bat`** — the full Structures Tools suite.
 
    The first run installs the needed Python packages, then launches. Later runs
    just launch.
 
 That's it. If a window pops up saying a package is missing, run the matching
 `.bat` again (it installs them) or use the manual commands below.
+
+## Updating to a newer version
+
+When you get a new bundle, just **unzip it over your existing folder and replace
+everything**. Your work isn't stored in here (OP2/BDF files and exports live
+wherever you save them), so overwriting is safe. The launchers re-check
+dependencies on every run, so any newly required packages install automatically.
 
 ## Manual (any OS / terminal)
 

@@ -14,13 +14,20 @@ import os
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, 'structures_tools_share.zip')
-TOP = 'structures_tools'          # top-level folder name inside the zip
+
+# Read the suite version so the zip name makes the version obvious when sharing.
+_ver = {}
+with open(os.path.join(HERE, '_version.py')) as _f:
+    exec(_f.read(), _ver)
+VERSION = _ver.get('__version__', 'unknown')
+
+OUT = os.path.join(HERE, f'structures_tools_v{VERSION}.zip')
+TOP = f'structures_tools_v{VERSION}'   # top-level folder name inside the zip
 
 ROOT_FILES = [
     'structures_tools.py', 'run_ese.py',
     '_version.py', '_build.py', 'requirements.txt',
-    'run_ese.bat', 'run_suite.bat', 'SETUP.md',
+    'launch_ese.bat', 'launch_structures_tools.bat', 'SETUP.md',
 ]
 DIRS = ['preprocessing', 'postprocessing', 'calculators']
 SKIP_DIRS = {'__pycache__', '.git', '.venv', 'build', 'dist'}
@@ -58,4 +65,4 @@ size_mb = os.path.getsize(OUT) / 1e6
 print(f"\nWrote {OUT}")
 print(f"  {count} files, {size_mb:.1f} MB")
 print("\nSend that zip. Colleague unzips, installs Python 3.12 from python.org,")
-print("then double-clicks run_ese.bat (or run_suite.bat) inside the folder.")
+print("then double-clicks launch_ese.bat (or launch_structures_tools.bat).")
