@@ -9,16 +9,7 @@
 # app doesn't die with "ModuleNotFoundError" or a missing theme/JSON at runtime.
 
 import os
-import sys
-from PyInstaller.utils.hooks import collect_all, collect_submodules
-
-# Put the suite's source dirs on sys.path FIRST so build-time collection finds
-# THIS project's `modules` package (postprocessing/modules), not any same-named
-# package elsewhere. The launcher adds these same dirs at runtime.
-for _sub in ('postprocessing', 'preprocessing', 'calculators'):
-    _p = os.path.join(SPECPATH, _sub)
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
@@ -41,16 +32,15 @@ hiddenimports += [
     'mass_scale', 'renumber_includes', 'thermal_cte', 'miles_equation',
     'bdf_utils', '_version', '_build',
     'modal_effective_mass',
+    # _force_imports.py imports every postprocessing/modules submodule via real
+    # `import` edges. Hand-listed dotted names ('modules.energy_breakdown', …)
+    # did NOT resolve — only modules.meff survived, because modal_effective_mass
+    # imports it directly. PyInstaller reliably follows real import edges, so this
+    # forces all the submodules into the bundle the same proven way.
+    '_force_imports',
     # matplotlib's Tk backend is loaded lazily by the plotting tools.
     'matplotlib.backends.backend_tkagg',
 ]
-
-# Force-collect EVERY submodule of postprocessing/modules by walking the package
-# directory. Hand-listing the dotted names proved unreliable — PyInstaller
-# resolved the generic `modules` name to a namespace package and silently
-# dropped most submodules (only modules.meff, pulled in via a real import edge,
-# survived). collect_submodules walks the actual directory, so nothing is missed.
-hiddenimports += collect_submodules('modules')
 
 block_cipher = None
 
