@@ -20,9 +20,10 @@ _ver = {}
 with open(os.path.join(HERE, '_version.py')) as _f:
     exec(_f.read(), _ver)
 VERSION = _ver.get('__version__', 'unknown')
+VTAG = VERSION.replace('.', '-')   # dashes, not dots, for a clean filename
 
-OUT = os.path.join(HERE, f'structures_tools_v{VERSION}.zip')
-TOP = f'structures_tools_v{VERSION}'   # top-level folder name inside the zip
+OUT = os.path.join(HERE, f'structures_tools_v{VTAG}.zip')
+TOP = f'structures_tools_v{VTAG}'   # top-level folder name inside the zip
 
 ROOT_FILES = [
     'structures_tools.py', 'run_ese.py',
