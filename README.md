@@ -1,79 +1,92 @@
-# pynastran-tools
+# Structures Tools
 
-Python GUI and CLI tools for Nastran FEA model manipulation, built on [pyNastran](https://github.com/SteveDoyle2/pyNastran).
+A suite of structural-analysis tools with a unified desktop GUI — Nastran FEA
+pre/post-processing (built on [pyNastran](https://github.com/SteveDoyle2/pyNastran))
+plus hand-calculation utilities. Built with customtkinter + tksheet.
 
-## Quick Start
+Runs from source on any machine with **Python 3** — no build step, no installer.
+
+## Quick start
+
+**Windows (easiest):** install Python 3.12 from [python.org](https://python.org)
+(tick *Add Python to PATH*), then double-click:
+
+- **`launch_ese.bat`** — just the ESE (strain energy) tool. Lighter.
+- **`launch_structures_tools.bat`** — the full suite.
+
+The first run installs the needed packages, then launches. Later runs just
+launch. See [SETUP.md](SETUP.md) for details and troubleshooting.
+
+**Any OS / terminal:**
 
 ```bash
 pip install -r requirements.txt
-python structures_tools.py
+python structures_tools.py        # full suite
+python run_ese.py                 # ESE tool only
 ```
 
 ## Tools
 
-### Unified GUI (`structures_tools.py`)
+**Pre-processing** (BDF manipulation)
+- **Mass Scale** — per-include-file mass scaling (density, NSM, CONM2 mass/inertia)
+- **Renumber** — per-include-file ID renumbering with validation
+- **Thermal CTE** — set/verify a uniform CTE (incl. RBE2 ALPHA/TREF) across a model
+- **Partition** — split a model into include files
 
-Single-window application with sidebar navigation grouping all tools:
+**Post-processing** (OP2 results)
+- **ESE Breakdown** — element strain-energy %ESE by group (Property ID, Include
+  File, or **element-ID range** — CSV-importable, no BDF required). Matches Femap;
+  reads OP2 or punch.
+- **Modal Effective Mass** — MEFFMASS fractions from OP2, with Excel export
+- **CBUSH Forces** — CBUSH force extraction by joint
+- **Mass Breakdown** — mass properties by group (incl. DMIG), GPWG validation
+- **ASD Overlay** — acceleration spectral density plotting/overlay
+- **Response Limiting** — response-limiting / force-limited vibration plots
+- **Random Vibe Environment** — random-vibration ASD environment builder
 
-- **Pre-Processing**
-  - **Mass Scale** — per-include-file mass scaling (material density, NSM, CONM2 mass/inertia)
-  - **Renumber** — per-include-file ID renumbering with validation
-- **Post-Processing**
-  - **MEFF Viewer** — modal effective mass fractions from OP2 with Excel export
+**Calculators**
+- **Miles Equation** — Miles' equation random-vibration response
 
-### Standalone tools
+Most modules also run standalone, e.g. `python postprocessing/modules/meff.py`.
 
-Each tool also works standalone:
+## Dependencies
+
+Installed automatically by the launchers / `requirements.txt`:
+
+- **pyNastran** (pinned to 1.4.1) — BDF/OP2 reader
+- **customtkinter**, **tksheet** — GUI
+- **numpy**, **scipy** — numerics
+- **matplotlib** — plotting (ASD / response / random-vibe tools)
+- **openpyxl** — Excel export
+
+The ESE tool alone needs only `customtkinter tksheet numpy pyNastran openpyxl`
+(no scipy/matplotlib).
+
+## Sharing a build
+
+To hand the tools to a colleague, build a minimal zip (only the runtime files —
+no `.venv`, build artifacts, or dev files):
 
 ```bash
-# Mass scaling GUI
-python preprocessing/mass_scale.py
-
-# Include file renumbering GUI
-python preprocessing/renumber_includes.py
-
-# MEFF Viewer GUI (standalone)
-python postprocessing/modules/meff.py
-
-# Modal effective mass report (CLI)
-python postprocessing/modal_effective_mass.py model.op2
-python postprocessing/modal_effective_mass.py model.op2 --xlsx output.xlsx
+python make_bundle.py        # -> structures_tools_v<version>.zip
 ```
 
-## Installation
+They unzip it, install Python, and double-click a `launch_*.bat`. See
+[SETUP.md](SETUP.md). To update, send a new bundle and unzip over the old folder.
 
-```bash
-pip install -r requirements.txt
-```
-
-### Dependencies
-
-- **pyNastran** — BDF/OP2 reader/writer
-- **customtkinter** — modern tkinter widgets
-- **tksheet** — spreadsheet widget
-- **numpy**, **scipy** — numerical computation (modal effective mass)
-- **openpyxl** — Excel export (optional)
-
-## Project Structure
+## Project structure
 
 ```
-├── structures_tools.py                # Unified GUI entry point (sidebar navigation)
-├── preprocessing/
-│   ├── __init__.py
-│   ├── bdf_utils.py                # Shared utilities (IncludeFileParser, CARD_ENTITY_MAP, make_model)
-│   ├── mass_scale.py               # Mass scaling tool (CTkFrame, standalone or embedded)
-│   └── renumber_includes.py        # Include file renumbering tool (CTkFrame, standalone or embedded)
-├── postprocessing/
-│   ├── __init__.py
-│   ├── modal_effective_mass.py     # MEFFMASS CLI tool
-│   └── modules/
-│       ├── __init__.py
-│       └── meff.py                 # MEFF module (CustomTkinter + tksheet, comparison logic, Excel helpers)
-└── docs/
-    ├── bdf_utils.md
-    ├── mass_scaling_implementation.md
-    ├── renumber_includes_tool.md
-    └── modal_effective_mass_guide.md
+structures_tools.py              # Unified GUI launcher
+run_ese.py                       # ESE-only launcher
+launch_ese.bat / launch_structures_tools.bat   # one-click launchers
+make_bundle.py                   # build a share zip
+preprocessing/                   # BDF tools + bdf_utils.py (shared helpers)
+postprocessing/
+  ├── modal_effective_mass.py    # MEFFMASS CLI
+  └── modules/                   # ESE, CBUSH, mass, ASD, response, random-vibe, meff
+calculators/                     # Miles equation
+docs/                            # implementation notes
 ```
 
 ## License
