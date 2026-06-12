@@ -600,6 +600,320 @@ class ManageGroupsDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class RangeGroupsDialog(ctk.CTkToplevel):
+    """Define groups by element-ID ranges (works without a BDF).
+
+    A group is one or more (lo, hi) intervals; a single ID is (n, n). Group
+    order is priority — the first group containing an element claims it.
+    """
+
+    def __init__(self, parent, range_groups, on_apply):
+        super().__init__(parent)
+        self.title("Element ID Range Groups")
+        self.geometry("640x460")
+        self.resizable(True, True)
+        self.transient(parent)
+
+        # Copy so Cancel discards edits. Preserve order.
+        self._groups = {name: [tuple(r) for r in ranges]
+                        for name, ranges in range_groups.items()}
+        self._on_apply = on_apply
+        self._editing_key = None
+        self._build_ui()
+
+    # -------------------------------------------------- range <-> text helpers
+    @staticmethod
+    def _ranges_to_str(ranges):
+        parts = []
+        for lo, hi in ranges:
+            parts.append(str(lo) if lo == hi else f"{lo}-{hi}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _parse_ranges_str(text):
+        """Parse '1000-1999, 2500, 5000-5999' -> [(1000,1999),(2500,2500),...].
+
+        Raises ValueError on a malformed token.
+        """
+        ranges = []
+        for tok in text.replace(';', ',').split(','):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if '-' in tok:
+                a, b = tok.split('-', 1)
+                lo, hi = int(a.strip()), int(b.strip())
+                if lo > hi:
+                    lo, hi = hi, lo
+                ranges.append((lo, hi))
+            else:
+                n = int(tok)
+                ranges.append((n, n))
+        return ranges
+
+    def _build_ui(self):
+        self._dark = ctk.get_appearance_mode() == "Dark"
+        lb_bg = "#2b2b2b" if self._dark else "white"
+        lb_fg = "#dce4ee" if self._dark else "black"
+        lb_sel_bg = "#1f6aa5" if self._dark else "#0078d4"
+
+        main = ctk.CTkFrame(self)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left: entry form
+        left = ctk.CTkFrame(main)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+
+        ctk.CTkLabel(left, text="Group Name:").pack(anchor=tk.W, pady=(4, 2))
+        self._name_var = tk.StringVar()
+        ctk.CTkEntry(left, textvariable=self._name_var, width=200).pack()
+
+        ctk.CTkLabel(left, text="Ranges (e.g. 1000-1999, 2500, 5000-5999):"
+                     ).pack(anchor=tk.W, pady=(10, 2))
+        self._ranges_var = tk.StringVar()
+        ctk.CTkEntry(left, textvariable=self._ranges_var, width=200).pack()
+
+        ctk.CTkButton(left, text="Add / Update Group", width=200,
+                      command=self._add_update).pack(pady=(10, 2))
+        ctk.CTkButton(left, text="Clear Form", width=200, fg_color="gray50",
+                      command=self._clear_form).pack(pady=2)
+
+        ctk.CTkButton(left, text="Import CSV…", width=200,
+                      command=self._import_csv).pack(pady=(18, 2))
+        ctk.CTkButton(left, text="Export Template…", width=200,
+                      command=self._export_template).pack(pady=2)
+        ctk.CTkButton(left, text="Save Groups…", width=200,
+                      command=self._save_json).pack(pady=(12, 2))
+        ctk.CTkButton(left, text="Load Groups…", width=200,
+                      command=self._load_json).pack(pady=2)
+
+        # Right: group list
+        right = ctk.CTkFrame(main)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        ctk.CTkLabel(right, text="Groups (top = highest priority)",
+                     font=ctk.CTkFont(weight="bold")).pack(anchor=tk.W)
+        self._list = tk.Listbox(right, selectmode=tk.SINGLE,
+                                exportselection=False, bg=lb_bg, fg=lb_fg,
+                                selectbackground=lb_sel_bg,
+                                selectforeground="white")
+        self._list.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._list.bind("<<ListboxSelect>>", self._on_select)
+
+        row = ctk.CTkFrame(right, fg_color="transparent")
+        row.pack(fill=tk.X, pady=(4, 0))
+        ctk.CTkButton(row, text="▲ Up", width=60,
+                      command=self._move_up).pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(row, text="▼ Down", width=60,
+                      command=self._move_down).pack(side=tk.LEFT, padx=(0, 4))
+        ctk.CTkButton(row, text="Delete", width=70, fg_color="firebrick",
+                      command=self._delete).pack(side=tk.LEFT)
+
+        self._refresh_list()
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ctk.CTkButton(bottom, text="Apply", width=80,
+                      command=self._apply).pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(bottom, text="Cancel", width=80, fg_color="gray50",
+                      command=self.destroy).pack(side=tk.RIGHT)
+
+    def _refresh_list(self):
+        self._list.delete(0, tk.END)
+        for name, ranges in self._groups.items():
+            self._list.insert(tk.END, f"{name}:  {self._ranges_to_str(ranges)}")
+
+    def _selected_name(self):
+        sel = self._list.curselection()
+        if not sel:
+            return None
+        return list(self._groups.keys())[sel[0]]
+
+    def _on_select(self, _event=None):
+        name = self._selected_name()
+        if name is None:
+            return
+        self._editing_key = name
+        self._name_var.set(name)
+        self._ranges_var.set(self._ranges_to_str(self._groups[name]))
+
+    def _clear_form(self):
+        self._editing_key = None
+        self._name_var.set('')
+        self._ranges_var.set('')
+        self._list.selection_clear(0, tk.END)
+
+    def _add_update(self):
+        name = self._name_var.get().strip()
+        if not name:
+            messagebox.showwarning("No Name", "Enter a group name.", parent=self)
+            return
+        try:
+            ranges = self._parse_ranges_str(self._ranges_var.get())
+        except ValueError:
+            messagebox.showerror(
+                "Bad Ranges",
+                "Could not parse ranges. Use e.g. 1000-1999, 2500, 5000-5999.",
+                parent=self)
+            return
+        if not ranges:
+            messagebox.showwarning("No Ranges",
+                                   "Enter at least one ID or range.", parent=self)
+            return
+        # If renaming, drop the old key but keep its position.
+        if self._editing_key and self._editing_key != name:
+            self._groups = {(name if k == self._editing_key else k): v
+                            for k, v in self._groups.items()}
+        self._groups[name] = ranges
+        self._editing_key = None
+        self._refresh_list()
+        self._clear_form()
+
+    def _delete(self):
+        name = self._selected_name()
+        if name is None:
+            return
+        del self._groups[name]
+        self._refresh_list()
+        self._clear_form()
+
+    def _reorder(self, delta):
+        name = self._selected_name()
+        if name is None:
+            return
+        keys = list(self._groups.keys())
+        i = keys.index(name)
+        j = i + delta
+        if not (0 <= j < len(keys)):
+            return
+        keys[i], keys[j] = keys[j], keys[i]
+        self._groups = {k: self._groups[k] for k in keys}
+        self._refresh_list()
+        self._list.selection_set(j)
+
+    def _move_up(self):
+        self._reorder(-1)
+
+    def _move_down(self):
+        self._reorder(1)
+
+    def _import_csv(self):
+        path = filedialog.askopenfilename(
+            title="Import Range Groups CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        try:
+            imported = parse_range_csv(path)
+        except Exception as exc:
+            messagebox.showerror("Import Error", str(exc), parent=self)
+            return
+        if not imported:
+            messagebox.showwarning(
+                "Nothing Imported",
+                "No valid group rows found. Expected: "
+                "Group Name, Start, End, Start, End, …", parent=self)
+            return
+        # Merge: imported ranges extend existing groups, new groups appended.
+        for name, ranges in imported.items():
+            if name in self._groups:
+                self._groups[name].extend(ranges)
+            else:
+                self._groups[name] = list(ranges)
+        self._refresh_list()
+        self._clear_form()
+
+    def _export_template(self):
+        import csv
+        path = filedialog.asksaveasfilename(
+            title="Export Range Groups Template",
+            defaultextension='.csv',
+            filetypes=[("CSV files", "*.csv")], parent=self)
+        if not path:
+            return
+        try:
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                w = csv.writer(f)
+                w.writerow(['Group Name', 'Start', 'End', 'Start', 'End'])
+                if self._groups:
+                    for name, ranges in self._groups.items():
+                        flat = []
+                        for lo, hi in ranges:
+                            flat += [lo, hi]
+                        w.writerow([name] + flat)
+                else:
+                    w.writerow(['Example', 1000, 1999, 2500, 2500])
+            messagebox.showinfo("Exported", f"Template saved to:\n{path}",
+                                parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc), parent=self)
+
+    def _save_json(self):
+        import json
+        path = filedialog.asksaveasfilename(
+            title="Save Range Groups", defaultextension=".json",
+            initialfile="range_groups.ese_ranges.json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        payload = {
+            "format": "ese_range_groups",
+            "version": 1,
+            "groups": [{"name": name, "ranges": [[lo, hi] for lo, hi in ranges]}
+                       for name, ranges in self._groups.items()],
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            messagebox.showinfo("Saved", f"Groups saved to:\n{path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Save Error", str(exc), parent=self)
+
+    def _load_json(self):
+        import json
+        path = filedialog.askopenfilename(
+            title="Load Range Groups",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Load Error", str(exc), parent=self)
+            return
+        if data.get("format") != "ese_range_groups":
+            messagebox.showerror("Load Error",
+                                 "File is not an ese_range_groups JSON.",
+                                 parent=self)
+            return
+        new_groups = {}
+        for entry in data.get("groups", []):
+            name = (entry.get("name") or "").strip()
+            if not name:
+                continue
+            ranges = []
+            for pair in entry.get("ranges", []):
+                try:
+                    lo, hi = int(pair[0]), int(pair[1])
+                except (ValueError, TypeError, IndexError):
+                    continue
+                if lo > hi:
+                    lo, hi = hi, lo
+                ranges.append((lo, hi))
+            if ranges:
+                new_groups[name] = ranges
+        self._groups = new_groups
+        self._refresh_list()
+        self._clear_form()
+
+    def _apply(self):
+        self._on_apply(self._groups)
+        self.destroy()
+
+
 # ---------------------------------------------------------- ESE punch parser
 
 _PUNCH_EIG_RE = re.compile(
@@ -609,6 +923,53 @@ _PUNCH_EIG_RE = re.compile(
 def _punch_float(s):
     """Parse a Nastran sci/Fortran float (handles a 'D' exponent)."""
     return float(s.replace('D', 'E').replace('d', 'e'))
+
+
+def parse_range_csv(path):
+    """Parse an element-ID range CSV into an ordered {name: [(lo, hi), ...]}.
+
+    Format (one group per row, numeric so Excel formulas can fill it):
+        Group Name, Start, End, Start, End, ...
+    A single ID is written as a pair n,n. Multiple ranges = more pairs along the
+    row. A header row (first cell ~ 'group name'/'name') is auto-detected and
+    skipped. Rows sharing a name merge their ranges (so one-range-per-row also
+    works). Non-numeric / malformed pairs are skipped silently.
+    """
+    import csv
+    groups = {}  # preserves insertion (priority) order
+
+    def add_row(row):
+        if not row:
+            return
+        name = row[0].strip()
+        if not name:
+            return
+        ranges = []
+        i = 1
+        while i + 1 < len(row):
+            try:
+                lo = int(float(row[i]))
+                hi = int(float(row[i + 1]))
+            except (ValueError, TypeError):
+                i += 2
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            ranges.append((lo, hi))
+            i += 2
+        if not ranges:
+            return
+        groups.setdefault(name, []).extend(ranges)
+
+    with open(path, newline='', encoding='utf-8-sig') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header and header[0].strip().lower() not in (
+                'group name', 'group_name', 'name'):
+            add_row(header)   # first row was data, not a header
+        for row in reader:
+            add_row(row)
+    return groups
 
 
 def parse_ese_punch(path, progress=None):
@@ -719,6 +1080,10 @@ class EnergyBreakdownModule:
         self._custom_groups = {}       # {name: set(ids)}
         self._show_ungrouped = True
 
+        # Element-ID range groups (BDF-free grouping). Ordered: first match wins.
+        self._range_groups = {}        # {name: [(lo, hi), ...]} singles = (n, n)
+        self._eid_to_rangegroup = {}   # {eid: group name} built mapping
+
         # Editable column names (name row)
         self._column_names = {}        # {column_label: display_name}
         self._current_labels = []      # labels for mapping column edits
@@ -797,8 +1162,8 @@ REQUIREMENTS
         ctk.CTkLabel(toolbar, text="Group by:").pack(side=tk.LEFT, padx=(0, 2))
         self._group_by_menu = ctk.CTkOptionMenu(
             toolbar, variable=self._group_by_var,
-            values=["Property ID", "Include File"],
-            width=140, command=self._on_group_by_change,
+            values=["Property ID", "Include File", "Element ID Range"],
+            width=150, command=self._on_group_by_change,
         )
         self._group_by_menu.pack(side=tk.LEFT)
         self._group_by_menu.configure(state=tk.DISABLED)
@@ -973,6 +1338,11 @@ REQUIREMENTS
                 status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
             self._status_label.configure(text=status,
                                          text_color=("gray10", "gray90"))
+            # Range grouping works on the OP2 alone (no BDF needed), so enable
+            # the grouping controls as soon as we have element strain energy.
+            self._group_by_menu.configure(state=tk.NORMAL)
+            self._manage_btn.configure(state=tk.NORMAL)
+            self._build_range_mapping()
             self._refresh_table()
 
         self._run_in_background("Loading OP2\u2026", _work, _done)
@@ -1030,6 +1400,10 @@ REQUIREMENTS
                 status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
             self._status_label.configure(text=status,
                                          text_color=("gray10", "gray90"))
+            # Enable grouping controls (range mode needs no BDF).
+            self._group_by_menu.configure(state=tk.NORMAL)
+            self._manage_btn.configure(state=tk.NORMAL)
+            self._build_range_mapping()
             self._refresh_table()
 
         self._run_in_background("Parsing punch\u2026", _work, _done)
@@ -1370,6 +1744,8 @@ REQUIREMENTS
         # User customizations
         self._custom_groups = {}
         self._show_ungrouped = True
+        self._range_groups = {}
+        self._eid_to_rangegroup = {}
         self._column_names = {}
         self._current_labels = []
 
@@ -1386,6 +1762,43 @@ REQUIREMENTS
         self._manage_btn.configure(state=tk.DISABLED)
 
     # ---------------------------------------------------------- aggregation
+    def _build_range_mapping(self):
+        """Build {eid: group name} from self._range_groups (first match wins).
+
+        Independent of any BDF — element IDs come straight from the OP2/punch
+        results. Groups are walked in definition order so the first group whose
+        intervals contain an element claims it.
+        """
+        mapping = {}
+        if self._ese_by_eid and self._range_groups:
+            items = list(self._range_groups.items())
+            for eid in self._ese_by_eid:
+                for name, ranges in items:
+                    if any(lo <= eid <= hi for lo, hi in ranges):
+                        mapping[eid] = name
+                        break
+        self._eid_to_rangegroup = mapping
+
+    @staticmethod
+    def _find_range_overlaps(range_groups):
+        """Return [(nameA, nameB, lo, hi), ...] where two groups' intervals
+        intersect. O(R^2) over total intervals — fine for human-authored sets.
+        """
+        flat = [(name, lo, hi)
+                for name, ranges in range_groups.items()
+                for lo, hi in ranges]
+        overlaps = []
+        for i in range(len(flat)):
+            na, la, ha = flat[i]
+            for j in range(i + 1, len(flat)):
+                nb, lb, hb = flat[j]
+                if na == nb:
+                    continue
+                lo, hi = max(la, lb), min(ha, hb)
+                if lo <= hi:
+                    overlaps.append((na, nb, lo, hi))
+        return overlaps
+
     def _aggregate_by_group(self):
         """Aggregate ESE% by the selected grouping type.
 
@@ -1426,7 +1839,14 @@ REQUIREMENTS
             return 100.0 * arr / safe_total
 
         # Select the appropriate mapping
-        if group_by == "Property ID" and self._bdf_loaded:
+        if group_by == "Element ID Range":
+            # Range grouping needs no BDF — it maps element IDs directly. Until
+            # the user defines ranges, show the flat view to prompt them.
+            if not self._range_groups:
+                return ['All Elements'], {'All Elements': to_pct(total)}
+            mapping = self._eid_to_rangegroup
+            label_fn = lambda gid: str(gid)
+        elif group_by == "Property ID" and self._bdf_loaded:
             mapping = self._eid_to_pid
             label_fn = lambda gid: f"PID {gid}"
         elif group_by == "Include File" and self._bdf_loaded:
@@ -1504,6 +1924,11 @@ REQUIREMENTS
             labels = custom_names + rest
         elif group_by == "Include File" and self._file_order:
             order_map = {f: i for i, f in enumerate(self._file_order)}
+            labels = sorted(final_groups.keys(),
+                            key=lambda lbl: order_map.get(lbl, 999999))
+        elif group_by == "Element ID Range":
+            # Keep the user's group priority order (also the first-wins order).
+            order_map = {n: i for i, n in enumerate(self._range_groups)}
             labels = sorted(final_groups.keys(),
                             key=lambda lbl: order_map.get(lbl, 999999))
         else:
@@ -1708,6 +2133,14 @@ REQUIREMENTS
             return
 
         group_by = self._group_by_var.get()
+        if group_by == "Element ID Range":
+            RangeGroupsDialog(
+                self.frame.winfo_toplevel(),
+                range_groups=self._range_groups,
+                on_apply=self._on_range_groups_applied,
+            )
+            return
+
         if group_by == "Property ID":
             mapping = self._eid_to_pid
         else:
@@ -1763,6 +2196,27 @@ REQUIREMENTS
         """Callback from ManageGroupsDialog."""
         self._custom_groups = {k: set(v) for k, v in groups.items()}
         self._show_ungrouped = show_ungrouped
+        self._refresh_table()
+
+    def _on_range_groups_applied(self, range_groups):
+        """Callback from RangeGroupsDialog: store ranges, warn on overlap."""
+        self._range_groups = {name: [tuple(r) for r in ranges]
+                              for name, ranges in range_groups.items()}
+
+        overlaps = self._find_range_overlaps(self._range_groups)
+        if overlaps:
+            lines = [f"  • {a} & {b}: IDs {lo}-{hi}" if lo != hi
+                     else f"  • {a} & {b}: ID {lo}"
+                     for a, b, lo, hi in overlaps[:10]]
+            more = (f"\n  …and {len(overlaps) - 10} more"
+                    if len(overlaps) > 10 else "")
+            messagebox.showwarning(
+                "Overlapping Ranges",
+                "These groups share element IDs. Each shared element counts "
+                "only toward the FIRST listed group (drag groups up/down to "
+                "set priority):\n\n" + "\n".join(lines) + more)
+
+        self._build_range_mapping()
         self._refresh_table()
 
     # ------------------------------------------------------------ export
