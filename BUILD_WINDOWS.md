@@ -98,6 +98,13 @@ Add `'X'` to the `hiddenimports` list in `structures_tools.spec` and rebuild.
 The `collect_all(...)` loop at the top of the spec already covers these; make sure
 the package name is in that loop, then rebuild.
 
+**Crash on launch: `'NoneType' object has no attribute 'write'` (customtkinter).**
+Already handled. In a windowed build `sys.stdout`/`sys.stderr` are `None`, and
+customtkinter writes a font warning to stderr at import, crashing the app. The
+runtime hook `rthook_stdio.py` (registered via `runtime_hooks` in the spec) gives
+those streams a dummy sink before any import. Keep `rthook_stdio.py` next to the
+spec; if you ever see this error, confirm the `runtime_hooks=[...]` line is intact.
+
 **Antivirus quarantines the exe.**
 Common with PyInstaller one-folder/one-file binaries — it's a false positive. The
 spec sets `upx=False`, which reduces this. If IT still flags it, they may need to

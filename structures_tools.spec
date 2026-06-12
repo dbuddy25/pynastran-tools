@@ -54,7 +54,8 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # Guard None stdout/stderr in windowed builds (fixes customtkinter crash).
+    runtime_hooks=[os.path.join(SPECPATH, 'rthook_stdio.py')],
     excludes=['PyQt5', 'PySide2', 'PyQt6', 'PySide6', 'IPython', 'pytest'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
