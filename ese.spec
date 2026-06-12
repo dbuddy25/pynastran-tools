@@ -48,7 +48,11 @@ a = Analysis(
     # Same None-stdout/stderr guard the suite needs (customtkinter writes a
     # warning to stderr at import; windowed builds have stderr = None).
     runtime_hooks=[os.path.join(SPECPATH, 'rthook_stdio.py')],
-    excludes=['PyQt5', 'PySide2', 'PyQt6', 'PySide6', 'IPython', 'pytest'],
+    # pandas (~39 MB) is NOT imported by pyNastran.op2 and the ESE tool never
+    # builds dataframes, so drop it. scipy CANNOT be excluded — pyNastran.op2
+    # imports it at module load, so it's a hard floor for OP2 reading.
+    excludes=['PyQt5', 'PySide2', 'PyQt6', 'PySide6', 'IPython', 'pytest',
+              'pandas', 'matplotlib', 'sphinx', 'pytest', 'docutils'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
