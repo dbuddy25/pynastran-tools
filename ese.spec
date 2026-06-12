@@ -39,6 +39,7 @@ a = Analysis(
         SPECPATH,
         os.path.join(SPECPATH, 'postprocessing', 'modules'),
         os.path.join(SPECPATH, 'postprocessing'),
+        os.path.join(SPECPATH, 'preprocessing'),   # bdf_utils.py lives here
     ],
     binaries=binaries,
     datas=datas,
