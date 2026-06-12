@@ -31,54 +31,61 @@ from mass_scale import MassScaleTool
 from renumber_includes import RenumberIncludesTool
 from thermal_cte import ThermalCteTool
 
-# MeffModule depends on numpy/scipy — lazy import with fallback
+# Optional modules are lazy-imported with a fallback: if a module (or one of its
+# dependencies) fails to import — common in a frozen build with a missing hidden
+# import — the launcher greys its button instead of crashing. The full traceback
+# is captured so a frozen build can report exactly what's missing.
+import traceback
+_import_errors = {}   # {module label: traceback string}
+
 _meff_available = True
 try:
     from modules.meff import MeffModule
 except Exception:
     _meff_available = False
+    _import_errors['Modal Effective Mass'] = traceback.format_exc()
 
-# EnergyBreakdownModule — lazy import with fallback
 _energy_available = True
 try:
     from modules.energy_breakdown import EnergyBreakdownModule
 except Exception:
     _energy_available = False
+    _import_errors['ESE Breakdown'] = traceback.format_exc()
 
-# CbushForcesModule — lazy import with fallback
 _cbush_available = True
 try:
     from modules.cbush_forces import CbushForcesModule
 except Exception:
     _cbush_available = False
+    _import_errors['CBUSH Forces'] = traceback.format_exc()
 
-# MassBreakdownModule — lazy import with fallback
 _mass_breakdown_available = True
 try:
     from modules.mass_breakdown import MassBreakdownModule
 except Exception:
     _mass_breakdown_available = False
+    _import_errors['Mass Breakdown'] = traceback.format_exc()
 
-# AsdOverlayModule — lazy import with fallback
 _asd_available = True
 try:
     from modules.asd_overlay import AsdOverlayModule
 except Exception:
     _asd_available = False
+    _import_errors['ASD Overlay'] = traceback.format_exc()
 
-# ResponseLimitingModule — lazy import with fallback
 _response_limiting_available = True
 try:
     from modules.response_limiting import ResponseLimitingModule
 except Exception:
     _response_limiting_available = False
+    _import_errors['Response Limiting'] = traceback.format_exc()
 
-# RandomVibeEnvModule — lazy import with fallback
 _random_vibe_available = True
 try:
     from modules.random_vibe_env import RandomVibeEnvModule
 except Exception:
     _random_vibe_available = False
+    _import_errors['Random Vibe Env'] = traceback.format_exc()
 
 from miles_equation import MilesEquationTool
 
@@ -315,10 +322,38 @@ class StructuresToolsApp(ctk.CTk):
             self._active_tool = tool_widget
 
 
+def _report_import_errors():
+    """If any optional module failed to import, write a log next to the exe and
+    pop a dialog so a frozen build reports exactly what's missing."""
+    if not _import_errors:
+        return
+    base = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+            else _root)
+    log_path = os.path.join(base, 'import_errors.log')
+    try:
+        with open(log_path, 'w', encoding='utf-8') as f:
+            for name, tb in _import_errors.items():
+                f.write(f"===== {name} =====\n{tb}\n")
+    except Exception:
+        log_path = "(could not write log)"
+    # Short summary: module + the last line of its traceback (the real cause).
+    lines = []
+    for name, tb in _import_errors.items():
+        last = tb.strip().splitlines()[-1] if tb.strip() else ""
+        lines.append(f"• {name}: {last}")
+    from tkinter import messagebox
+    messagebox.showwarning(
+        "Some tools unavailable",
+        "These tools failed to load and are disabled:\n\n"
+        + "\n".join(lines)
+        + f"\n\nFull details written to:\n{log_path}")
+
+
 def main():
     import logging
     logging.getLogger("customtkinter").setLevel(logging.ERROR)
     app = StructuresToolsApp()
+    app.after(300, _report_import_errors)
     app.mainloop()
 
 
