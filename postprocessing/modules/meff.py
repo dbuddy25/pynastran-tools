@@ -378,7 +378,11 @@ REQUIREMENTS
         modes = np.array(eigval_table.mode)
         freqs = np.array(eigval_table.cycles)
 
-        meff_frac = op2.modal_effective_mass_fraction
+        # Read the matrix dict directly: pyNastran's
+        # op2.modal_effective_mass_fraction property does a bare
+        # self.matrices['EFMFACS'] lookup and raises KeyError when the matrix
+        # was not written, instead of returning None.
+        meff_frac = op2.matrices.get('EFMFACS')
         if meff_frac is None:
             messagebox.showwarning(
                 "No MEFFMASS Data",

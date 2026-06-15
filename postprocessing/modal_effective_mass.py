@@ -60,7 +60,10 @@ def _read_data(op2):
     modes = np.array(eigval_table.mode)
     freqs = np.array(eigval_table.cycles)
 
-    meff_frac = op2.modal_effective_mass_fraction
+    # op2.modal_effective_mass_fraction does a bare matrices['EFMFACS'] lookup
+    # and raises KeyError when the matrix is absent; read the dict directly so
+    # a missing matrix is reported cleanly below.
+    meff_frac = op2.matrices.get('EFMFACS')
     if meff_frac is None:
         print("ERROR: No MEFFMASS data found in OP2.")
         print("Add to case control: MEFFMASS(PLOT) = ALL")
