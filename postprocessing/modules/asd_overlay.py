@@ -1188,7 +1188,7 @@ LINE STYLES
         import copy
         dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
         dlg.title("X/Y Reference Lines")
-        dlg.geometry("660x380")
+        dlg.geometry("740x380")
         dlg.transient(self.frame.winfo_toplevel())
         dlg.grab_set()
 
@@ -1201,7 +1201,8 @@ LINE STYLES
         hdr = ctk.CTkFrame(scroll, fg_color="transparent")
         hdr.pack(fill=tk.X, pady=(0, 2))
         for txt, w in [("Vis", 28), ("Axis", 50), ("Value", 80), ("Label", 170),
-                       ("Color", 80), ("Style", 80), ("LW", 50), ("", 28)]:
+                       ("Color", 80), ("Style", 80), ("LW", 50), ("Pos", 70),
+                       ("", 28)]:
             ctk.CTkLabel(hdr, text=txt, width=w, anchor=tk.W,
                          font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=2)
 
@@ -1217,6 +1218,7 @@ LINE STYLES
             col_var = ctk.StringVar(value=ln.get('color', '#888888'))
             ls_var = ctk.StringVar(value=ln.get('linestyle', '--'))
             lw_var = ctk.StringVar(value=str(ln.get('linewidth', 1.0)))
+            pos_var = ctk.StringVar(value=ln.get('label_pos', 'top').capitalize())
 
             ctk.CTkCheckBox(rf, text="", variable=vis_var, width=28).pack(side=tk.LEFT, padx=2)
             ctk.CTkOptionMenu(rf, variable=axis_var, values=["X", "Y"],
@@ -1242,6 +1244,9 @@ LINE STYLES
                               values=["-", "--", ":", "-."],
                               width=80).pack(side=tk.LEFT, padx=2)
             ctk.CTkEntry(rf, textvariable=lw_var, width=50).pack(side=tk.LEFT, padx=2)
+            # Label position (Top/Bottom) — applies to X-axis (vertical) lines.
+            ctk.CTkOptionMenu(rf, variable=pos_var, values=["Top", "Bottom"],
+                              width=70).pack(side=tk.LEFT, padx=2)
 
             def _del(r=rf):
                 r.destroy()
@@ -1258,7 +1263,7 @@ LINE STYLES
             row_widgets.append({
                 'frame': rf, 'vis': vis_var, 'axis': axis_var,
                 'value': val_var, 'label': lbl_var, 'color': col_var,
-                'linestyle': ls_var, 'linewidth': lw_var,
+                'linestyle': ls_var, 'linewidth': lw_var, 'label_pos': pos_var,
             })
 
         for ln in working:
@@ -1267,7 +1272,7 @@ LINE STYLES
         def _add():
             _make_row({"axis": "x", "value": 100.0, "label": "",
                        "color": "#888888", "linestyle": "--",
-                       "linewidth": 1.0, "visible": True})
+                       "linewidth": 1.0, "visible": True, "label_pos": "top"})
 
         add_btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
         add_btn_row.pack(fill=tk.X, padx=8, pady=(4, 0))
@@ -1296,6 +1301,7 @@ LINE STYLES
                     "linestyle": w['linestyle'].get(),
                     "linewidth": lw,
                     "visible": w['vis'].get(),
+                    "label_pos": w['label_pos'].get().lower(),
                 })
             self._aux_lines = new_lines
             self._refresh_plot()
@@ -1315,7 +1321,7 @@ LINE STYLES
             "axis": "x", "value": freq,
             "label": f"{freq:.1f} Hz",
             "color": "#888888", "linestyle": "--",
-            "linewidth": 1.0, "visible": True,
+            "linewidth": 1.0, "visible": True, "label_pos": "top",
         })
         self._refresh_plot()
 
@@ -2572,7 +2578,12 @@ LINE STYLES
         is_cum = (plot_mode == "Cumulative RMS")
 
         ax.set_xscale("log")
-        ax.set_yscale(yscale)
+        # Cumulative RMS starts at 0 at the first frequency and grows
+        # monotonically. A log y-axis cannot represent that 0 value (log(0) is
+        # -inf), so matplotlib would drop the first point and the curve would
+        # appear to start at the second frequency. Force linear Y in cumulative
+        # mode so the curve correctly begins at (f_first, 0).
+        ax.set_yscale("linear" if is_cum else yscale)
 
         frames, descs = self._get_plot_frames()
         if not frames:
@@ -2726,9 +2737,11 @@ LINE STYLES
                 ax.axvline(_lv, color=_lc, linestyle=_lls, linewidth=_llw,
                            alpha=0.7, zorder=2)
                 if _ln.get('label'):
-                    ax.text(_lv, 1.0, _ln['label'],
+                    _at_top = _ln.get('label_pos', 'top') != 'bottom'
+                    _ly, _lva = (1.0, 'top') if _at_top else (0.0, 'bottom')
+                    ax.text(_lv, _ly, _ln['label'],
                             transform=ax.get_xaxis_transform(),
-                            rotation=90, va='top', ha='right',
+                            rotation=90, va=_lva, ha='right',
                             color=t['text'], fontsize=8,
                             bbox=dict(facecolor=t['legend_bg'], edgecolor=_lc,
                                       alpha=0.75, pad=2))
