@@ -1012,6 +1012,93 @@ LINE STYLES
             ref['grms_label'].configure(text=f"{grms:.3g} g")
         self._refresh_plot()
 
+    def _edit_reference_data(self, ref):
+        """Edit a reference curve's freq/PSD breakpoints with live plot updates."""
+        dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
+        dlg.title(f"Edit Curve Data — {ref.get('name', 'ASD')}")
+        dlg.geometry("420x400")
+        dlg.transient(self.frame.winfo_toplevel())
+        dlg.grab_set()
+
+        # Backups so Revert can restore the original curve and file linkage.
+        orig_freqs = np.asarray(ref['freqs_raw'], dtype=float).copy()
+        orig_g2hz = np.asarray(ref['g2hz_raw'], dtype=float).copy()
+        orig_is_manual = ref.get('is_manual', False)
+        orig_manual_text = ref.get('manual_text', '')
+
+        ctk.CTkLabel(
+            dlg, anchor=tk.W,
+            text="Edit freq, PSD pairs (one per line). Plot updates live."
+        ).pack(padx=12, pady=(12, 2), fill=tk.X)
+
+        tb = ctk.CTkTextbox(dlg, wrap="none")
+        tb.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        def _serialize(freqs, g2hz):
+            return "\n".join(f"{float(f):g}\t{float(p):g}"
+                             for f, p in zip(np.asarray(freqs), np.asarray(g2hz)))
+
+        tb.insert("1.0", _serialize(orig_freqs, orig_g2hz))
+
+        status_var = ctk.StringVar(value="")
+        status_lbl = ctk.CTkLabel(dlg, textvariable=status_var, text_color="gray",
+                                  anchor=tk.W)
+        status_lbl.pack(padx=12, pady=(2, 0), fill=tk.X)
+
+        def _grms(freqs, g2hz_scaled):
+            return float(np.sqrt(max(self._grms_loglog(freqs, g2hz_scaled), 0.0)))
+
+        def _apply(freqs, g2hz, take_ownership):
+            db = ref.get('db', 0.0) or 0.0
+            ref['freqs_raw'] = freqs
+            ref['g2hz_raw'] = g2hz
+            ref['freqs'] = freqs
+            ref['g2hz'] = g2hz * 10.0 ** (db / 10.0) if db != 0.0 else g2hz
+            if take_ownership:
+                # Editing the data takes ownership: persist the breakpoints in
+                # the session instead of re-reading the (now-stale) source file.
+                ref['is_manual'] = True
+                ref['manual_text'] = tb.get("1.0", "end").strip()
+            grms = _grms(ref['freqs'], ref['g2hz'])
+            if ref.get('grms_label') is not None:
+                ref['grms_label'].configure(text=f"{grms:.3g} g")
+            self._refresh_plot()
+            return grms
+
+        def _on_edit(*_):
+            freqs, g2hz = self._parse_asd_text(tb.get("1.0", "end"))
+            if freqs is None:
+                status_var.set("Need ≥2 valid freq, PSD pairs — plot unchanged")
+                status_lbl.configure(text_color=("#b22222", "#ff6b6b"))
+                return
+            grms = _apply(freqs, g2hz, take_ownership=True)
+            status_var.set(f"{len(freqs)} points    g_RMS: {grms:.3g} g")
+            status_lbl.configure(text_color=("gray10", "gray90"))
+
+        tb.bind("<KeyRelease>", _on_edit)
+
+        def _revert():
+            ref['is_manual'] = orig_is_manual
+            ref['manual_text'] = orig_manual_text
+            _apply(orig_freqs.copy(), orig_g2hz.copy(), take_ownership=False)
+            tb.delete("1.0", "end")
+            tb.insert("1.0", _serialize(orig_freqs, orig_g2hz))
+            status_var.set("Reverted to original")
+            status_lbl.configure(text_color="gray")
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(fill=tk.X, padx=12, pady=8)
+        ctk.CTkButton(btn_row, text="Revert", width=80, command=_revert,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray10", "gray90")).pack(side=tk.LEFT)
+        ctk.CTkButton(btn_row, text="Done", width=80,
+                      command=dlg.destroy).pack(side=tk.RIGHT)
+
+        # Initial status readout (no ownership change yet).
+        status_var.set(f"{len(orig_freqs)} points    "
+                       f"g_RMS: {_grms(ref['freqs'], ref['g2hz']):.3g} g")
+        status_lbl.configure(text_color=("gray10", "gray90"))
+
     def _manual_asd_dialog(self):
         dlg = ctk.CTkToplevel(self.frame.winfo_toplevel())
         dlg.title("Manual ASD Entry")
@@ -2013,7 +2100,10 @@ LINE STYLES
         grms_lbl.pack(side=tk.LEFT, padx=(0, 4))
         ref['grms_label'] = grms_lbl
 
-        ctk.CTkButton(row2, text="Edit…", width=46,
+        ctk.CTkButton(row2, text="Data…", width=46,
+                      command=lambda r=ref: self._edit_reference_data(r),
+                      ).pack(side=tk.LEFT, padx=(0, 3))
+        ctk.CTkButton(row2, text="Style…", width=46,
                       command=lambda r=ref: self._curve_style_dialog(r, is_ref=True),
                       ).pack(side=tk.LEFT)
 
