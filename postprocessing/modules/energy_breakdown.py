@@ -1005,9 +1005,20 @@ def parse_ese_punch(path, progress=None):
                 progress(f"Parsing punch… {nlines // 1000000}M lines")
             if line.startswith('$'):
                 u = line.upper()
-                if 'STRAIN ENERGIES' in u:
+                # Only BLOCK-TYPE headers may flip is_ese. Match the singular
+                # spelling too ("ELEMENT KINETIC ENERGY" as well as
+                # "...ENERGIES"): on a plural-only test a singular kinetic
+                # header left is_ese True and silently summed KINETIC energy in
+                # as strain energy. The "$ TOTAL ENERGY OF ALL ELEMENTS..."
+                # lines sit INSIDE an ESE block and must not flip it — matching
+                # them would drop the rest of the block.
+                if 'TOTAL' in u:
+                    pass                    # "$ TOTAL ENERGY OF ALL ELEMENTS"
+                elif 'STRAIN ENERG' in u:
                     is_ese = True
-                elif 'ENERGIES' in u:        # kinetic energy or other -> skip
+                elif 'KINETIC ENERG' in u:  # matches ENERGY and ENERGIES
+                    is_ese = False
+                elif 'ENERGIES' in u:       # some other energy block -> skip
                     is_ese = False
                 elif 'EIGENVALUE' in u and 'MODE' in u:
                     m = _PUNCH_EIG_RE.search(line)
@@ -1044,6 +1055,31 @@ def parse_ese_punch(path, progress=None):
     modes = np.array(mode_list)
     freqs = np.sqrt(np.abs(np.array(eig_list))) / (2.0 * np.pi)
     return modes, freqs, energy_by_eid
+
+
+def _op2_read_error_text(op2, exc):
+    """Build a diagnosable message for a failed/truncated OP2 read.
+
+    pyNastran raises bare struct errors (e.g. "unpack requires a buffer of 4
+    bytes") when it walks off the end of a table it cannot parse, with no
+    indication of WHICH table. ``op2.table_name`` still holds the table it was
+    working on, which is the one piece of information that makes the failure
+    actionable, so surface it.
+    """
+    table = getattr(op2, 'table_name', None) if op2 is not None else None
+    if isinstance(table, bytes):
+        table = table.decode('latin1', errors='replace')
+    lines = [f"Could not read OP2:\n\n  {type(exc).__name__}: {exc}"]
+    if table:
+        lines.append(f"\nFailed while reading table: {table.strip()}")
+    lines.append(
+        "\nThis is a pyNastran reader limitation, not a problem with your "
+        "model. It commonly shows up when the deck requests energy output "
+        "beyond ESE (e.g. EKE), which writes a table the reader mis-parses.\n\n"
+        "Workarounds:\n"
+        "  • Rerun with ESE(PUNCH) = ALL and use Open Punch (no OP2 reader)\n"
+        "  • Or drop the extra energy request (EKE) and rerun")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- GUI module
@@ -1299,11 +1335,23 @@ REQUIREMENTS
         def _work():
             from pyNastran.op2.op2 import OP2
             op2 = OP2(mode='nx')
-            op2.read_op2(path)
-            return op2
+            # Some decks contain a table the reader trips over mid-file — most
+            # often when EKE is also requested — failing with e.g. "unpack
+            # requires a buffer of 4 bytes". pyNastran fills op2_results
+            # INCREMENTALLY, so everything parsed BEFORE the bad table is still
+            # in memory. Keep the partial OP2 and let _done decide whether the
+            # ESE we did get is enough to work with, rather than discarding it.
+            read_error = None
+            try:
+                op2.read_op2(path)
+            except Exception as exc:      # noqa: BLE001 - reader raises anything
+                read_error = exc
+            return op2, read_error
 
-        def _done(op2, error):
-            if error is not None:
+        def _done(result, error):
+            op2, read_error = (result if error is None and result is not None
+                               else (None, error))
+            if op2 is None:
                 messagebox.showerror("Error",
                                      f"Could not read OP2:\n{error}")
                 self._status_label.configure(text="Load failed",
@@ -1313,6 +1361,14 @@ REQUIREMENTS
             self._op2_path = path
 
             if not op2.eigenvalues:
+                if read_error is not None:
+                    # Reader died before it reached the eigenvalue table, so
+                    # there is nothing usable — report the real failure.
+                    messagebox.showerror(
+                        "Error", _op2_read_error_text(op2, read_error))
+                    self._status_label.configure(text="Load failed",
+                                                 text_color="red")
+                    return
                 messagebox.showwarning(
                     "No Eigenvalues",
                     "No eigenvalue data found in this OP2.")
@@ -1326,6 +1382,12 @@ REQUIREMENTS
 
             self._ese_by_eid = self._collect_strain_energy(op2)
             if not self._ese_by_eid:
+                if read_error is not None:
+                    messagebox.showerror(
+                        "Error", _op2_read_error_text(op2, read_error))
+                    self._status_label.configure(text="Load failed",
+                                                 text_color="red")
+                    return
                 messagebox.showwarning(
                     "No Strain Energy Data",
                     "No element strain energy data found in this OP2.\n\n"
@@ -1335,8 +1397,25 @@ REQUIREMENTS
                                              text_color="red")
                 return
 
+            if read_error is not None:
+                # We recovered usable ESE from a truncated read. Say so plainly
+                # — the results may be missing modes or element types written
+                # after the table that failed.
+                messagebox.showwarning(
+                    "Partial OP2 Read",
+                    "The OP2 reader stopped early:\n\n"
+                    f"  {type(read_error).__name__}: {read_error}\n\n"
+                    f"Strain energy recovered for {len(self._ese_by_eid)} "
+                    f"elements over {len(self._modes)} modes, but anything "
+                    "written after the failure point is missing.\n\n"
+                    "Check the totals before trusting these results. Rerunning "
+                    "with ESE(PUNCH) = ALL and using Open Punch avoids the OP2 "
+                    "reader entirely.")
+
             n_elems = len(self._ese_by_eid)
             status = f"OP2: {os.path.basename(path)} ({n_elems} elements)"
+            if read_error is not None:
+                status += "  [PARTIAL READ]"
             if self._bdf_path:
                 status += f"  |  BDF: {os.path.basename(self._bdf_path)}"
             self._status_label.configure(text=status,
