@@ -1074,11 +1074,12 @@ def _op2_read_error_text(op2, exc):
         lines.append(f"\nFailed while reading table: {table.strip()}")
     lines.append(
         "\nThis is a pyNastran reader limitation, not a problem with your "
-        "model. It commonly shows up when the deck requests energy output "
-        "beyond ESE (e.g. EKE), which writes a table the reader mis-parses.\n\n"
-        "Workarounds:\n"
-        "  • Rerun with ESE(PUNCH) = ALL and use Open Punch (no OP2 reader)\n"
-        "  • Or drop the extra energy request (EKE) and rerun")
+        "model. The known trigger is an EKE (element kinetic energy) request "
+        "alongside ESE: EKE writes a table the reader mis-parses.\n\n"
+        "Fixes, in order:\n"
+        "  \u2022 Remove the EKE request from the deck and rerun (confirmed fix)\n"
+        "  \u2022 Or rerun with ESE(PUNCH) = ALL and use Open Punch, which "
+        "bypasses the OP2 reader entirely")
     return "\n".join(lines)
 
 
