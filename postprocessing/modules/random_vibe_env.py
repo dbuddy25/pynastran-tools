@@ -369,7 +369,9 @@ _SPECS = {
     "GEVS": {
         "label":         "GEVS — Generalized Random Vibration, Components (ELV)",
         "source":        "GSFC-STD-7000B, Table 2.4-3",
-        "baseline_ref":  "Table 2.4-3, acceptance column",
+        "baseline_ref":  "Table 2.4-3",
+        # Shown only in the details pane, not the plot title.
+        "baseline_note": "acceptance column; qualification is exactly 2x",
         "reduction_ref": "Table 2.4-3 notes",
         # Baseline is the ACCEPTANCE column; the qualification/protoflight
         # column is exactly +3 dB above it (0.08→0.16, 0.013→0.026), so it
@@ -816,7 +818,9 @@ class RandomVibeEnvModule:
         # ── baseline
         grms_base = math.sqrt(max(grms_loglog(bp_freqs, bp_asd), 0.0))
 
-        L.append(f"BASELINE SPECTRUM  ({spec['baseline_ref']})")
+        _bnote = spec.get("baseline_note")
+        L.append(f"BASELINE SPECTRUM  ({spec['baseline_ref']})"
+                 + (f"  —  {_bnote}" if _bnote else ""))
         seg_labels = spec.get("segment_labels", ["ramp", "flat", "rolloff"])
         point_tags = ["(anchor)", "(flat begins)", "(flat ends)", ""]
         for i, (f_hz, asd_v) in enumerate(bp):
