@@ -2,9 +2,17 @@
 
 Generates weight-adjusted random vibration test environments per specification.
 
-First supported spec: SMC-S-016 (2014), Appendix B.
-  - Baseline:  Section 6.3.5.3, Figure 6.3.5-1
-  - Reduction: Section B.2.1, Equation B.9 (units > 50 lb / 23 kg)
+Supported specs:
+  SMC-S-016 (2014), Appendix B
+    - Baseline:  Section 6.3.5.3, Figure 6.3.5-1
+    - Reduction: Section B.2.1, Equation B.9 (units > 50 lb / 23 kg)
+  GEVS — GSFC-STD-7000B, Table 2.4-3 (components, ELV)
+    - Baseline:  Table 2.4-3 (acceptance column; qual is exactly 2x)
+    - Reduction: Table 2.4-3 notes (components > 50 lb / 22.7 kg)
+
+Each spec is a _SPECS entry supplying its own breakpoints, test levels,
+reduce() and describe() callables, so adding another is a registry entry
+plus two functions -- no GUI changes.
 """
 
 import math
@@ -130,6 +138,195 @@ def _reduce_smc_b9(spec, weight_lb):
     }
 
 
+# GEVS end-point ASD floor (g²/Hz) held at 20 and 2000 Hz for heavy components,
+# per the Table 2.4-3 note. GEVS quotes the bare value 0.01 without naming a test
+# level; it is taken here as a QUALIFICATION/protoflight-level requirement, since
+# that is the spectrum the table is written around. The registry baseline is the
+# acceptance column, so the floor is stored divided down by the qual offset and
+# lands back on exactly 0.01 once _recompute() applies the +3 dB level scale.
+# If your program reads that note as an acceptance-level floor, drop the divisor.
+_GEVS_END_ASD_QUAL = 0.01
+# GEVS labels the qual/protoflight column "+3 dB" over acceptance, but the
+# published numbers are an exact factor of 2 (0.08→0.16, 0.013→0.026), i.e.
+# 3.0103 dB. Using a literal 3.0 here reproduces the table only to ~0.24%,
+# which shows up as 14.12 Grms against the published 14.1. Carry the exact
+# ratio; the UI still renders it as "+3 dB".
+_GEVS_QUAL_DB = 10.0 * math.log10(2.0)
+
+
+def _reduce_gevs(spec, weight_lb):
+    """Apply the GEVS Table 2.4-3 component weight reduction.
+
+    Reference: GSFC-STD-7000B, Table 2.4-3 (Generalized Random Vibration Test
+    Levels, Components (ELV)).
+
+    Four regimes, per the notes beneath the table:
+        W <= 50 lb        no reduction; baseline as published
+        50 < W <= 130 lb  plateau reduced; +/-6 dB/oct slopes MAINTAINED, so the
+                          20/2000 Hz endpoints fall with the plateau
+        130 < W <= 400 lb plateau reduced; slopes ADJUSTED so the endpoints hold
+                          at the 0.01 g²/Hz floor (130 lb is precisely where the
+                          6 dB/oct slope lands on that floor, so the two regimes
+                          meet continuously)
+        W > 400 lb        spectrum held at the 400 lb profile
+
+    Returns (bp_freqs, bp_asd, details) at the registry baseline (acceptance)
+    level; _recompute() applies the selected test level's dB offset afterwards.
+    """
+    bp = spec["baseline"]
+    if len(bp) != 4:
+        raise ValueError(
+            f"_reduce_gevs requires exactly 4 baseline breakpoints, got {len(bp)}"
+        )
+    wa         = spec["weight_adjust"]
+    threshold  = wa["threshold_lb"]        # 50 lb
+    ref_flat   = wa["ref_flat"]            # 0.08 g²/Hz (acceptance plateau)
+    ref_w      = wa["ref_weight_lb"]       # 50 lb
+    slope_w    = wa["slope_hold_lb"]       # 130 lb — slopes maintained below this
+    cap_w      = wa["cap_weight_lb"]       # 400 lb — spectrum frozen above this
+
+    bp_freqs = np.array([p[0] for p in bp])
+    bp_asd   = np.array([p[1] for p in bp])
+
+    if weight_lb <= threshold:
+        return bp_freqs.copy(), bp_asd.copy(), {
+            "reduced": False, "weight_lb": weight_lb,
+            "weight_kg": weight_lb * _KG_PER_LB,
+        }
+
+    # Above 400 lb the spectrum is frozen at the 400 lb profile.
+    effective_w = min(weight_lb, cap_w)
+    capped      = weight_lb > cap_w
+
+    # Plateau reduction — ASD(50-800 Hz) = 0.08 * (50 / W) at acceptance level
+    new_flat     = ref_flat * (ref_w / effective_w)
+    reduction_db = 10.0 * math.log10(ref_flat / new_flat)
+
+    f_lo_end, f_flat_start = bp_freqs[0], bp_freqs[1]     # 20, 50 Hz
+    f_flat_end, f_hi_end   = bp_freqs[2], bp_freqs[3]     # 800, 2000 Hz
+
+    n_up   = _db_oct_exponent(wa["ramp_up_db_oct"])       # +6 dB/oct -> ~+1.993
+    n_down = _db_oct_exponent(wa["ramp_down_db_oct"])     # -6 dB/oct -> ~-1.993
+
+    # The floor is a qualification-level value; express it at the acceptance
+    # baseline so the +3 dB level scale puts it back on 0.01 g²/Hz.
+    end_floor = _GEVS_END_ASD_QUAL / (10.0 ** (_GEVS_QUAL_DB / 10.0))
+
+    slopes_held = effective_w <= slope_w
+    if slopes_held:
+        # Slopes maintained at +/-6 dB/oct; endpoints ride down with the plateau.
+        new_lo_asd = new_flat * (f_lo_end / f_flat_start) ** n_up
+        new_hi_asd = new_flat * (f_hi_end / f_flat_end) ** n_down
+    else:
+        # Slopes adjusted to hold the floor at 20 and 2000 Hz.
+        new_lo_asd = end_floor
+        new_hi_asd = end_floor
+
+    new_bp_freqs = np.array([f_lo_end, f_flat_start, f_flat_end, f_hi_end])
+    new_bp_asd   = np.array([new_lo_asd, new_flat, new_flat, new_hi_asd])
+
+    # Effective slopes actually flown, for the details pane.
+    eff_up_db_oct   = 10.0 * math.log10(new_flat / new_lo_asd) / math.log10(
+        f_flat_start / f_lo_end) * math.log10(2.0)
+    eff_down_db_oct = 10.0 * math.log10(new_hi_asd / new_flat) / math.log10(
+        f_hi_end / f_flat_end) * math.log10(2.0)
+
+    return new_bp_freqs, new_bp_asd, {
+        "reduced":            True,
+        "weight_lb":          weight_lb,
+        "weight_kg":          weight_lb * _KG_PER_LB,
+        "effective_weight_lb": effective_w,
+        "new_flat":           new_flat,
+        "reduction_db":       reduction_db,
+        "capped":             capped,
+        "slopes_held":        slopes_held,
+        "new_lo_asd":         new_lo_asd,
+        "new_hi_asd":         new_hi_asd,
+        "end_floor":          end_floor,
+        "eff_up_db_oct":      eff_up_db_oct,
+        "eff_down_db_oct":    eff_down_db_oct,
+        "f_lo_end":           f_lo_end,
+        "f_flat_start":       f_flat_start,
+        "f_flat_end":         f_flat_end,
+        "f_hi_end":           f_hi_end,
+    }
+
+
+def _describe_smc_b9(spec, details, weight_raw, unit_str):
+    """Weight-adjustment narrative for SMC-S-016. Returns a list of lines."""
+    wa       = spec["weight_adjust"]
+    w_lb     = details["weight_lb"]
+    w_kg     = details["weight_kg"]
+    new_flat = details["new_flat"]
+    f_break  = details["f_break"]
+    red_db   = details["reduction_db"]
+
+    L = []
+    L.append(f"  Input:  {weight_raw} {unit_str}  =  {w_lb:.1f} lb  ({w_kg:.1f} kg)")
+    L.append("")
+    L.append(f"  Eq. B.9:  Reduced flat = 0.04 × (50 / W)")
+    if w_lb != details["effective_weight_lb"]:
+        L.append(f"                        = 0.04 × (50 / {details['effective_weight_lb']:.0f})")
+        L.append(f"                          [W capped at {details['effective_weight_lb']:.0f} lb")
+        L.append(f"                           — max 6 dB reduction]")
+    else:
+        L.append(f"                        = 0.04 × (50 / {w_lb:.1f})")
+    L.append(f"                        = {new_flat:.4f}  g²/Hz")
+    L.append("")
+    L.append(f"  Reduction: {red_db:.1f} dB"
+             f"  (max: {wa['max_reduction_db']:.0f} dB)")
+    L.append("")
+    L.append("ADJUSTED BREAKPOINTS")
+    L.append(f"  {details['anchor_f']:.0f} Hz:         "
+             f"{details['anchor_asd']:.4f}  g²/Hz  (anchor, unchanged)")
+    L.append(f"  {f_break:.1f} Hz:       "
+             f"{new_flat:.4f}  g²/Hz  (ramp meets reduced flat)")
+    L.append(f"  {details['flat_end_f']:.0f} Hz:        "
+             f"{new_flat:.4f}  g²/Hz  (flat end)")
+    L.append(f"  {details['end_f']:.0f} Hz:       "
+             f"{details['new_end_asd']:.5f} g²/Hz")
+    return L
+
+
+def _describe_gevs(spec, details, weight_raw, unit_str):
+    """Weight-adjustment narrative for GEVS Table 2.4-3. Returns a list of lines."""
+    wa       = spec["weight_adjust"]
+    w_lb     = details["weight_lb"]
+    w_kg     = details["weight_kg"]
+    new_flat = details["new_flat"]
+    red_db   = details["reduction_db"]
+    eff_w    = details["effective_weight_lb"]
+
+    L = []
+    L.append(f"  Input:  {weight_raw} {unit_str}  =  {w_lb:.1f} lb  ({w_kg:.1f} kg)")
+    L.append("")
+    L.append(f"  Table 2.4-3:  ASD(50–800 Hz) = 0.08 × (50 / W)   [acceptance]")
+    L.append(f"                              = 0.16 × (50 / W)   [qual/protoflight]")
+    if details["capped"]:
+        L.append(f"                W held at {eff_w:.0f} lb — spectrum is frozen")
+        L.append(f"                at the {eff_w:.0f} lb profile above that weight")
+    L.append(f"                              = {new_flat:.4f}  g²/Hz  (acceptance)")
+    L.append("")
+    L.append(f"  dB reduction = 10 log(W / 50) = {red_db:.1f} dB")
+    L.append("")
+
+    if details["slopes_held"]:
+        L.append(f"  Slopes MAINTAINED at ±6 dB/oct")
+        L.append(f"  (W ≤ {wa['slope_hold_lb']:.0f} lb — endpoints fall with the plateau)")
+    else:
+        L.append(f"  Slopes ADJUSTED to hold {_GEVS_END_ASD_QUAL:.2f} g²/Hz at 20 and 2000 Hz")
+        L.append(f"  (W > {wa['slope_hold_lb']:.0f} lb)")
+        L.append(f"  Effective: {details['eff_up_db_oct']:+.2f} dB/oct  /  "
+                 f"{details['eff_down_db_oct']:+.2f} dB/oct")
+    L.append("")
+    L.append("ADJUSTED BREAKPOINTS  (acceptance level)")
+    L.append(f"  {details['f_lo_end']:.0f} Hz:        {details['new_lo_asd']:.5f} g²/Hz")
+    L.append(f"  {details['f_flat_start']:.0f} Hz:        {new_flat:.4f}  g²/Hz  (plateau begins)")
+    L.append(f"  {details['f_flat_end']:.0f} Hz:       {new_flat:.4f}  g²/Hz  (plateau ends)")
+    L.append(f"  {details['f_hi_end']:.0f} Hz:      {details['new_hi_asd']:.5f} g²/Hz")
+    return L
+
+
 # ── spec registry ─────────────────────────────────────────────────────────────
 
 _SPECS = {
@@ -164,13 +361,53 @@ _SPECS = {
         # reduce(spec, weight_lb) → (bp_freqs, bp_asd, details)
         # details["reduced"] is False when weight ≤ threshold (arrays = baseline copy).
         "reduce": _reduce_smc_b9,
+        # describe(spec, details, weight_raw, unit_str) → list of detail lines
+        "describe": _describe_smc_b9,
+        # labels for the 3 segments between the 4 baseline breakpoints
+        "segment_labels": ["+3 dB/oct", "flat", "-6 dB/oct"],
+    },
+    "GEVS": {
+        "label":         "GEVS — Generalized Random Vibration, Components (ELV)",
+        "source":        "GSFC-STD-7000B, Table 2.4-3",
+        "baseline_ref":  "Table 2.4-3, acceptance column",
+        "reduction_ref": "Table 2.4-3 notes",
+        # Baseline is the ACCEPTANCE column; the qualification/protoflight
+        # column is exactly +3 dB above it (0.08→0.16, 0.013→0.026), so it
+        # falls out of the test_levels offset rather than being duplicated.
+        # Segments: +6 dB/oct ramp → plateau → -6 dB/oct rolloff
+        "baseline": [
+            (20.0,   0.013),     # low endpoint
+            (50.0,   0.08),      # plateau begins
+            (800.0,  0.08),      # plateau ends
+            (2000.0, 0.013),     # high endpoint
+        ],
+        "test_levels": [
+            # (label, dB_offset_above_acceptance, duration) — durations per Table 2.4-1
+            ("Acceptance",              0.0,           "1 min/axis"),
+            ("Protoflight Qual",        _GEVS_QUAL_DB, "1 min/axis"),
+            ("Prototype Qual",          _GEVS_QUAL_DB, "2 min/axis"),
+        ],
+        "weight_adjust": {
+            "threshold_lb":     50.0,    # reduction applies above this
+            "threshold_kg":     22.7,
+            "ref_flat":         0.08,    # acceptance plateau (g²/Hz)
+            "ref_weight_lb":    50.0,
+            "slope_hold_lb":    130.0,   # ±6 dB/oct maintained up to here (59 kg)
+            "cap_weight_lb":    400.0,   # spectrum frozen above here (182 kg)
+            "max_reduction_db": 10.0 * math.log10(400.0 / 50.0),   # ≈ 9.03 dB at the cap
+            "ramp_up_db_oct":   6.0,
+            "ramp_down_db_oct": -6.0,
+        },
+        "reduce":   _reduce_gevs,
+        "describe": _describe_gevs,
+        "segment_labels": ["+6 dB/oct", "plateau", "-6 dB/oct"],
     },
 }
 
 
 # ── help text ─────────────────────────────────────────────────────────────────
 
-_HELP_TEXT = """\
+_HELP_SMC = """\
 RANDOM VIBRATION ENVIRONMENT GENERATOR
 
 Generates weight-adjusted random vibration (RV) test environments
@@ -217,6 +454,79 @@ SLOPE MATH (log-log space)
   Breakpoint frequency from inverse power law:
     f_break = f_anchor × (new_flat / anchor_asd)^(1/n)
 """
+
+
+_HELP_GEVS = """\
+RANDOM VIBRATION ENVIRONMENT GENERATOR
+
+GEVS component random vibration environments, weight-adjusted.
+
+WORKFLOW
+  1. Select GEVS from the Spec dropdown.
+  2. Select a test level. The baseline spectrum appears immediately.
+  3. Enter the component weight (lb or kg) and press Enter.
+     The weight-adjusted spectrum overlays the original.
+  4. Export saves the reduced profile as a two-column text file.
+
+BASELINE SPECTRUM (Table 2.4-3, components 22.7 kg / 50 lb or less)
+                        Qualification    Acceptance
+  20 Hz:                  0.026            0.013    g²/Hz
+  20-50 Hz:              +6 dB/oct        +6 dB/oct
+  50-800 Hz:              0.16             0.08     g²/Hz  (plateau)
+  800-2000 Hz:           -6 dB/oct        -6 dB/oct
+  2000 Hz:                0.026            0.013    g²/Hz
+  Overall:               14.1 Grms        10.0 Grms
+
+  The acceptance column is stored as the baseline; the qualification
+  column is exactly 2x it. GEVS labels that step "+3 dB" but the true
+  ratio is 3.0103 dB, which is what the tool carries -- a literal 3.0
+  would reproduce the table only to ~0.24%.
+
+TEST LEVELS (Table 2.4-1)
+  Acceptance          Limit level       1 min/axis
+  Protoflight Qual    Limit + 3 dB      1 min/axis
+  Prototype Qual      Limit + 3 dB      2 min/axis
+
+WEIGHT REDUCTION (Table 2.4-3 notes)
+  Applies to components weighing more than 22.7 kg (50 lb).
+
+    dB reduction      = 10 log(W/22.7 kg)  =  10 log(W/50 lb)
+    ASD(50-800 Hz)    = 0.16 x (50/W)      qualification/protoflight
+                      = 0.08 x (50/W)      acceptance
+
+  Slope handling has two regimes:
+    W <= 130 lb (59 kg)   slopes MAINTAINED at +/-6 dB/oct, so the
+                          20 and 2000 Hz endpoints fall with the plateau
+    W >  130 lb           slopes ADJUSTED to hold 0.01 g²/Hz at 20 and
+                          2000 Hz
+    W >  400 lb (182 kg)  spectrum frozen at the 400 lb profile
+
+  130 lb is where a +/-6 dB/oct slope naturally lands on 0.01 g²/Hz, so
+  the two regimes very nearly meet. GEVS rounds 59 kg to 130 lb while
+  the exact crossover is ~128.5 lb, leaving a ~1% step at the seam.
+  That discontinuity is in the specification, not in this tool.
+
+  NOTE ON THE 0.01 g²/Hz FLOOR
+  GEVS quotes the floor without naming a test level. It is applied here
+  as a QUALIFICATION-level requirement, since Table 2.4-3 is written
+  around that spectrum. If your program reads it as an acceptance-level
+  floor, change _GEVS_END_ASD_QUAL / the divisor in _reduce_gevs.
+
+VALIDATION (computed against the published table)
+  Level        Published   Computed
+  Qualification  14.1 g     14.14 g
+  Acceptance     10.0 g     10.00 g
+
+SLOPE MATH (log-log space)
+  dB/octave slopes are power laws: PSD(f) = PSD0 x (f/f0)^n
+    n = S_dB_oct / (10 x log10(2))
+"""
+
+
+_HELP_TEXTS = {
+    "SMC-S-016": _HELP_SMC,
+    "GEVS":      _HELP_GEVS,
+}
 
 
 # ── module class ──────────────────────────────────────────────────────────────
@@ -507,13 +817,13 @@ class RandomVibeEnvModule:
         grms_base = math.sqrt(max(grms_loglog(bp_freqs, bp_asd), 0.0))
 
         L.append(f"BASELINE SPECTRUM  ({spec['baseline_ref']})")
-        L.append(f"  {bp[0][0]:.0f} Hz:          {bp[0][1]:.4f}  g²/Hz  (anchor)")
-        L.append(f"  {bp[0][0]:.0f}–{bp[1][0]:.0f} Hz:    +3 dB/oct")
-        L.append(f"  {bp[1][0]:.0f} Hz:         {bp[1][1]:.4f}  g²/Hz  (flat begins)")
-        L.append(f"  {bp[1][0]:.0f}–{bp[2][0]:.0f} Hz:   flat")
-        L.append(f"  {bp[2][0]:.0f} Hz:         {bp[2][1]:.4f}  g²/Hz  (flat ends)")
-        L.append(f"  {bp[2][0]:.0f}–{bp[3][0]:.0f} Hz:  -6 dB/oct")
-        L.append(f"  {bp[3][0]:.0f} Hz:        {bp[3][1]:.5f} g²/Hz")
+        seg_labels = spec.get("segment_labels", ["ramp", "flat", "rolloff"])
+        point_tags = ["(anchor)", "(flat begins)", "(flat ends)", ""]
+        for i, (f_hz, asd_v) in enumerate(bp):
+            tag = point_tags[i] if i < len(point_tags) else ""
+            L.append(f"  {f_hz:>6.0f} Hz:  {asd_v:>9.5f}  g²/Hz  {tag}".rstrip())
+            if i < len(bp) - 1 and i < len(seg_labels):
+                L.append(f"  {f_hz:.0f}–{bp[i + 1][0]:.0f} Hz:  {seg_labels[i]}")
         L.append(f"  Baseline GRMS:   {grms_base:.2f} g")
         if db_offset != 0.0:
             L.append(f"  {lname} GRMS: {grms_spec:.2f} g")
@@ -535,38 +845,10 @@ class RandomVibeEnvModule:
             L.append(f"  W ≤ {wa['threshold_lb']:.0f} lb  —  no reduction applied")
 
         else:
-            raw      = self._weight_var.get().strip()
-            unit_str = self._unit_var.get()
-            w_lb     = details["weight_lb"]
-            w_kg     = details["weight_kg"]
-            new_flat = details["new_flat"]
-            f_break  = details["f_break"]
-            red_db   = details["reduction_db"]
-
-            L.append(f"  Input:  {raw} {unit_str}  =  {w_lb:.1f} lb  ({w_kg:.1f} kg)")
-            L.append("")
-            L.append(f"  Eq. B.9:  Reduced flat = 0.04 × (50 / W)")
-            if w_lb != details["effective_weight_lb"]:
-                L.append(f"                        = 0.04 × (50 / {details['effective_weight_lb']:.0f})")
-                L.append(f"                          [W capped at {details['effective_weight_lb']:.0f} lb")
-                L.append(f"                           — max 6 dB reduction]")
-            else:
-                L.append(f"                        = 0.04 × (50 / {w_lb:.1f})")
-            L.append(f"                        = {new_flat:.4f}  g²/Hz")
-            L.append("")
-            L.append(f"  Reduction: {red_db:.1f} dB"
-                     f"  (max: {wa['max_reduction_db']:.0f} dB)")
-            L.append("")
-
-            L.append("ADJUSTED BREAKPOINTS")
-            L.append(f"  {details['anchor_f']:.0f} Hz:         "
-                     f"{details['anchor_asd']:.4f}  g²/Hz  (anchor, unchanged)")
-            L.append(f"  {f_break:.1f} Hz:       "
-                     f"{new_flat:.4f}  g²/Hz  (ramp meets reduced flat)")
-            L.append(f"  {details['flat_end_f']:.0f} Hz:        "
-                     f"{new_flat:.4f}  g²/Hz  (flat end)")
-            L.append(f"  {details['end_f']:.0f} Hz:       "
-                     f"{details['new_end_asd']:.5f} g²/Hz")
+            L.extend(spec["describe"](
+                spec, details,
+                self._weight_var.get().strip(),
+                self._unit_var.get()))
             L.append("")
 
             # GRMS table — use the unscaled breakpoint arrays returned by reduce()
@@ -682,4 +964,6 @@ class RandomVibeEnvModule:
         self._recompute()
 
     def _show_help(self):
-        _show_popup(self.frame.winfo_toplevel(), "RV Environment — Help", _HELP_TEXT)
+        _show_popup(self.frame.winfo_toplevel(),
+                    f"RV Environment — {self._spec_key} Help",
+                    _HELP_TEXTS.get(self._spec_key, _HELP_SMC))
