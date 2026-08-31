@@ -384,7 +384,10 @@ _SPECS = {
             (2000.0, 0.013),     # high endpoint
         ],
         "test_levels": [
-            # (label, dB_offset_above_acceptance, duration) — durations per Table 2.4-1
+            # (label, dB_offset_above_acceptance, duration) — durations per Table 2.2-2
+            # Level names follow the Table 2.2-2 column headers, which distinguish
+            # Prototype from Protoflight Qualification; Table 2.4-3 lumps both
+            # under a single "Qualification" ASD column.
             ("Acceptance",              0.0,           "1 min/axis"),
             ("Protoflight Qual",        _GEVS_QUAL_DB, "1 min/axis"),
             ("Prototype Qual",          _GEVS_QUAL_DB, "2 min/axis"),
@@ -484,7 +487,7 @@ BASELINE SPECTRUM (Table 2.4-3, components 22.7 kg / 50 lb or less)
   ratio is 3.0103 dB, which is what the tool carries -- a literal 3.0
   would reproduce the table only to ~0.24%.
 
-TEST LEVELS (Table 2.4-1)
+TEST LEVELS (Table 2.2-2, Test Factors/Durations)
   Acceptance          Limit level       1 min/axis
   Protoflight Qual    Limit + 3 dB      1 min/axis
   Prototype Qual      Limit + 3 dB      2 min/axis
