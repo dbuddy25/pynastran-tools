@@ -40,6 +40,16 @@ _DARK_BG = "#2b2b2b"
 from .asd_common import _THEMES
 
 
+# Mode dropdown labels. The Input ASD is OPTIONAL in FRF mode: with no ASD
+# loaded the plot shows raw |H| transfer-function magnitude, which is what you
+# want when inspecting an FRF on its own (no flat-1.0 dummy input needed).
+MODE_PSD_LABEL = "PSD (RANDOM)"
+MODE_FRF_LABEL = "FRF (Input ASD optional)"
+# Shown in the FRF subrow when no Input ASD is loaded, to make it obvious that
+# leaving it empty is a valid choice rather than an unfinished setup.
+NO_INPUT_ASD_TEXT = "(none — plots raw FRF)"
+
+
 class AsdOverlayModule:
     name = "ASD Overlay"
 
@@ -212,6 +222,10 @@ LINE STYLES
             "subcase_names": {},
             "subcase_options": [],
             "mode": "PSD",
+            # Explicit user pick from the Mode dropdown. None = auto-detect.
+            # Honoured on load so a deck with RANDOM output doesn't snap back
+            # to PSD when the user asked for FRF.
+            "mode_pref": None,
             "input_asd_path": None,
             "input_asd_freqs": None,
             "input_asd_g2hz": None,
@@ -284,7 +298,7 @@ LINE STYLES
                 row=i, column=9, padx=(0, 2))
             ctk.CTkOptionMenu(
                 slot_grid, variable=self._mode_var[i],
-                values=["PSD (RANDOM)", "FRF + Input ASD"],
+                values=[MODE_PSD_LABEL, MODE_FRF_LABEL],
                 command=lambda _v, idx=i: self._on_mode_change(idx),
                 width=140,
             ).grid(row=i, column=10, sticky="w")
@@ -305,7 +319,7 @@ LINE STYLES
             )
             asd_btn.pack(side=tk.LEFT, padx=(0, 6))
             self._input_asd_btn[i] = asd_btn
-            asd_lbl = ctk.CTkLabel(frf_row, text="(no file)", text_color="gray",
+            asd_lbl = ctk.CTkLabel(frf_row, text=NO_INPUT_ASD_TEXT, text_color="gray",
                                    anchor=tk.W, width=180)
             asd_lbl.pack(side=tk.LEFT, padx=(0, 8))
             self._input_asd_label[i] = asd_lbl
@@ -682,7 +696,14 @@ LINE STYLES
             cfg = RESPONSE_TYPES[rt]
             psd_dict = getattr(op2.op2_results.psd, cfg['psd_attr'], None) or {}
             frf_dict = getattr(op2, cfg['frf_attr'], None) or {}
-            if psd_dict:
+            pref = self._op2_slots[slot_idx].get('mode_pref')
+            if pref == "FRF" and frf_dict:
+                mode = "FRF"
+                result_dict = frf_dict
+            elif pref == "PSD" and psd_dict:
+                mode = "PSD"
+                result_dict = psd_dict
+            elif psd_dict:
                 mode = "PSD"
                 result_dict = psd_dict
             elif frf_dict:
@@ -701,7 +722,7 @@ LINE STYLES
                 return
 
             self._op2_slots[slot_idx]['mode'] = mode
-            mode_label = "PSD (RANDOM)" if mode == "PSD" else "FRF + Input ASD"
+            mode_label = MODE_PSD_LABEL if mode == "PSD" else MODE_FRF_LABEL
             self._mode_var[slot_idx].set(mode_label)
             if mode == "FRF":
                 self._frf_row[slot_idx].pack(fill=tk.X, pady=1)
@@ -861,8 +882,9 @@ LINE STYLES
 
     def _on_mode_change(self, slot_idx):
         mode_label = self._mode_var[slot_idx].get()
-        mode = "FRF" if mode_label == "FRF + Input ASD" else "PSD"
+        mode = "FRF" if mode_label.startswith("FRF") else "PSD"
         self._op2_slots[slot_idx]['mode'] = mode
+        self._op2_slots[slot_idx]['mode_pref'] = mode
         if mode == "FRF":
             self._frf_row[slot_idx].pack(fill=tk.X, pady=1)
         else:
@@ -948,7 +970,7 @@ LINE STYLES
             a = self._op2_slots[0]
             if a['input_asd_freqs'] is None:
                 self._input_asd_label[1].configure(
-                    text="(slot A has no Input ASD)", text_color="orange")
+                    text="(slot A has no Input ASD — raw FRF)", text_color="gray")
             else:
                 self._input_asd_label[1].configure(
                     text=f"← same as A: {os.path.basename(a['input_asd_path'])}",
@@ -962,7 +984,7 @@ LINE STYLES
                     text_color=("gray10", "gray90"))
             else:
                 self._input_asd_label[1].configure(
-                    text="(no file)", text_color="gray")
+                    text=NO_INPUT_ASD_TEXT, text_color="gray")
         self._refresh_plot()
 
     # ── Reference ASD management ─────────────────────────────────────────────
@@ -2379,10 +2401,12 @@ LINE STYLES
                 if tmode == "FRF" and frf_dict:
                     mode = "FRF"
                     result_dict = frf_dict
+                if tmode:
+                    self._op2_slots[si]['mode_pref'] = tmode
                 self._op2_slots[si]['op2'] = op2
                 self._op2_slots[si]['path'] = op2_path_
                 self._op2_slots[si]['mode'] = mode
-                mode_label = "PSD (RANDOM)" if mode == "PSD" else "FRF + Input ASD"
+                mode_label = MODE_PSD_LABEL if mode == "PSD" else MODE_FRF_LABEL
                 self._mode_var[si].set(mode_label)
                 if mode == "FRF":
                     self._frf_row[si].pack(fill=tk.X, pady=1)
