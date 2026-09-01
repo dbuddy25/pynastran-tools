@@ -881,22 +881,58 @@ LINE STYLES
         self._refresh_plot()
 
     def _on_mode_change(self, slot_idx):
+        """Switch a slot between PSD and FRF, re-deriving from the OP2 already
+        in memory. The OP2 object holds both result sets, so switching modes
+        must never discard the loaded file."""
         mode_label = self._mode_var[slot_idx].get()
         mode = "FRF" if mode_label.startswith("FRF") else "PSD"
-        self._op2_slots[slot_idx]['mode'] = mode
-        self._op2_slots[slot_idx]['mode_pref'] = mode
+        slot = self._op2_slots[slot_idx]
+        op2 = slot.get('op2')
+        cfg = RESPONSE_TYPES[self._rt_global_var.get()]
+
+        result_dict = {}
+        if op2 is not None:
+            if mode == "FRF":
+                result_dict = getattr(op2, cfg['frf_attr'], None) or {}
+            else:
+                result_dict = getattr(op2.op2_results.psd, cfg['psd_attr'], None) or {}
+            if not result_dict:
+                # Nothing to show in the requested mode — keep the file loaded
+                # and snap the dropdown back rather than dropping the OP2.
+                messagebox.showwarning(
+                    f"No {mode} Data",
+                    f"OP2 {_SLOT_TAGS[slot_idx]} has no {mode} "
+                    f"{self._rt_global_var.get().lower()} results.\n\n"
+                    "The file is still loaded; staying in "
+                    f"{slot.get('mode', 'PSD')} mode.")
+                prev = slot.get('mode', 'PSD')
+                self._mode_var[slot_idx].set(
+                    MODE_FRF_LABEL if prev == "FRF" else MODE_PSD_LABEL)
+                return
+
+        slot['mode'] = mode
+        slot['mode_pref'] = mode
         if mode == "FRF":
             self._frf_row[slot_idx].pack(fill=tk.X, pady=1)
         else:
             self._frf_row[slot_idx].pack_forget()
-        self._op2_slots[slot_idx]['op2'] = None
-        self._op2_slots[slot_idx]['subcase'] = None
-        self._op2_slots[slot_idx]['subcases'] = []
-        self._op2_slots[slot_idx]['subcase_options'] = []
-        self._sc_btn[slot_idx].configure(text="(none)")
-        self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
-        if self._subcase_panel_slot == slot_idx:
-            self._close_subcase_panel()
+
+        if op2 is not None:
+            sc_pairs = _subcase_options(result_dict)
+            slot['subcase_options'] = sc_pairs
+            # Preserve selections that still exist in the new mode.
+            existing = slot.get('subcases', [])
+            valid = [sc for sc in existing if any(s == sc for s, _ in sc_pairs)]
+            if not valid:
+                valid = [sc_pairs[0][0]]
+            slot['subcases'] = valid
+            slot['subcase'] = valid[0]
+            self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
+            if self._subcase_panel_slot == slot_idx:
+                self._build_subcase_panel_for(slot_idx)
+
+        self._update_dof_dropdown()
+        self._rebuild_sections()
         self._refresh_plot()
 
     # ── Input ASD loading ────────────────────────────────────────────────────
