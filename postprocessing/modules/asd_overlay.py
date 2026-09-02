@@ -158,11 +158,12 @@ LINE STYLES
         self._open_btn = [None, None]
         self._file_label = [None, None]
         self._unit_var = [ctk.StringVar(value="in/s²"), ctk.StringVar(value="in/s²")]
-        self._sc_btn = [None, None]
-        self._subcase_panel = None
-        self._subcase_panel_slot = None
-        self._subcase_panel_check_vars = []  # [(sc_id, BooleanVar), ...]
-        self._subcase_panel_name_vars = []   # [(sc_id, StringVar), ...]
+        # Inline subcase rows, one strip per slot. Vars are written straight
+        # into the slot dict on every keystroke, so nothing is lost on rebuild.
+        self._sc_frame = [None, None]
+        self._sc_check_vars = [{}, {}]   # slot -> {sc_id: BooleanVar}
+        self._sc_name_vars = [{}, {}]    # slot -> {sc_id: StringVar}
+        self._sc_name_after = [None, None]
         self._mode_var = [ctk.StringVar(value="PSD (RANDOM)"),
                           ctk.StringVar(value="PSD (RANDOM)")]
         self._frf_row = [None, None]
@@ -250,7 +251,7 @@ LINE STYLES
                 slot_grid, text=f"Open OP2 {tag}…", width=120,
                 command=lambda idx=i: self._open_op2(idx),
             )
-            btn.grid(row=i, column=0, sticky="w", padx=(0, 4), pady=2)
+            btn.grid(row=2 * i, column=0, sticky="w", padx=(0, 4), pady=2)
             self._open_btn[i] = btn
 
             clr_btn = ctk.CTkButton(
@@ -258,22 +259,22 @@ LINE STYLES
                 fg_color="#8b1a1a",
                 command=lambda idx=i: self._clear_slot(idx),
             )
-            clr_btn.grid(row=i, column=1, sticky="w", padx=(0, 6), pady=2)
+            clr_btn.grid(row=2 * i, column=1, sticky="w", padx=(0, 6), pady=2)
             self._clear_btn[i] = clr_btn
 
             lbl = ctk.CTkLabel(slot_grid, text="(no file)", text_color="gray",
                                anchor=tk.W, width=400)
-            lbl.grid(row=i, column=2, sticky="ew", padx=(0, 8))
+            lbl.grid(row=2 * i, column=2, sticky="ew", padx=(0, 8))
             self._file_label[i] = lbl
 
             ctk.CTkLabel(slot_grid, text="Name:").grid(
-                row=i, column=3, padx=(0, 2))
+                row=2 * i, column=3, padx=(0, 2))
             ctk.CTkEntry(slot_grid, textvariable=self._name_var[i], width=130,
                          placeholder_text="Analysis name",
-                         ).grid(row=i, column=4, padx=(0, 10))
+                         ).grid(row=2 * i, column=4, padx=(0, 10))
 
             ctk.CTkLabel(slot_grid, text="Units:").grid(
-                row=i, column=5, padx=(0, 2))
+                row=2 * i, column=5, padx=(0, 2))
             unit_cfg = RESPONSE_TYPES["Acceleration"]
             umenu = ctk.CTkOptionMenu(
                 slot_grid, variable=self._unit_var[i],
@@ -281,27 +282,24 @@ LINE STYLES
                 command=lambda _v, idx=i: self._refresh_plot(),
                 width=80,
             )
-            umenu.grid(row=i, column=6, padx=(0, 10))
+            umenu.grid(row=2 * i, column=6, padx=(0, 10))
             self._unit_menu[i] = umenu
 
-            ctk.CTkLabel(slot_grid, text="Subcase:").grid(
-                row=i, column=7, padx=(0, 2))
-            scbtn = ctk.CTkButton(
-                slot_grid, text="(none)",
-                command=lambda idx=i: self._toggle_subcase_panel(idx),
-                width=180, anchor="w",
-            )
-            scbtn.grid(row=i, column=8, padx=(0, 10))
-            self._sc_btn[i] = scbtn
-
             ctk.CTkLabel(slot_grid, text="Mode:").grid(
-                row=i, column=9, padx=(0, 2))
+                row=2 * i, column=9, padx=(0, 2))
             ctk.CTkOptionMenu(
                 slot_grid, variable=self._mode_var[i],
                 values=[MODE_PSD_LABEL, MODE_FRF_LABEL],
                 command=lambda _v, idx=i: self._on_mode_change(idx),
                 width=140,
-            ).grid(row=i, column=10, sticky="w")
+            ).grid(row=2 * i, column=10, sticky="w")
+
+            # Inline subcase strip — checkbox + custom name per subcase.
+            # Persistent widgets, so custom names survive every refresh.
+            sc_frame = ctk.CTkFrame(slot_grid, fg_color="transparent")
+            sc_frame.grid(row=2 * i + 1, column=0, columnspan=11,
+                          sticky="ew", padx=(6, 0), pady=(0, 6))
+            self._sc_frame[i] = sc_frame
 
             # FRF subrow — hidden until mode is switched
             frf_row = ctk.CTkFrame(toolbar, fg_color="transparent")
@@ -453,10 +451,6 @@ LINE STYLES
         ctk.CTkButton(annot_row, text="Open Session…", width=110,
                       command=self._open_session,
                       ).pack(side=tk.LEFT, padx=(4, 0))
-
-        # Inline subcase picker panel — shared, pack-toggled (like _frf_row)
-        self._subcase_panel = ctk.CTkFrame(toolbar, fg_color="transparent")
-        # (not packed yet; toggled by _toggle_subcase_panel)
 
         # ── Body: node panel + plot ───────────────────────────────────────────
         body = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -736,7 +730,7 @@ LINE STYLES
             self._op2_slots[slot_idx]['subcase_options'] = sc_pairs
             self._op2_slots[slot_idx]['subcase'] = sc_pairs[0][0]
             self._op2_slots[slot_idx]['subcases'] = [sc_pairs[0][0]]
-            self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
+            self._rebuild_sc_rows(slot_idx)
 
             stem = os.path.splitext(os.path.basename(path))[0]
             self._maybe_autofill_name(slot_idx, stem)
@@ -763,122 +757,96 @@ LINE STYLES
         opts = self._op2_slots[slot_idx].get('subcase_options', [])
         return next((l for sc, l in opts if sc == sc_id), str(sc_id))
 
-    def _sc_btn_label(self, slot_idx):
-        """Button text for the subcase picker button."""
-        scs = self._op2_slots[slot_idx].get('subcases', [])
-        if not scs:
-            return "(none)"
-        if len(scs) == 1:
-            lbl = self._sc_display_name(slot_idx, scs[0])
-            return lbl[:35] + ("…" if len(lbl) > 35 else "")
-        return f"{len(scs)} subcases"
+    def _rebuild_sc_rows(self, slot_idx):
+        """(Re)build the inline subcase checkbox + name row for one slot.
 
-    def _close_subcase_panel(self):
-        """Hide the inline subcase panel without applying changes."""
-        if self._subcase_panel is not None:
-            self._subcase_panel.pack_forget()
-        self._subcase_panel_slot = None
-        self._subcase_panel_check_vars = []
-        self._subcase_panel_name_vars = []
-
-    def _toggle_subcase_panel(self, slot_idx):
-        """Show the inline subcase panel for slot_idx, or close it if already open."""
-        if not self._op2_slots[slot_idx].get('subcase_options'):
+        Entries write into the slot dict on every keystroke, so a rebuild can
+        never drop a custom name the way the old pop-up panel did.
+        """
+        frame = self._sc_frame[slot_idx]
+        if frame is None:
             return
-        if self._subcase_panel_slot == slot_idx:
-            self._close_subcase_panel()
-            return
-        self._build_subcase_panel_for(slot_idx)
-
-    def _build_subcase_panel_for(self, slot_idx):
-        """Rebuild and show the inline subcase panel for the given slot."""
-        panel = self._subcase_panel
-        # Clear old content
-        for w in panel.winfo_children():
+        for w in frame.winfo_children():
             w.destroy()
-        self._subcase_panel_check_vars = []
-        self._subcase_panel_name_vars = []
+        self._sc_check_vars[slot_idx] = {}
+        self._sc_name_vars[slot_idx] = {}
 
+        slot = self._op2_slots[slot_idx]
+        opts = slot.get('subcase_options', [])
+        if not opts:
+            return
+        selected = set(slot.get('subcases', []))
+        names = slot.get('subcase_names', {})
+
+        ctk.CTkLabel(frame, text=f"Subcases {_SLOT_TAGS[slot_idx]}:",
+                     width=90, anchor="w").grid(row=0, column=0, sticky="nw")
+
+        # Typically 1-3 subcases, but wrap so an unexpectedly wide file can't
+        # push the plot off-screen.
+        per_row = 3
+        for n, (sc_id, sc_lbl) in enumerate(opts):
+            cell = ctk.CTkFrame(frame, fg_color="transparent")
+            cell.grid(row=n // per_row, column=(n % per_row) + 1,
+                      sticky="w", padx=(0, 16), pady=1)
+
+            bvar = tk.BooleanVar(value=(sc_id in selected))
+            self._sc_check_vars[slot_idx][sc_id] = bvar
+            ctk.CTkCheckBox(cell, text=sc_lbl[:26], variable=bvar, width=140,
+                            command=lambda s=slot_idx: self._on_sc_check(s),
+                            ).pack(side=tk.LEFT, padx=(0, 4))
+
+            nvar = tk.StringVar(value=names.get(sc_id, ""))
+            self._sc_name_vars[slot_idx][sc_id] = nvar
+            nvar.trace_add("write", lambda *_a, s=slot_idx: self._on_sc_name(s))
+            ctk.CTkEntry(cell, textvariable=nvar, width=130,
+                         placeholder_text="custom name").pack(side=tk.LEFT)
+
+    def _on_sc_check(self, slot_idx):
+        """Apply checkbox state to slot data and refresh the plot."""
         opts = self._op2_slots[slot_idx].get('subcase_options', [])
-        current = set(self._op2_slots[slot_idx].get('subcases', []))
-        existing_names = self._op2_slots[slot_idx].get('subcase_names', {})
-        tag = _SLOT_TAGS[slot_idx]
-
-        # ── Header ──────────────────────────────────────────────────────────
-        hdr = ctk.CTkFrame(panel, fg_color="transparent")
-        hdr.pack(fill=tk.X, padx=6, pady=(4, 2))
-        ctk.CTkLabel(hdr, text=f"Slot {tag} subcases",
-                     font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=(0, 16))
-        ctk.CTkLabel(hdr, text="Subcase (from OP2)", width=180,
-                     anchor="w").pack(side=tk.LEFT, padx=(4, 8))
-        ctk.CTkLabel(hdr, text="Custom name", anchor="w").pack(side=tk.LEFT)
-        ctk.CTkButton(hdr, text="✕ Close", width=70,
-                      command=self._close_subcase_panel).pack(side=tk.RIGHT)
-
-        # ── Checkbox + name rows ─────────────────────────────────────────────
-        scroll = ctk.CTkScrollableFrame(panel, height=min(36 * len(opts), 240))
-        scroll.pack(fill=tk.X, padx=6, pady=2)
-
-        for sc_id, sc_lbl in opts:
-            row = ctk.CTkFrame(scroll, fg_color="transparent")
-            row.pack(fill=tk.X, pady=2)
-            var = tk.BooleanVar(value=(sc_id in current))
-            self._subcase_panel_check_vars.append((sc_id, var))
-            ctk.CTkCheckBox(row, text="", variable=var, width=24,
-                            command=lambda s=slot_idx: self._on_subcase_check(s)).pack(
-                side=tk.LEFT)
-            ctk.CTkLabel(row, text=sc_lbl, width=180, anchor="w").pack(
-                side=tk.LEFT, padx=(4, 8))
-            nvar = tk.StringVar(value=existing_names.get(sc_id, ""))
-            self._subcase_panel_name_vars.append((sc_id, nvar))
-            entry = ctk.CTkEntry(row, textvariable=nvar, width=200,
-                                 placeholder_text="(use OP2 name)")
-            entry.pack(side=tk.LEFT)
-            entry.bind("<Return>",   lambda _e, s=slot_idx: self._on_subcase_name_edit(s))
-            entry.bind("<FocusOut>", lambda _e, s=slot_idx: self._on_subcase_name_edit(s))
-
-        # ── Footer: All / Clear ──────────────────────────────────────────────
-        foot = ctk.CTkFrame(panel, fg_color="transparent")
-        foot.pack(fill=tk.X, padx=6, pady=(2, 6))
-
-        def _all():
-            for _, v in self._subcase_panel_check_vars:
-                v.set(True)
-            self._on_subcase_check(slot_idx)
-
-        def _clear():
-            for _, v in self._subcase_panel_check_vars:
-                v.set(False)
-            self._on_subcase_check(slot_idx)
-
-        ctk.CTkButton(foot, text="All", width=60, command=_all).pack(
-            side=tk.LEFT, padx=(0, 4))
-        ctk.CTkButton(foot, text="Clear", width=60, command=_clear).pack(
-            side=tk.LEFT)
-
-        # ── Show the panel ───────────────────────────────────────────────────
-        self._subcase_panel_slot = slot_idx
-        panel.pack(fill=tk.X, pady=(0, 4))
-
-    def _on_subcase_check(self, slot_idx):
-        """Live-apply checkbox state to slot data and refresh the plot."""
-        opts = self._op2_slots[slot_idx].get('subcase_options', [])
-        checked = {sc for sc, v in self._subcase_panel_check_vars if v.get()}
-        # Preserve OP2 sort order
-        selected = [sc for sc, _ in opts if sc in checked]
+        checked = {sc for sc, v in self._sc_check_vars[slot_idx].items() if v.get()}
+        selected = [sc for sc, _ in opts if sc in checked]   # keep OP2 order
         self._op2_slots[slot_idx]['subcases'] = selected
         self._op2_slots[slot_idx]['subcase'] = selected[0] if selected else None
-        self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
         self._refresh_plot()
 
-    def _on_subcase_name_edit(self, slot_idx):
-        """Live-apply name entries to slot data and refresh the plot."""
-        names = {sc: nv.get().strip()
-                 for sc, nv in self._subcase_panel_name_vars
-                 if nv.get().strip()}
+    def _on_sc_name(self, slot_idx):
+        """Commit name entries immediately; debounce the (costly) replot.
+
+        Only subcases with a visible entry are touched. The row set shrinks
+        when a mode/response-type switch exposes fewer subcases, so replacing
+        the dict wholesale would silently drop names for the hidden ones.
+        """
+        names = dict(self._op2_slots[slot_idx].get('subcase_names', {}))
+        for sc, nv in self._sc_name_vars[slot_idx].items():
+            try:
+                val = nv.get().strip()
+            except Exception:
+                continue          # widget already torn down
+            if val:
+                names[sc] = val
+            else:
+                names.pop(sc, None)   # cleared on screen = cleared in data
         self._op2_slots[slot_idx]['subcase_names'] = names
-        self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
-        self._refresh_plot()
+
+        # Traces fire per keystroke — coalesce the redraws.
+        self._cancel_sc_name_redraw(slot_idx)
+
+        def _fire(s=slot_idx):
+            self._sc_name_after[s] = None
+            self._refresh_plot()
+
+        self._sc_name_after[slot_idx] = self.frame.after(300, _fire)
+
+    def _cancel_sc_name_redraw(self, slot_idx):
+        """Drop any debounced replot still pending for this slot."""
+        pending = self._sc_name_after[slot_idx]
+        if pending is not None:
+            try:
+                self.frame.after_cancel(pending)
+            except Exception:
+                pass
+            self._sc_name_after[slot_idx] = None
 
     def _on_mode_change(self, slot_idx):
         """Switch a slot between PSD and FRF, re-deriving from the OP2 already
@@ -927,9 +895,7 @@ LINE STYLES
                 valid = [sc_pairs[0][0]]
             slot['subcases'] = valid
             slot['subcase'] = valid[0]
-            self._sc_btn[slot_idx].configure(text=self._sc_btn_label(slot_idx))
-            if self._subcase_panel_slot == slot_idx:
-                self._build_subcase_panel_for(slot_idx)
+            self._rebuild_sc_rows(slot_idx)
 
         self._update_dof_dropdown()
         self._rebuild_sections()
@@ -2004,6 +1970,7 @@ LINE STYLES
         messagebox.showinfo("Saved", os.path.basename(path))
 
     def _clear_slot(self, slot_idx):
+        self._cancel_sc_name_redraw(slot_idx)
         self._op2_slots[slot_idx] = self._empty_slot()
         self._file_label[slot_idx].configure(text="(no file)", text_color="gray")
         self._suppress_name_trace[slot_idx] = True
@@ -2012,12 +1979,10 @@ LINE STYLES
         finally:
             self._suppress_name_trace[slot_idx] = False
         self._name_user_edited[slot_idx] = False
-        self._sc_btn[slot_idx].configure(text="(none)")
         self._input_asd_label[slot_idx].configure(text="(no file)", text_color="gray")
         self._input_asd_db_var[slot_idx].set("0")
         self._frf_row[slot_idx].pack_forget()
-        if self._subcase_panel_slot == slot_idx:
-            self._close_subcase_panel()
+        self._rebuild_sc_rows(slot_idx)
         self._update_dof_dropdown()
         self._rebuild_sections()
         self._status_label.configure(
@@ -2061,9 +2026,7 @@ LINE STYLES
                     self._op2_slots[idx]['subcase'] = None
                     self._op2_slots[idx]['subcases'] = []
                     self._op2_slots[idx]['subcase_options'] = []
-                    self._sc_btn[idx].configure(text="(none)")
-                    if self._subcase_panel_slot == idx:
-                        self._close_subcase_panel()
+                    self._rebuild_sc_rows(idx)
                     continue
                 sc_pairs = _subcase_options(result_dict)
                 self._op2_slots[idx]['subcase_options'] = sc_pairs
@@ -2074,10 +2037,7 @@ LINE STYLES
                     valid = [sc_pairs[0][0]]
                 self._op2_slots[idx]['subcases'] = valid
                 self._op2_slots[idx]['subcase'] = valid[0]
-                self._sc_btn[idx].configure(text=self._sc_btn_label(idx))
-        # Rebuild the inline panel if it was open (subcase options may have changed)
-        if self._subcase_panel_slot is not None:
-            self._build_subcase_panel_for(self._subcase_panel_slot)
+                self._rebuild_sc_rows(idx)
         self._update_dof_dropdown()
         self._rebuild_sections()
         self._refresh_plot()
@@ -2461,7 +2421,7 @@ LINE STYLES
                 self._op2_slots[si]['subcases'] = restored
                 self._op2_slots[si]['subcase'] = restored[0] if restored else None
                 self._op2_slots[si]['subcase_names'] = tsc_names
-                self._sc_btn[si].configure(text=self._sc_btn_label(si))
+                self._rebuild_sc_rows(si)
                 if tname:
                     self._suppress_name_trace[si] = True
                     try:
@@ -2759,11 +2719,6 @@ LINE STYLES
                 sc_a, sc_b, _ = pool[self._cycle_index]
                 sc_override[0] = sc_a[0] if sc_a else "SKIP"
                 sc_override[1] = sc_b[0] if sc_b else "SKIP"
-                # Sync buttons so user sees the active subcase
-                if sc_a:
-                    self._sc_btn[0].configure(text=sc_a[1][:35])
-                if sc_b:
-                    self._sc_btn[1].configure(text=sc_b[1][:35])
 
         has_curves = False
         has_psd = False

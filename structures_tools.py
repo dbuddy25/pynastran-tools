@@ -87,6 +87,13 @@ except Exception:
     _random_vibe_available = False
     _import_errors['Random Vibe Env'] = traceback.format_exc()
 
+_op2_export_available = True
+try:
+    from modules.op2_export import Op2ExportModule
+except Exception:
+    _op2_export_available = False
+    _import_errors['OP2 Export'] = traceback.format_exc()
+
 from miles_equation import MilesEquationTool
 
 
@@ -144,6 +151,7 @@ class Sidebar(ctk.CTkFrame):
         self._add_tool("mass_breakdown", "Mass Breakdown")
         self._add_tool("asd", "ASD Overlay")
         self._add_tool("response_limit", "Response Limiting")
+        self._add_tool("op2_export", "OP2 Export")
 
         # Hand Calcs section
         self._add_section("Hand Calcs")
@@ -263,6 +271,12 @@ class StructuresToolsApp(ctk.CTk):
             self._tools['random_vibe'] = rv.frame
         else:
             self._sidebar.disable_tool("random_vibe")
+
+        if _op2_export_available:
+            oe = Op2ExportModule(self._content)
+            self._tools['op2_export'] = oe.frame
+        else:
+            self._sidebar.disable_tool("op2_export")
 
         self._active_tool = None
 
