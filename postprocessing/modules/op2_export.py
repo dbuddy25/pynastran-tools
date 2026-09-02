@@ -26,7 +26,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 import numpy as np
 
-from .asd_common import RESPONSE_TYPES, sc_int as _sc_int
+from .asd_common import RESPONSE_TYPES, sc_int as _sc_int, read_op2_for_asd
 
 
 # (.mat sub-field, RESPONSE_TYPES cfg key, where the dict lives on the OP2)
@@ -226,13 +226,7 @@ Each subcase has freq, ids, dof_labels, values and units.  PSD/FRF values are
             self._status_label.configure(text="Loaded. Pick response types and export.",
                                          text_color=("gray10", "gray90"))
 
-        def _work():
-            from pyNastran.op2.op2 import OP2
-            op2 = OP2(mode='nx', debug=False)
-            op2.read_op2(path)
-            return op2
-
-        self._run_in_background("Loading OP2…", _work, _done)
+        self._run_in_background("Loading OP2…", lambda: read_op2_for_asd(path), _done)
 
     def _build_export(self):
         """Assemble the nested dict handed to savemat."""

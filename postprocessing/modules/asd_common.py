@@ -227,3 +227,79 @@ def cumulative_grms_loglog(freqs, asd):
             running += (ah * fh - al * fl) / (b + 1.0)
         cum_area[i + 1] = running
     return np.sqrt(np.maximum(cum_area, 0.0))
+
+
+# ── Filtered OP2 reading ─────────────────────────────────────────────────────
+# A SOL 111 OP2 spends most of its read time parsing stress, strain, strain
+# energy and element-force tables that the ASD tools never look at. Restricting
+# the reader to the result families below skips that work entirely.
+#
+# Names are pyNastran result-name strings; they vary between versions, so
+# read_op2_for_asd() falls back to a full read whenever the filtered read
+# raises or comes back without any of the data we need.
+ASD_RESULT_NAMES = [
+    # Base (FRF) results
+    'displacements', 'accelerations', 'spc_forces',
+    'force.cbush_force', 'cbush_force',
+    # Random-response PSD tables
+    'psd.displacements', 'psd.accelerations', 'psd.spc_forces',
+    'psd.cbush_force',
+    # Nastran's own RMS tables (preferred over integrating the PSD)
+    'rms.displacements', 'rms.accelerations', 'rms.spc_forces',
+    'rms.cbush_force',
+]
+
+_ASD_ATTRS = ('displacements', 'accelerations', 'spc_forces', 'cbush_force')
+
+
+def _has_asd_data(op2):
+    """True if the OP2 holds any result family the ASD tools can plot."""
+    results = getattr(op2, 'op2_results', None)
+    for container in (getattr(results, 'psd', None), getattr(results, 'rms', None)):
+        for attr in _ASD_ATTRS:
+            if getattr(container, attr, None):
+                return True
+    for attr in _ASD_ATTRS:
+        if getattr(op2, attr, None):
+            return True
+    return False
+
+
+def read_op2_for_asd(path, mode='nx', debug=False):
+    """Read an OP2, parsing only the tables the ASD tools use.
+
+    Falls back to an unfiltered read if this pyNastran version rejects the
+    result names or the filtered pass yields nothing usable, so the worst
+    case is the current behaviour rather than a failed load.
+
+    CAVEAT: the fallback only triggers when NO family is found. If a version
+    silently ignores an unknown name, one family could come back empty while
+    another succeeds, and this would not notice. Verify against a real OP2
+    before trusting it for a response type you have not spot-checked.
+    """
+    from pyNastran.op2.op2 import OP2
+
+    def _full_read():
+        op2 = OP2(mode=mode, debug=debug)
+        op2.read_op2(path)
+        return op2
+
+    filtered = None
+    try:
+        filtered = OP2(mode=mode, debug=debug)
+        filtered.set_results(ASD_RESULT_NAMES)
+        filtered.read_op2(path)
+        if _has_asd_data(filtered):
+            return filtered
+    except Exception:
+        filtered = None
+
+    # A full read parses tables the filter skipped -- including ones that can
+    # crash the reader outright (a deck with EKE alongside ESE does this). If
+    # it blows up, a filtered read that at least loaded beats no result.
+    try:
+        return _full_read()
+    except Exception:
+        if filtered is not None:
+            return filtered
+        raise

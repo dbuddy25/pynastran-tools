@@ -28,6 +28,7 @@ from .asd_common import (
     interp_loglog,
     grms_loglog,
     cumulative_grms_loglog,
+    read_op2_for_asd,
 )
 
 _NODE_COLORS_COOL = ("#1f77b4", "#2ca02c", "#9467bd", "#17becf", "#bcbd22")
@@ -675,10 +676,7 @@ LINE STYLES
             return
 
         def _work():
-            from pyNastran.op2.op2 import OP2
-            op2 = OP2(mode='nx', debug=False)
-            op2.read_op2(path)
-            return op2
+            return read_op2_for_asd(path)
 
         def _done(op2, error):
             if error is not None:
@@ -2371,10 +2369,7 @@ LINE STYLES
             _slot_idx = idx
 
             def _work(p=op2_path):
-                from pyNastran.op2.op2 import OP2
-                op2 = OP2(mode='nx', debug=False)
-                op2.read_op2(p)
-                return op2
+                return read_op2_for_asd(p)
 
             def _done(op2, error,
                       si=_slot_idx, cfg_=cfg,
