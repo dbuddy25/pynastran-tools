@@ -19,8 +19,6 @@ import os
 import sys
 import time
 
-import numpy as np
-
 
 # The four families the ASD tools actually read.
 ASD_RESULT_NAMES = [
@@ -54,13 +52,38 @@ def _human(n):
 
 
 def _table_bytes(tbl):
-    """Bytes held by one result table's arrays."""
+    """Bytes held by one result table's arrays.
+
+    Duck-typed on .nbytes so this module needs no numpy import of its own —
+    it should be able to start and explain itself on a bare interpreter.
+    """
     total = 0
     for attr in ("data", "_times", "node_gridtype", "element", "element_node"):
-        arr = getattr(tbl, attr, None)
-        if isinstance(arr, np.ndarray):
-            total += arr.nbytes
+        nbytes = getattr(getattr(tbl, attr, None), "nbytes", None)
+        if isinstance(nbytes, int):
+            total += nbytes
     return total
+
+
+def _check_deps():
+    """Explain a missing pyNastran instead of dying on the import."""
+    try:
+        import pyNastran  # noqa: F401
+        return True
+    except ImportError as exc:
+        exe = sys.executable
+        print(f"Cannot import pyNastran ({exc}).\n")
+        print(f"This interpreter is:\n  {exe}\n")
+        print("It is probably not the one the Structures Tools launcher set up.")
+        print("On Windows 'py -3' and 'python' are often different installs —")
+        print("try 'python' rather than 'py -3':\n")
+        print(f"  python {os.path.basename(__file__)} model.op2\n")
+        print("Or point at the launcher's environment directly, e.g.")
+        print("  %LOCALAPPDATA%\\StructuresTools\\.venv\\Scripts\\python.exe "
+              f"{os.path.basename(__file__)} model.op2\n")
+        print("Or install into this one:")
+        print(f"  \"{exe}\" -m pip install pyNastran numpy")
+        return False
 
 
 def _walk(op2):
@@ -129,6 +152,9 @@ def main(argv=None):
     ap.add_argument("--top", type=int, default=15,
                     help="how many result types to list (default 15)")
     args = ap.parse_args(argv)
+
+    if not _check_deps():
+        return 2
 
     if not os.path.isfile(args.op2):
         print(f"No such file: {args.op2}")
