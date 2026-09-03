@@ -121,17 +121,24 @@ def _walk(op2):
 
 
 def _read(path, filtered):
+    """Read the OP2. Returns (op2, seconds, rejected_reason_or_None).
+
+    A rejected set_results() is fatal to the comparison, not a warning: the
+    exception leaves the result set half-configured with most results
+    disabled, so reading anyway looks dramatically faster while silently
+    dropping nearly everything. Bail instead of reporting a fake speedup.
+    """
     from pyNastran.op2.op2 import OP2
     op2 = OP2(mode='nx', debug=False)
-    note = ""
     if filtered:
         try:
             op2.set_results(ASD_RESULT_NAMES)
         except Exception as exc:
-            note = f"  (set_results rejected: {exc})"
+            first = str(exc).strip().splitlines()[0]
+            return None, 0.0, first
     t0 = time.perf_counter()
     op2.read_op2(path)
-    return op2, time.perf_counter() - t0, note
+    return op2, time.perf_counter() - t0, None
 
 
 def _has_family(op2, attr):
@@ -161,7 +168,8 @@ def main(argv=None):
         return 1
 
     on_disk = os.path.getsize(args.op2)
-    print(f"File: {args.op2}\nSize on disk: {_human(on_disk)}\n")
+    print(f"File: {args.op2}\nSize on disk: {_human(on_disk)}")
+    print("(tip: redirect to a file — the table is long)\n")
 
     print("Full read…")
     op2, secs, _ = _read(args.op2, filtered=False)
@@ -205,8 +213,15 @@ def main(argv=None):
 
     if args.filtered:
         print("\nFiltered read (set_results)…")
-        f_op2, f_secs, note = _read(args.op2, filtered=True)
-        print(f"  {f_secs:.1f} s{note}")
+        f_op2, f_secs, rejected = _read(args.op2, filtered=True)
+        if rejected is not None:
+            print(f"  set_results REJECTED the result names:\n    {rejected}\n")
+            print("  No comparison is possible — a rejected set_results leaves most\n"
+                  "  results disabled, so timing it would report a large but\n"
+                  "  meaningless speedup. The names in ASD_RESULT_NAMES are wrong\n"
+                  "  for this pyNastran; do not merge perf/filtered-op2-read.")
+            return 0
+        print(f"  {f_secs:.1f} s")
         if f_secs > 0:
             print(f"  {secs / f_secs:.1f}x faster" if f_secs < secs else "  no faster")
         print("\n  family            full   filtered")
