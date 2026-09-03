@@ -33,6 +33,7 @@ from .asd_common import (
 _NODE_COLORS_COOL = ("#1f77b4", "#2ca02c", "#9467bd", "#17becf", "#bcbd22")
 _NODE_COLORS_WARM = ("#d62728", "#ff7f0e", "#8c564b", "#e377c2", "#7f7f7f")
 _NODE_COLORS = _NODE_COLORS_COOL + _NODE_COLORS_WARM  # full palette for single-OP2
+_SC_ROW_H = 22   # subcase strip widget height, keeps slot rows compact
 _SLOT_TAGS = ("A", "B")
 _SLOT_LINES = ("-", "--")
 _SC_LINES = ("-", "--", "-.", ":")  # linestyle cycle when multiple subcases selected
@@ -296,9 +297,12 @@ LINE STYLES
 
             # Inline subcase strip — checkbox + custom name per subcase.
             # Persistent widgets, so custom names survive every refresh.
-            sc_frame = ctk.CTkFrame(slot_grid, fg_color="transparent")
+            # height=1 matters: an empty CTkFrame defaults to 200px, which
+            # would reserve a huge block for a slot with no OP2 loaded.
+            # Geometry propagation grows it back once rows are added.
+            sc_frame = ctk.CTkFrame(slot_grid, fg_color="transparent", height=1)
             sc_frame.grid(row=2 * i + 1, column=0, columnspan=11,
-                          sticky="ew", padx=(6, 0), pady=(0, 6))
+                          sticky="ew", padx=(6, 0), pady=(0, 1))
             self._sc_frame[i] = sc_frame
 
             # FRF subrow — hidden until mode is switched
@@ -778,28 +782,29 @@ LINE STYLES
         selected = set(slot.get('subcases', []))
         names = slot.get('subcase_names', {})
 
-        ctk.CTkLabel(frame, text=f"Subcases {_SLOT_TAGS[slot_idx]}:",
-                     width=90, anchor="w").grid(row=0, column=0, sticky="nw")
+        ctk.CTkLabel(frame, text=f"Subcases {_SLOT_TAGS[slot_idx]}:", width=90,
+                     height=_SC_ROW_H, anchor="w").grid(row=0, column=0, sticky="w")
 
-        # Typically 1-3 subcases, but wrap so an unexpectedly wide file can't
-        # push the plot off-screen.
+        # Widgets go straight into the grid — no per-subcase wrapper frame, so
+        # the strip stays one text-line tall. Wrap only if a file is unusually
+        # wide (typically 1-3 subcases).
         per_row = 3
         for n, (sc_id, sc_lbl) in enumerate(opts):
-            cell = ctk.CTkFrame(frame, fg_color="transparent")
-            cell.grid(row=n // per_row, column=(n % per_row) + 1,
-                      sticky="w", padx=(0, 16), pady=1)
+            row, col = n // per_row, (n % per_row) * 2 + 1
 
             bvar = tk.BooleanVar(value=(sc_id in selected))
             self._sc_check_vars[slot_idx][sc_id] = bvar
-            ctk.CTkCheckBox(cell, text=sc_lbl[:26], variable=bvar, width=140,
+            ctk.CTkCheckBox(frame, text=sc_lbl[:24], variable=bvar, width=130,
+                            height=_SC_ROW_H, checkbox_width=16, checkbox_height=16,
                             command=lambda s=slot_idx: self._on_sc_check(s),
-                            ).pack(side=tk.LEFT, padx=(0, 4))
+                            ).grid(row=row, column=col, sticky="w", padx=(0, 4))
 
             nvar = tk.StringVar(value=names.get(sc_id, ""))
             self._sc_name_vars[slot_idx][sc_id] = nvar
             nvar.trace_add("write", lambda *_a, s=slot_idx: self._on_sc_name(s))
-            ctk.CTkEntry(cell, textvariable=nvar, width=130,
-                         placeholder_text="custom name").pack(side=tk.LEFT)
+            ctk.CTkEntry(frame, textvariable=nvar, width=120, height=_SC_ROW_H,
+                         placeholder_text="custom name",
+                         ).grid(row=row, column=col + 1, sticky="w", padx=(0, 14))
 
     def _on_sc_check(self, slot_idx):
         """Apply checkbox state to slot data and refresh the plot."""
