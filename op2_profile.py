@@ -34,6 +34,17 @@ ASD_RESULT_NAMES = [
 
 ASD_ATTRS = ('displacements', 'accelerations', 'spc_forces', 'cbush_force')
 
+# Only these containers are read by the tools. ato.* (autocorrelation, from
+# ATOC) and crm.* (from CRMS) are parsed and thrown away — RALL requests them.
+ASD_PREFIXES = ('', 'psd.', 'rms.')
+
+
+def _is_used(label):
+    """True if the ASD tools actually read this result."""
+    head, _, tail = label.rpartition(".")
+    prefix = f"{head}." if head else ""
+    return prefix in ASD_PREFIXES and tail in ASD_ATTRS
+
 
 def _human(n):
     for unit in ("B", "KB", "MB", "GB"):
@@ -132,13 +143,17 @@ def main(argv=None):
 
     rows = sorted(_walk(op2), key=lambda r: -r[2])
     in_mem = sum(r[2] for r in rows)
-    asd_bytes = sum(r[2] for r in rows
-                    if r[0].split(".")[-1] in ASD_ATTRS)
+    asd_bytes = sum(r[2] for r in rows if _is_used(r[0]))
+    waste = {}
+    for label, _n, nbytes in rows:
+        head = label.rpartition(".")[0]
+        if head in ("ato", "crm", "no"):
+            waste[head] = waste.get(head, 0) + nbytes
 
     print(f"{'result type':<34}{'subcases':>9}{'arrays':>14}")
     print("-" * 57)
     for label, n, nbytes in rows[:args.top]:
-        mark = " *" if label.split(".")[-1] in ASD_ATTRS else ""
+        mark = " *" if _is_used(label) else ""
         print(f"{label:<34}{n:>9}{_human(nbytes):>14}{mark}")
     if len(rows) > args.top:
         rest = sum(r[2] for r in rows[args.top:])
@@ -152,6 +167,15 @@ def main(argv=None):
         if pct < 50:
             print("Most of the read is results these tools never touch — trim the\n"
                   "deck's output requests, or filter the read.")
+    if waste:
+        total = sum(waste.values())
+        names = {"ato": "ATOC (autocorrelation)", "crm": "CRMS (cumulative RMS)",
+                 "no": "NO (zero crossings)"}
+        print(f"\nRALL-only output, never read by these tools: {_human(total)}")
+        for k, v in sorted(waste.items(), key=lambda kv: -kv[1]):
+            print(f"  {names.get(k, k):<28}{_human(v):>12}")
+        print("  Drop these from the request (PSDF instead of RALL) to shrink\n"
+              "  both the .op2 and the read.")
 
     if args.filtered:
         print("\nFiltered read (set_results)…")
