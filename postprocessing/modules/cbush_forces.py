@@ -1138,6 +1138,38 @@ REQUIREMENTS
         self._joint_sheet.set_sheet_data([])
 
     # -------------------------------------------------------------- load
+    @staticmethod
+    def _cbush_force_source(op2):
+        """Return (result_dict, kind) for CBUSH forces.
+
+        A random-response run (RANDOM = n) puts nothing in the base force
+        table — the results land under op2_results.rms / .psd instead, which
+        is why an OP2 that reads fine in Femap looked empty here.
+
+        Only the RMS table is usable in a table view: it is one value per
+        element per DOF. PSD is a curve over frequency, so it is reported as
+        such and left to ASD Overlay.
+        """
+        results = getattr(op2, 'op2_results', None)
+
+        # Base (static / transient / frequency) forces.
+        force = getattr(results, 'force', None)
+        base = getattr(force, 'cbush_force', None)
+        if base is None:                      # pre-1.4 layout
+            base = getattr(op2, 'cbush_force', None)
+        if base:
+            return base, 'base'
+
+        rms = getattr(getattr(results, 'rms', None), 'cbush_force', None)
+        if rms:
+            return rms, 'rms'
+
+        psd = getattr(getattr(results, 'psd', None), 'cbush_force', None)
+        if psd:
+            return None, 'psd-only'
+
+        return None, None
+
     def load(self, op2):
         """Extract CBUSH force data from all subcases."""
         self._subcase_data.clear()
@@ -1150,17 +1182,34 @@ REQUIREMENTS
         self._eid_axial.clear()  # reset per-element overrides on new OP2
         self._sheet.set_sheet_data([])
 
-        if not hasattr(op2, 'cbush_force') or not op2.cbush_force:
-            messagebox.showwarning(
-                "No CBUSH Forces",
-                "No CBUSH element force results found in this OP2.\n\n"
-                "Ensure your case control includes:\n"
-                "  FORCE(PLOT) = ALL  (or FORCE = ALL)")
-            self._status_label.configure(text="No CBUSH forces",
-                                         text_color="red")
+        force_dict, kind = self._cbush_force_source(op2)
+        if force_dict is None:
+            if kind == 'psd-only':
+                messagebox.showwarning(
+                    "PSD Only — No RMS Table",
+                    "This OP2 has CBUSH force PSD results but no RMS table, "
+                    "and a PSD is a curve over frequency rather than a single "
+                    "value per element.\n\n"
+                    "Either add the RMS request to the random deck, or use "
+                    "ASD Overlay (response type: CBUSH Force) to plot the PSD "
+                    "and its cumulative RMS.")
+                self._status_label.configure(text="PSD only — no RMS table",
+                                             text_color="orange")
+            else:
+                messagebox.showwarning(
+                    "No CBUSH Forces",
+                    "No CBUSH element force results found in this OP2.\n\n"
+                    "For a static or frequency response run:\n"
+                    "  FORCE(PLOT) = ALL  (or FORCE = ALL)\n\n"
+                    "For a random response run the forces are in the random "
+                    "tables, which need a RANDOM = n request in case control.")
+                self._status_label.configure(text="No CBUSH forces",
+                                             text_color="red")
             return
 
-        for sc_id, result in op2.cbush_force.items():
+        self._force_kind = kind
+
+        for sc_id, result in force_dict.items():
             # Element IDs -- may be 2D (ntimes, nelems)
             eids = result.element
             if eids.ndim == 2:
@@ -1192,6 +1241,8 @@ REQUIREMENTS
             lbl = f"Subcase {sc_id}"
             if sub:
                 lbl += f" - {sub}"
+            if getattr(self, '_force_kind', 'base') == 'rms':
+                lbl += "  [RMS]"
             labels.append(lbl)
 
         self._lc_menu.configure(values=labels)
