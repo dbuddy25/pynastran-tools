@@ -133,9 +133,11 @@ if isempty(C.RESULTS)
                     files{k}, nnz(r.far), C.EXTRAP_WARN_DIST, max(nndist));
             end
         end
+        r.coverage  = coverage_report(r);
         R(k) = r;
         fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
             shortname(files{k}), t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
+        fprintf('      %s\n', r.coverage{:});
     end
 else
     R = C.RESULTS(:);       % SIDs were assigned when these were mapped
@@ -229,7 +231,7 @@ function r = empty_result()
     r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
                'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
                'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
-               'far', [], 'method', '', 'surface', [], 'out_file', '');
+               'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'out_file', '');
 end
 
 
@@ -559,6 +561,38 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
     end
     nndist = vecnorm(Q - P(nn, :), 2, 2);
     Tg = Tg(:); extrap = extrap(:); nndist = nndist(:);
+end
+
+
+% =========================================================================
+function lines = coverage_report(r)
+%COVERAGE_REPORT  How well the cloud's extent covers the mesh, as text lines.
+%   Per axis: cloud vs grid min/max and how far the mesh overhangs the cloud.
+%   Plus hull / distance / temperature-range statistics.
+    G = r.grid_xyz; P = r.cloud_xyz;
+    ax = 'XYZ';
+    lines = cell(0, 1);
+    lines{end+1} = sprintf('%-4s %22s %22s %24s', 'axis', 'cloud [min  max]', 'grid  [min  max]', 'mesh beyond cloud [lo hi]');
+    for a = 1:3
+        lo = max(0, min(P(:, a)) - min(G(:, a)));
+        hi = max(0, max(G(:, a)) - max(P(:, a)));
+        lines{end+1} = sprintf('%-4s [%10.4g %10.4g] [%10.4g %10.4g] [%10.4g %10.4g]', ...
+            ax(a), min(P(:, a)), max(P(:, a)), min(G(:, a)), max(G(:, a)), lo, hi); %#ok<AGROW>
+    end
+    n = numel(r.grid_ids);
+    d = r.nn_dist;
+    lines{end+1} = sprintf('grids outside cloud hull: %d of %d (%.1f%%)', nnz(r.extrap), n, 100 * nnz(r.extrap) / n);
+    lines{end+1} = sprintf('grid -> nearest cloud pt: median %.4g   95%% %.4g   max %.4g', ...
+        median(d), prctile_plain(d, 95), max(d));
+    lines{end+1} = sprintf('temperature K: cloud [%.2f %.2f]   mapped [%.2f %.2f]', ...
+        min(r.cloud_T), max(r.cloud_T), min(r.grid_T), max(r.grid_T));
+end
+
+
+function q = prctile_plain(x, p)
+%PRCTILE_PLAIN  Percentile without the Statistics Toolbox.
+    x = sort(x(:));
+    q = x(max(1, min(numel(x), ceil(p / 100 * numel(x)))));
 end
 
 

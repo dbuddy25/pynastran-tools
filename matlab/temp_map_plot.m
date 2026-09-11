@@ -116,7 +116,13 @@ legend(ax, 'Location', 'northeast');
 hold(ax, 'off');
 h.set_view = @(name) set_view(ax, name);
 h.set_view(o.View);
-try rotate3d(ax, 'on'); catch, end   % uiaxes on older releases: use the axes toolbar
+% drag = rotate, scroll = zoom, shift-drag / right-drag = pan (R2019a+ interactions);
+% older releases fall back to rotate3d mode (zoom via the figure toolbar there).
+try
+    ax.Interactions = [rotateInteraction zoomInteraction panInteraction];
+catch
+    try rotate3d(ax, 'on'); catch, end
+end
 
 % --- view buttons (standalone figure only) ---------------------------------
 if standalone

@@ -131,7 +131,8 @@ cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Valu
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
 row = 18;
-statusTA = uitextarea(L, 'Editable', 'off', 'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
+statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', ...
+                      'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
 
 % --- right column ----------------------------------------------------------
@@ -145,7 +146,7 @@ bar.Padding = [0 0 0 0];
 t = uilabel(bar, 'Text', 'View:');
 t.Layout.Column = 1;
 viewDD = uidropdown(bar, 'Items', {'(nothing mapped yet)'}, ...
-                    'ValueChangedFcn', @(~, ~) replot());
+                    'ValueChangedFcn', @(~, ~) on_view_change());
 viewDD.Layout.Column = 2;
 for k = 1:numel(VIEWS)
     b = uibutton(bar, 'Text', VIEWS{k}, 'ButtonPushedFcn', @(src, ~) snap(src.Text));
@@ -233,6 +234,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         wselB.Enable = 'on'; wallB.Enable = 'on';
         status(table_lines(S));
         replot();
+        show_coverage();
     end
 
     function on_write(all_of_them)
@@ -263,6 +265,11 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         status([{sprintf('Wrote %d file(s) to %s', height(S), outE.Value)}; table_lines(S)]);
     end
 
+    function show_coverage()
+        k = viewDD.Value;
+        status([statusTA.Value(:); {''; sprintf('--- coverage: %s ---', shortname(R(k).csv_file))}; R(k).coverage(:)]);
+    end
+
     function replot()
         if isempty(R) || isempty(viewDD.ItemsData), return; end
         k = viewDD.Value;
@@ -272,6 +279,14 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
                           'ShowSurface', surfCB.Value, ...
                           'ShowExtrap', extrapCB.Value, ...
                           'Colormap',   cmapDD.Value);
+    end
+
+    function on_view_change()
+        replot();
+        S_lines = statusTA.Value;
+        cut = find(startsWith(S_lines, '--- coverage'), 1);
+        if ~isempty(cut), statusTA.Value = S_lines(1:cut-2); end
+        show_coverage();
     end
 
     function snap(name)
