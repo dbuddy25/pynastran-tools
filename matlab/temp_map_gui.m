@@ -429,7 +429,12 @@ tax.ButtonDownFcn = @(~, ev) jump_to_time(ev.IntersectionPoint(1));
         title(tax, sprintf('Min / max mapped temperature vs time  (%d cases; click to jump)', numel(R)));
         legend(tax, 'Location', 'eastoutside');
         grid(tax, 'on'); box(tax, 'on');
-        if numel(t) > 1, xlim(tax, [min(t) max(t)]); end
+        if numel(t) > 1
+            pad = 0.03 * (max(t) - min(t));
+            xlim(tax, [min(t) - pad, max(t) + pad]);
+        else
+            xlim(tax, t + [-1 1] * max(1, abs(t)) * 0.1);
+        end
         mark_history();
     end
 
