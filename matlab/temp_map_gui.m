@@ -26,9 +26,9 @@ root.ColumnWidth = {520, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [21 3]);
+L = uigridlayout(root, [22 3]);
 L.ColumnWidth = {90, '1x', 34};
-L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 150, '1x'};
+L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 150, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
@@ -64,23 +64,38 @@ b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_out);
 b.Layout.Row = row; b.Layout.Column = 3;
 
 row = 6;
+lbl(L, row, 'Units');
+ug = uigridlayout(L, [1 6]);
+ug.Layout.Row = row; ug.Layout.Column = [2 3];
+ug.ColumnWidth = {34, '1x', 40, '1x', 30, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
+uilabel(ug, 'Text', 'BDF');
+bdfUnitsDD = uidropdown(ug, 'Items', {'in', 'ft', 'mm', 'cm', 'm'}, 'Value', 'in', ...
+                        'Tooltip', 'Length units of the structural model');
+uilabel(ug, 'Text', 'cloud');
+csvUnitsDD = uidropdown(ug, 'Items', {'in', 'ft', 'mm', 'cm', 'm'}, 'Value', 'in', ...
+                        'Tooltip', 'Length units of the CSV x/y/z');
+uilabel(ug, 'Text', 'T in');
+csvTempDD = uidropdown(ug, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
+                       'Tooltip', 'Temperature units of the CSV 5th column');
+
+row = 7;
 lbl(L, row, 'Units out');
 unitsDD = uidropdown(L, 'Items', {'K', 'C'}, 'Value', 'K', ...
                      'ValueChangedFcn', @(~, ~) replot());
 unitsDD.Layout.Row = row; unitsDD.Layout.Column = [2 3];
 
-row = 7;
+row = 8;
 lbl(L, row, 'SID start');
 sidE = uieditfield(L, 'numeric', 'Value', 1, 'Limits', [1 Inf], 'RoundFractionalValues', 'on');
 sidE.Layout.Row = row; sidE.Layout.Column = [2 3];
 
-row = 8;
+row = 9;
 lbl(L, row, 'Field size');
 fieldDD = uidropdown(L, 'Items', {'8 (small field)', '16 (large field)'}, ...
                      'ItemsData', [8 16], 'Value', 8);
 fieldDD.Layout.Row = row; fieldDD.Layout.Column = [2 3];
 
-row = 9;
+row = 10;
 lbl(L, row, 'Method');
 methodDD = uidropdown(L, 'Items', {'linear (Delaunay + bridging guard)', ...
                                    'scatteredInterpolant linear/nearest (verbatim)', ...
@@ -89,43 +104,43 @@ methodDD = uidropdown(L, 'Items', {'linear (Delaunay + bridging guard)', ...
                       'ItemsData', {'linear', 'scattered', 'nearest', 'idw'}, 'Value', 'linear');
 methodDD.Layout.Row = row; methodDD.Layout.Column = [2 3];
 
-row = 10;
+row = 11;
 lbl(L, row, 'Warn dist');
 warnE = uieditfield(L, 'numeric', 'Value', 0, 'Limits', [0 Inf], ...
                     'Tooltip', 'Warn when a grid is farther than this from any cloud point. 0 = off.');
 warnE.Layout.Row = row; warnE.Layout.Column = [2 3];
 
-row = 11;
+row = 12;
 tempdCB = uicheckbox(L, 'Text', 'Also write TEMPD (mean T)', 'Value', false);
 tempdCB.Layout.Row = row; tempdCB.Layout.Column = [1 3];
 
-row = 12;
+row = 13;
 headerCB = uicheckbox(L, 'Text', 'CSV has header row', 'Value', true);
 headerCB.Layout.Row = row; headerCB.Layout.Column = [1 3];
 
-row = 13;
+row = 14;
 mapB = uibutton(L, 'Text', 'Load & Map', 'FontWeight', 'bold', ...
                 'ButtonPushedFcn', @on_map);
 mapB.Layout.Row = row; mapB.Layout.Column = [1 3];
 
-row = 14;
+row = 15;
 wselB = uibutton(L, 'Text', 'Write selected', 'Enable', 'off', ...
                  'ButtonPushedFcn', @(~, ~) on_write(false));
 wselB.Layout.Row = row; wselB.Layout.Column = [1 3];
 
-row = 15;
+row = 16;
 wallB = uibutton(L, 'Text', 'Write all', 'Enable', 'off', ...
                  'ButtonPushedFcn', @(~, ~) on_write(true));
 wallB.Layout.Row = row; wallB.Layout.Column = [1 3];
 
-row = 16;
+row = 17;
 lbl(L, row, 'Display');
 styleDD = uidropdown(L, 'Items', {'Points (grids)', 'Smooth contour (element faces)'}, ...
                      'ItemsData', {'points', 'contour'}, 'Value', 'points', ...
                      'ValueChangedFcn', @(~, ~) replot());
 styleDD.Layout.Row = row; styleDD.Layout.Column = [2 3];
 
-row = 17;
+row = 18;
 cloudCB = uicheckbox(L, 'Text', 'Show cloud', 'Value', true, ...
                      'ValueChangedFcn', @(src, ~) toggle('cloud', src.Value));
 cloudCB.Layout.Row = row; cloudCB.Layout.Column = [1 2];
@@ -133,23 +148,23 @@ extrapCB = uicheckbox(L, 'Text', 'Ring outside/far', 'Value', true, ...
                       'ValueChangedFcn', @(src, ~) toggle('extrap', src.Value));
 extrapCB.Layout.Row = row; extrapCB.Layout.Column = [2 3];
 
-row = 18;
+row = 19;
 surfCB = uicheckbox(L, 'Text', 'Show cloud surface (alpha shape)', 'Value', true, ...
                     'ValueChangedFcn', @(src, ~) toggle('surface', src.Value));
 surfCB.Layout.Row = row; surfCB.Layout.Column = [1 3];
 
-row = 19;
+row = 20;
 lbl(L, row, 'Colormap');
 cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Value', 'jet', ...
                     'ValueChangedFcn', @(src, ~) colormap_now(src.Value));
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
-row = 20;
+row = 21;
 sumT = uitable(L, 'ColumnName', {'File', 'Time', 'SID', 'Cloud', 'Grids', 'Outside', 'Far', 'Tmin', 'Tmax'}, ...
                'ColumnWidth', {120, 55, 40, 65, 65, 55, 45, 60, 60}, 'RowName', [], 'Data', {});
 sumT.Layout.Row = row; sumT.Layout.Column = [1 3];
 
-row = 21;
+row = 22;
 statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', 'FontSize', 11, ...
                       'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
@@ -255,6 +270,9 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
                 'CSV_DIR',           csvE.Value, ...
                 'CSV_FILES',         fullfile(csvE.Value, sel), ...
                 'CSV_HAS_HEADER',    headerCB.Value, ...
+                'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
+                'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
+                'CSV_TEMP_UNITS',    csvTempDD.Value, ...
                 'SID_START',         sidE.Value, ...
                 'METHOD',            methodDD.Value, ...
                 'EXTRAP_WARN_DIST',  warn_dist(), ...
@@ -299,6 +317,8 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
                 'RESULTS',      sub, ...
                 'OUT_DIR',      outE.Value, ...
                 'OUT_UNITS',    unitsDD.Value, ...
+                'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
+                'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
                 'FIELD_SIZE',   fieldDD.Value, ...
                 'WRITE_TEMPD',  tempdCB.Value, ...
                 'WRITE',        true);

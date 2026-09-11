@@ -42,6 +42,12 @@ G = temp_map_matlab('BDF_FILE', bdf, 'READ_ONLY', true);
 Rg = temp_map_matlab('GRIDS', G, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false);
 check(isequal(G.ids, want_ids) && isequal(Rg.grid_T, R(1).grid_T), 'READ_ONLY + GRIDS reuse gives the same result');
 
+% --- unit conversion --------------------------------------------------------
+Ru = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, ...
+                     'BDF_LENGTH_UNITS', 'mm', 'CSV_LENGTH_UNITS', 'in', 'CSV_TEMP_UNITS', 'C');
+check(max(abs(Ru.cloud_xyz - R(1).cloud_xyz * 25.4), [], 'all') < 1e-9, 'cloud x/y/z converted in -> mm');
+check(max(abs(Ru.cloud_T - (R(1).cloud_T + 273.15))) < 1e-9, 'cloud T converted C -> K');
+
 % --- nearest / idw methods against brute force ------------------------------
 Rn = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
                      'METHOD', 'nearest', 'WRITE', false);
