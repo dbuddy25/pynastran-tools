@@ -42,6 +42,9 @@ G = temp_map_matlab('BDF_FILE', bdf, 'READ_ONLY', true);
 Rg = temp_map_matlab('GRIDS', G, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false);
 check(isequal(G.ids, want_ids) && isequal(Rg.grid_T, R(1).grid_T), 'READ_ONLY + GRIDS reuse gives the same result');
 
+check(~isempty(R(1).warnings) && any(contains(R(1).warnings, 'overhangs')), ...
+      'coverage warning raised (grid 999 at 8,8,8 overhangs the cloud)');
+
 % --- unit conversion --------------------------------------------------------
 Ru = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, ...
                      'BDF_LENGTH_UNITS', 'mm', 'CSV_LENGTH_UNITS', 'in', 'CSV_TEMP_UNITS', 'C');

@@ -298,6 +298,16 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         fill_summary(S);
         replot();
         show_coverage();
+        bad = find(arrayfun(@(r) ~isempty(r.warnings), R));
+        if ~isempty(bad)
+            msg = {};
+            for k = bad(:)'
+                msg{end+1} = sprintf('%s:', shortname(R(k).csv_file));         %#ok<AGROW>
+                msg = [msg, strcat({'    - '}, R(k).warnings(:)')];           %#ok<AGROW>
+            end
+            uialert(fig, strjoin(msg, newline), 'COVERAGE WARNING -- check units and extents', ...
+                    'Icon', 'warning');
+        end
     end
 
     function on_write(all_of_them)
@@ -333,7 +343,11 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
 
     function show_coverage()
         k = viewDD.Value;
-        status([{sprintf('Coverage: %s', shortname(R(k).csv_file))}; R(k).coverage(:)]);
+        lines = [{sprintf('Coverage: %s', shortname(R(k).csv_file))}; R(k).coverage(:)];
+        if ~isempty(R(k).warnings)
+            lines = [lines; {''; '!!!!! WARNING !!!!!'}; strcat({'!! '}, R(k).warnings(:))];
+        end
+        status(lines);
     end
 
     function fill_summary(S)

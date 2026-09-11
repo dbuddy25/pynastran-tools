@@ -99,6 +99,9 @@ C.SURFACE_POINTS = 5e4;         % alpha-shape skin of the cloud from at most thi
 C.EXTRAP_WARN_DIST = [];        % [] = off; else warn when a grid's nearest cloud
                                 % point is farther than this (model length units)
                                 % and flag those grids in R(k).far
+C.OVERHANG_WARN  = 0.10;        % loud warning when the mesh sticks out past the cloud
+                                % by more than this fraction of the cloud's extent on
+                                % any axis, or when >20% of grids are outside the hull
 
 % --- GUI hooks -------------------------------------------------------------
 C.RESULTS        = [];          % pass a previous R here to write it without
@@ -177,10 +180,16 @@ if isempty(C.RESULTS)
             end
         end
         r.coverage  = coverage_report(r);
+        r.warnings  = coverage_warnings(r, C);
         R(k) = r;
         fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
             shortname(files{k}), t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
         fprintf('      %s\n', r.coverage{:});
+        if ~isempty(r.warnings)
+            fprintf('\n  ********** COVERAGE WARNING: %s **********\n', shortname(files{k}));
+            fprintf('  ** %s\n', r.warnings{:});
+            fprintf('  ***********************************************************\n\n');
+        end
     end
 else
     R = C.RESULTS(:);       % SIDs were assigned when these were mapped
@@ -280,7 +289,8 @@ function r = empty_result()
     r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
                'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
                'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
-               'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'faces', [], 'out_file', '');
+               'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'warnings', {{}}, ...
+               'faces', [], 'out_file', '');
 end
 
 
@@ -900,6 +910,36 @@ function lines = coverage_report(r)
         median(d), prctile_plain(d, 95), max(d));
     lines{end+1} = sprintf('temperature K            : cloud [%.1f %.1f]  mapped [%.1f %.1f]', ...
         min(r.cloud_T), max(r.cloud_T), min(r.grid_T), max(r.grid_T));
+end
+
+
+function w = coverage_warnings(r, C)
+%COVERAGE_WARNINGS  Loud, human-readable reasons to distrust this mapping.
+    w = {};
+    G = r.grid_xyz; P = r.cloud_xyz;
+    ax = 'XYZ';
+    ext = max(P) - min(P);
+    for a = 1:3
+        lo = min(P(:, a)) - min(G(:, a));
+        hi = max(G(:, a)) - max(P(:, a));
+        if ext(a) > 0 && max(lo, hi) > C.OVERHANG_WARN * ext(a)
+            w{end+1} = sprintf('mesh overhangs the cloud in %s by %.4g (%.0f%% of the cloud''s %s extent)', ...
+                ax(a), max(lo, hi), 100 * max(lo, hi) / ext(a), ax(a)); %#ok<AGROW>
+        end
+    end
+    % bounding-box overlap: a units mismatch shows up as almost none
+    lo = max(min(P), min(G)); hi = min(max(P), max(G));
+    inter = prod(max(hi - lo, 0));
+    union = prod(max(max(P), max(G)) - min(min(P), min(G)));
+    if union > 0 && inter / union < 0.25
+        w{end+1} = sprintf('cloud and mesh bounding boxes barely overlap (%.0f%%) -- length units mismatch?', ...
+            100 * inter / union);
+    end
+    n = numel(r.grid_ids);
+    if nnz(r.extrap) > 0.20 * n
+        w{end+1} = sprintf('%.0f%% of grids are outside the cloud hull (nearest-point temps used)', ...
+            100 * nnz(r.extrap) / n);
+    end
 end
 
 
