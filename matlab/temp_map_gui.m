@@ -64,7 +64,7 @@ b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_out);
 b.Layout.Row = row; b.Layout.Column = 3;
 
 row = 6;
-lbl(L, row, 'Cloud units');
+lbl(L, row, 'Temp units');
 ug = uigridlayout(L, [1 4]);
 ug.Layout.Row = row; ug.Layout.Column = [2 3];
 ug.ColumnWidth = {46, '1x', 40, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
