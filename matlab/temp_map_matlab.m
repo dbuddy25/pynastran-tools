@@ -597,19 +597,20 @@ function lines = coverage_report(r)
     G = r.grid_xyz; P = r.cloud_xyz;
     ax = 'XYZ';
     lines = cell(0, 1);
-    lines{end+1} = sprintf('%-4s %22s %22s %24s', 'axis', 'cloud [min  max]', 'grid  [min  max]', 'mesh beyond cloud [lo hi]');
+    lines{end+1} = sprintf('%-2s %-19s %-19s %-19s', '', 'cloud [min max]', 'grid [min max]', 'overhang [lo hi]');
     for a = 1:3
         lo = max(0, min(P(:, a)) - min(G(:, a)));
         hi = max(0, max(G(:, a)) - max(P(:, a)));
-        lines{end+1} = sprintf('%-4s [%10.4g %10.4g] [%10.4g %10.4g] [%10.4g %10.4g]', ...
+        lines{end+1} = sprintf('%-2s [%8.4g %8.4g] [%8.4g %8.4g] [%8.4g %8.4g]', ...
             ax(a), min(P(:, a)), max(P(:, a)), min(G(:, a)), max(G(:, a)), lo, hi); %#ok<AGROW>
     end
     n = numel(r.grid_ids);
     d = r.nn_dist;
-    lines{end+1} = sprintf('grids outside cloud hull: %d of %d (%.1f%%)', nnz(r.extrap), n, 100 * nnz(r.extrap) / n);
-    lines{end+1} = sprintf('grid -> nearest cloud pt: median %.4g   95%% %.4g   max %.4g', ...
+    lines{end+1} = sprintf('overhang = how far the mesh sticks out past the cloud on that side');
+    lines{end+1} = sprintf('grids outside cloud hull : %d of %d (%.1f%%)', nnz(r.extrap), n, 100 * nnz(r.extrap) / n);
+    lines{end+1} = sprintf('grid->nearest cloud pt   : median %.4g  95%% %.4g  max %.4g', ...
         median(d), prctile_plain(d, 95), max(d));
-    lines{end+1} = sprintf('temperature K: cloud [%.2f %.2f]   mapped [%.2f %.2f]', ...
+    lines{end+1} = sprintf('temperature K            : cloud [%.1f %.1f]  mapped [%.1f %.1f]', ...
         min(r.cloud_T), max(r.cloud_T), min(r.grid_T), max(r.grid_T));
 end
 

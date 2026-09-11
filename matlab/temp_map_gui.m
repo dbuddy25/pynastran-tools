@@ -22,13 +22,13 @@ VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
 fig = uifigure('Name', 'TEMP Mapper  --  CSV temperature cloud -> Nastran TEMP cards', ...
                'Position', [80 80 1280 760]);
 root = uigridlayout(fig, [1 2]);
-root.ColumnWidth = {360, '1x'};
+root.ColumnWidth = {520, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [19 3]);
+L = uigridlayout(root, [20 3]);
 L.ColumnWidth = {90, '1x', 34};
-L.RowHeight   = {24, 30, 24, 180, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, '1x'};
+L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 150, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
@@ -44,7 +44,7 @@ row = 2;
 readB = uibutton(L, 'Text', 'Read BDF', 'ButtonPushedFcn', @on_read_bdf);
 readB.Layout.Row = row; readB.Layout.Column = [1 3];
 
-row = 4;
+row = 3;
 lbl(L, row, 'CSV folder');
 csvE = uieditfield(L, 'text', 'Placeholder', 'folder of *.csv clouds', ...
                    'ValueChangedFcn', @(~, ~) refresh_list());
@@ -137,7 +137,12 @@ cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Valu
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
 row = 19;
-statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', ...
+sumT = uitable(L, 'ColumnName', {'File', 'Time', 'SID', 'Cloud', 'Grids', 'Outside', 'Far', 'Tmin', 'Tmax'}, ...
+               'ColumnWidth', {120, 55, 40, 65, 65, 55, 45, 60, 60}, 'RowName', [], 'Data', {});
+sumT.Layout.Row = row; sumT.Layout.Column = [1 3];
+
+row = 20;
+statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', 'FontSize', 11, ...
                       'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
 
@@ -263,7 +268,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         viewDD.ItemsData = 1:numel(R);
         viewDD.Value = 1;
         wselB.Enable = 'on'; wallB.Enable = 'on';
-        status(table_lines(S));
+        fill_summary(S);
         replot();
         show_coverage();
     end
@@ -293,12 +298,22 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
             uialert(fig, ME.message, 'Write failed');
             return
         end
-        status([{sprintf('Wrote %d file(s) to %s', height(S), outE.Value)}; table_lines(S)]);
+        fill_summary(S);
+        status([{sprintf('Wrote %d file(s) to %s:', height(S), outE.Value)}; S.OutFile(:)]);
     end
 
     function show_coverage()
         k = viewDD.Value;
-        status([statusTA.Value(:); {''; sprintf('--- coverage: %s ---', shortname(R(k).csv_file))}; R(k).coverage(:)]);
+        status([{sprintf('Coverage: %s', shortname(R(k).csv_file))}; R(k).coverage(:)]);
+    end
+
+    function fill_summary(S)
+        n = height(S);
+        far = zeros(n, 1);
+        for k = 1:n, far(k) = nnz(R(k).far); end
+        sumT.Data = [S.File, num2cell(S.Time), num2cell(S.SID), num2cell(S.CloudPts), ...
+                     num2cell(S.Grids), num2cell(S.Extrap), num2cell(far), ...
+                     num2cell(round(S.Tmin, 2)), num2cell(round(S.Tmax, 2))];
     end
 
     function replot()
@@ -314,9 +329,6 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
 
     function on_view_change()
         replot();
-        S_lines = statusTA.Value;
-        cut = find(startsWith(S_lines, '--- coverage'), 1);
-        if ~isempty(cut), statusTA.Value = S_lines(1:cut-2); end
         show_coverage();
     end
 
@@ -364,19 +376,6 @@ end
 function lbl(parent, row, text)
     t = uilabel(parent, 'Text', text);
     t.Layout.Row = row; t.Layout.Column = 1;
-end
-
-
-function lines = table_lines(S)
-%TABLE_LINES  Summary table as text lines for the status box.
-    lines = cell(height(S) + 1, 1);
-    lines{1} = sprintf('%-22s %8s %5s %7s %6s %6s %9s %9s', ...
-                       'file', 'time', 'SID', 'cloud', 'grids', 'extrap', 'Tmin', 'Tmax');
-    for k = 1:height(S)
-        lines{k+1} = sprintf('%-22s %8.4g %5d %7d %6d %6d %9.2f %9.2f', ...
-            S.File{k}, S.Time(k), S.SID(k), S.CloudPts(k), S.Grids(k), S.Extrap(k), ...
-            S.Tmin(k), S.Tmax(k));
-    end
 end
 
 
