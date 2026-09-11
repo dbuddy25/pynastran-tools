@@ -64,13 +64,14 @@ C.CSV_HAS_HEADER = true;        % first CSV row is a header
 
 % --- units ---------------------------------------------------------------
 %   Cloud coordinates are converted INTO the BDF's length units before mapping.
-C.BDF_LENGTH_UNITS = 'in';      % 'in' | 'ft' | 'mm' | 'cm' | 'm'
-C.CSV_LENGTH_UNITS = 'in';      % 'in' | 'ft' | 'mm' | 'cm' | 'm'
+C.BDF_LENGTH_UNITS = 'in';      % 'in' | 'mm' | 'm'
+C.CSV_LENGTH_UNITS = 'in';      % 'in' | 'mm' | 'm'
 C.CSV_TEMP_UNITS   = 'K';       % 'K' | 'C' | 'F'   (what the CSV's 5th column is)
 
 % --- output --------------------------------------------------------------
 C.OUT_DIR        = 'temp_cards';    % created if missing
-C.OUT_UNITS      = 'K';             % 'K' | 'C'   (C = K - 273.15)
+C.OUT_UNITS      = 'K';             % 'K' | 'C' | 'F'  temperature units of the
+                                    % structural model = units written on the TEMP cards
 C.FIELD_SIZE     = 8;               % 8 = small field | 16 = large field
 C.WRITE_TEMPD    = false;           % also emit TEMPD,SID,<mean T> for unlisted grids
 C.WRITE          = true;            % false = map only, write nothing (GUI preview)
@@ -250,8 +251,8 @@ function validate_config(C)
     end
     length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);   % errors on a bad name
     to_kelvin(0, C.CSV_TEMP_UNITS);
-    if ~ismember(upper(char(C.OUT_UNITS)), {'K', 'C'})
-        error('temp_map_matlab:badUnits', 'C.OUT_UNITS must be ''K'' or ''C''.');
+    if ~ismember(upper(char(C.OUT_UNITS)), {'K', 'C', 'F'})
+        error('temp_map_matlab:badUnits', 'C.OUT_UNITS must be ''K'', ''C'' or ''F''.');
     end
     if ~ismember(C.FIELD_SIZE, [8 16])
         error('temp_map_matlab:badField', 'C.FIELD_SIZE must be 8 or 16.');
@@ -653,10 +654,10 @@ end
 % =========================================================================
 function f = length_factor(from, to)
 %LENGTH_FACTOR  Multiply a length in FROM units to get TO units.
-    m = struct('in', 0.0254, 'ft', 0.3048, 'mm', 1e-3, 'cm', 1e-2, 'm', 1);
+    m = struct('in', 0.0254, 'mm', 1e-3, 'm', 1);
     from = lower(char(from)); to = lower(char(to));
     if ~isfield(m, from) || ~isfield(m, to)
-        error('temp_map_matlab:badLength', 'Length units must be in, ft, mm, cm or m (got %s -> %s).', from, to);
+        error('temp_map_matlab:badLength', 'Length units must be in, mm or m (got %s -> %s).', from, to);
     end
     f = m.(from) / m.(to);
 end
@@ -669,6 +670,17 @@ function T = to_kelvin(T, units)
         case 'F', T = (T - 32) * 5/9 + 273.15;
         otherwise
             error('temp_map_matlab:badTemp', 'CSV_TEMP_UNITS must be K, C or F.');
+    end
+end
+
+
+function T = from_kelvin(T, units)
+    switch upper(char(units))
+        case 'K', return
+        case 'C', T = T - 273.15;
+        case 'F', T = (T - 273.15) * 9/5 + 32;
+        otherwise
+            error('temp_map_matlab:badTemp', 'OUT_UNITS must be K, C or F.');
     end
 end
 
@@ -927,8 +939,7 @@ function write_temp_cards(r, C)
 %   Built as a char matrix and written in one go -- a 1M-grid file takes
 %   seconds, not minutes.
     units = upper(char(C.OUT_UNITS));
-    T = r.grid_T(:);
-    if units == 'C', T = T - 273.15; end
+    T = from_kelvin(r.grid_T(:), units);
     ids = r.grid_ids(:);
     n = numel(ids);
     w = C.FIELD_SIZE;
@@ -1024,7 +1035,6 @@ function S = summary_table(R, C)
     File = cell(n, 1); Time = zeros(n, 1); SID = zeros(n, 1);
     CloudPts = zeros(n, 1); Grids = zeros(n, 1); Extrap = zeros(n, 1);
     Tmin = zeros(n, 1); Tmax = zeros(n, 1); OutFile = cell(n, 1);
-    off = 0; if upper(char(C.OUT_UNITS)) == 'C', off = 273.15; end
     for k = 1:n
         File{k}     = shortname(R(k).csv_file);
         Time(k)     = R(k).time;
@@ -1032,8 +1042,8 @@ function S = summary_table(R, C)
         CloudPts(k) = numel(R(k).cloud_T);
         Grids(k)    = numel(R(k).grid_ids);
         Extrap(k)   = nnz(R(k).extrap);
-        Tmin(k)     = min(R(k).grid_T) - off;
-        Tmax(k)     = max(R(k).grid_T) - off;
+        Tmin(k)     = from_kelvin(min(R(k).grid_T), C.OUT_UNITS);
+        Tmax(k)     = from_kelvin(max(R(k).grid_T), C.OUT_UNITS);
         OutFile{k}  = R(k).out_file;
     end
     S = table(File, Time, SID, CloudPts, Grids, Extrap, Tmin, Tmax, OutFile);

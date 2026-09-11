@@ -67,20 +67,21 @@ row = 6;
 lbl(L, row, 'Units');
 ug = uigridlayout(L, [1 6]);
 ug.Layout.Row = row; ug.Layout.Column = [2 3];
-ug.ColumnWidth = {34, '1x', 40, '1x', 30, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
+ug.ColumnWidth = {30, '1x', 38, '1x', 38, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
 uilabel(ug, 'Text', 'BDF');
-bdfUnitsDD = uidropdown(ug, 'Items', {'in', 'ft', 'mm', 'cm', 'm'}, 'Value', 'in', ...
+bdfUnitsDD = uidropdown(ug, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
                         'Tooltip', 'Length units of the structural model');
 uilabel(ug, 'Text', 'cloud');
-csvUnitsDD = uidropdown(ug, 'Items', {'in', 'ft', 'mm', 'cm', 'm'}, 'Value', 'in', ...
+csvUnitsDD = uidropdown(ug, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
                         'Tooltip', 'Length units of the CSV x/y/z');
-uilabel(ug, 'Text', 'T in');
+uilabel(ug, 'Text', 'cld T');
 csvTempDD = uidropdown(ug, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                        'Tooltip', 'Temperature units of the CSV 5th column');
 
 row = 7;
-lbl(L, row, 'Units out');
-unitsDD = uidropdown(L, 'Items', {'K', 'C'}, 'Value', 'K', ...
+lbl(L, row, 'Model T');
+unitsDD = uidropdown(L, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
+                     'Tooltip', 'Temperature units of the structural model = units written on the TEMP cards', ...
                      'ValueChangedFcn', @(~, ~) replot());
 unitsDD.Layout.Row = row; unitsDD.Layout.Column = [2 3];
 

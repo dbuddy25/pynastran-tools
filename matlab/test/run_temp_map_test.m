@@ -48,6 +48,12 @@ Ru = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')},
 check(max(abs(Ru.cloud_xyz - R(1).cloud_xyz * 25.4), [], 'all') < 1e-9, 'cloud x/y/z converted in -> mm');
 check(max(abs(Ru.cloud_T - (R(1).cloud_T + 273.15))) < 1e-9, 'cloud T converted C -> K');
 
+temp_map_matlab('RESULTS', R(1), 'OUT_DIR', out, 'OUT_UNITS', 'F');
+txt = fileread(R(1).out_file);
+lines = regexp(txt, '\r?\n', 'split');
+L = lines{find(startsWith(lines, 'TEMP    '), 1)};
+check(abs(str2double(L(25:32)) - ((R(1).grid_T(1) - 273.15) * 9/5 + 32)) < 5e-3, 'Fahrenheit output');
+
 % --- nearest / idw methods against brute force ------------------------------
 Rn = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
                      'METHOD', 'nearest', 'WRITE', false);

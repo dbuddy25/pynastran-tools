@@ -12,7 +12,7 @@ function h = temp_map_plot(r, varargin)
 %       'Style'       'points' (default) | 'contour'  -- contour paints the
 %                     element faces read from the BDF with the temperature
 %                     interpolated across each face (needs shell/solid elements)
-%       'Units'       'K' (default) | 'C'  -- display units
+%       'Units'       'K' (default) | 'C' | 'F'  -- display units
 %       'ShowCloud'   true | false           (default true)
 %       'ShowSurface' true | false           (default true)  translucent skin of
 %                     the cloud (alpha shape) so you can see where the thermal
@@ -44,8 +44,12 @@ for k = 1:2:numel(varargin)
 end
 
 units = upper(char(o.Units));
-off = 0; if units == 'C', off = 273.15; end
-Tg = r.grid_T - off;
+switch units
+    case 'K', Tg = r.grid_T;
+    case 'C', Tg = r.grid_T - 273.15;
+    case 'F', Tg = (r.grid_T - 273.15) * 9/5 + 32;
+    otherwise, error('temp_map_plot:badUnits', 'Units must be K, C or F.');
+end
 ex = r.extrap;
 if isfield(r, 'far') && ~isempty(r.far), ex = ex | r.far; end
 
