@@ -757,7 +757,7 @@ WORKFLOW
    column showing comment names from PBUSH cards.  Rows are sorted by
    property group when a BDF is loaded.
 3. Select Load Case -- use the dropdown to switch between subcases.
-4. Name Load Cases -- type a descriptive name in the Name field.
+4. Name Load Cases -- type a descriptive name in the Load Case Name field.
    Names persist when switching between subcases.
 5. Scale Factor -- enter a multiplier per load case (applied on export
    only; the table always shows raw OP2 values).  Noted in the Excel
@@ -785,7 +785,7 @@ summed across all elements belonging to each joint's member properties.
     axial directions
   - Joint summary is included in the Excel export
 
-TITLE FIELD
+ANALYSIS TITLE FIELD
 Optional title text that appears as a header row in every Excel sheet.
 Leave blank to omit.
 
@@ -809,7 +809,7 @@ REQUIREMENTS
 """
 
     def _build_ui(self):
-        # Row 1: Open OP2 | Open BDF | Load Case | Name | ? | Export
+        # Row 1: Open OP2 | Open BDF | Clear | Analysis Title | ? | Export
         row1 = ctk.CTkFrame(self.frame, fg_color="transparent")
         row1.pack(fill=tk.X, padx=5, pady=(5, 0))
 
@@ -824,21 +824,10 @@ REQUIREMENTS
         ctk.CTkButton(row1, text="Clear", width=60,
                       command=self._clear).pack(side=tk.LEFT, padx=(5, 0))
 
-        # Load case dropdown
-        ctk.CTkLabel(row1, text="Load Case:").pack(
+        ctk.CTkLabel(row1, text="Analysis Title:").pack(
             side=tk.LEFT, padx=(10, 2))
-        self._lc_var = tk.StringVar(value="(none)")
-        self._lc_menu = ctk.CTkOptionMenu(
-            row1, variable=self._lc_var, values=["(none)"],
-            command=self._on_lc_select, width=220)
-        self._lc_menu.pack(side=tk.LEFT, padx=(0, 4))
-
-        # Per-subcase name entry
-        ctk.CTkLabel(row1, text="Name:").pack(side=tk.LEFT, padx=(10, 2))
-        name_entry = ctk.CTkEntry(row1, textvariable=self._name_var,
-                                  width=180)
-        name_entry.pack(side=tk.LEFT, padx=(0, 4))
-        self._name_var.trace_add('write', lambda *_: self._on_lc_name_change())
+        ctk.CTkEntry(row1, textvariable=self._title_var, width=300).pack(
+            side=tk.LEFT, padx=(0, 4))
 
         # Right-side buttons (row 1)
         ctk.CTkButton(
@@ -849,13 +838,22 @@ REQUIREMENTS
         ctk.CTkButton(row1, text="Export to Excel\u2026", width=130,
                        command=self._export_excel).pack(side=tk.RIGHT)
 
-        # Row 2: Title | Scale Factor | Combined checkbox
+        # Row 2: Load Case | Load Case Name | Scale Factor | Combined | Axial Dir | Joints
         row2 = ctk.CTkFrame(self.frame, fg_color="transparent")
         row2.pack(fill=tk.X, padx=5, pady=(2, 0))
 
-        ctk.CTkLabel(row2, text="Title:").pack(side=tk.LEFT, padx=(0, 2))
-        ctk.CTkEntry(row2, textvariable=self._title_var, width=160).pack(
+        ctk.CTkLabel(row2, text="Load Case:").pack(side=tk.LEFT, padx=(0, 2))
+        self._lc_var = tk.StringVar(value="(none)")
+        self._lc_menu = ctk.CTkOptionMenu(
+            row2, variable=self._lc_var, values=["(none)"],
+            command=self._on_lc_select, width=220)
+        self._lc_menu.pack(side=tk.LEFT, padx=(0, 4))
+
+        ctk.CTkLabel(row2, text="Load Case Name:").pack(
+            side=tk.LEFT, padx=(10, 2))
+        ctk.CTkEntry(row2, textvariable=self._name_var, width=160).pack(
             side=tk.LEFT, padx=(0, 4))
+        self._name_var.trace_add('write', lambda *_: self._on_lc_name_change())
 
         ctk.CTkLabel(row2, text="|", text_color="gray").pack(
             side=tk.LEFT, padx=6)
