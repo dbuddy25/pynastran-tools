@@ -71,7 +71,7 @@ if standalone
 else
     ax = o.Parent;
     fig = ancestor(ax, 'figure');
-    cla(ax);
+    cla(ax, 'reset');          % drop stale zoom/camera state from the previous plot
 end
 hold(ax, 'on');
 
@@ -172,6 +172,9 @@ end
 % =========================================================================
 function set_view(ax, name)
 %SET_VIEW  Snap to a named view.  '+X' = looking at the model FROM +X.
+%   Also undoes any zoom / pan so the whole model is back in frame.
+    camva(ax, 'auto'); camtarget(ax, 'auto'); campos(ax, 'auto');
+    axis(ax, 'auto'); axis(ax, 'equal'); axis(ax, 'vis3d');
     switch upper(strtrim(char(name)))
         case '+X',  view(ax,  90,   0);
         case '-X',  view(ax, -90,   0);
