@@ -20,9 +20,10 @@ VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
 %                                 LAYOUT
 % =========================================================================
 fig = uifigure('Name', 'TEMP Mapper  --  CSV temperature cloud -> Nastran TEMP cards', ...
-               'Position', [80 80 1280 760]);
-root = uigridlayout(fig, [1 2]);
+               'Position', [60 40 1320 940]);
+root = uigridlayout(fig, [2 2]);
 root.ColumnWidth = {520, '1x'};
+root.RowHeight   = {'1x', 210};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
@@ -86,7 +87,7 @@ bdfUnitsDD = uidropdown(sg, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
 uilabel(sg, 'Text', 'temp');
 unitsDD = uidropdown(sg, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                      'Tooltip', 'Temperature units of the structural model = units written on the TEMP cards', ...
-                     'ValueChangedFcn', @(~, ~) replot());
+                     'ValueChangedFcn', @(~, ~) on_units_change());
 
 row = 8;
 lbl(L, row, 'SID start');
@@ -207,6 +208,13 @@ ax = uiaxes(Rg);
 ax.Layout.Row = 2;
 title(ax, 'Load & Map to see the grids coloured by temperature');
 
+% --- bottom strip: min / max temperature vs time across all cases ------------
+tax = uiaxes(root);
+tax.Layout.Row = 2; tax.Layout.Column = [1 2];
+title(tax, 'Min / max mapped temperature vs time');
+xlabel(tax, 'time [s]'); grid(tax, 'on'); box(tax, 'on');
+tax.ButtonDownFcn = @(~, ev) jump_to_time(ev.IntersectionPoint(1));
+
 % =========================================================================
 %                                CALLBACKS
 % =========================================================================
@@ -318,6 +326,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         fill_summary(S);
         replot();
         show_coverage();
+        plot_history();
         bad = find(arrayfun(@(r) ~isempty(r.warnings), R));
         if ~isempty(bad)
             msg = {};
@@ -379,6 +388,11 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
                      num2cell(round(S.Tmin, 2)), num2cell(round(S.Tmax, 2))];
     end
 
+    function on_units_change()
+        replot();
+        if ~isempty(R), plot_history(); end
+    end
+
     function replot()
         if isempty(R) || isempty(viewDD.ItemsData), return; end
         k = viewDD.Value;
@@ -394,6 +408,51 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
     function on_view_change()
         replot();
         show_coverage();
+        mark_history();
+    end
+
+    function plot_history()
+        if isempty(R), return; end
+        t = [R.time];
+        [t, order] = sort(t);
+        u = unitsDD.Value;
+        tmin = arrayfun(@(r) conv_out(min(r.grid_T), u), R(order));
+        tmax = arrayfun(@(r) conv_out(max(r.grid_T), u), R(order));
+        cla(tax);
+        hold(tax, 'on');
+        plot(tax, t, tmax, '-o', 'Color', [0.85 0.1 0.1], 'LineWidth', 1.6, 'MarkerFaceColor', [0.85 0.1 0.1], ...
+             'MarkerSize', 4, 'DisplayName', 'max', 'HitTest', 'off');
+        plot(tax, t, tmin, '-o', 'Color', [0.1 0.3 0.85], 'LineWidth', 1.6, 'MarkerFaceColor', [0.1 0.3 0.85], ...
+             'MarkerSize', 4, 'DisplayName', 'min', 'HitTest', 'off');
+        hold(tax, 'off');
+        ylabel(tax, sprintf('T [deg %s]', u));
+        title(tax, sprintf('Min / max mapped temperature vs time  (%d cases; click to jump)', numel(R)));
+        legend(tax, 'Location', 'eastoutside');
+        grid(tax, 'on'); box(tax, 'on');
+        if numel(t) > 1, xlim(tax, [min(t) max(t)]); end
+        mark_history();
+    end
+
+    function mark_history()
+        delete(findobj(tax, 'Tag', 'now'));
+        if isempty(R) || isempty(viewDD.ItemsData), return; end
+        tk = R(viewDD.Value).time;
+        xline(tax, tk, ':', 'Color', [0.3 0.3 0.3], 'LineWidth', 1.2, 'Tag', 'now', ...
+              'HandleVisibility', 'off', 'HitTest', 'off');
+    end
+
+    function jump_to_time(tclick)
+        if isempty(R), return; end
+        [~, k] = min(abs([R.time] - tclick));
+        viewDD.Value = k;
+        on_view_change();
+    end
+
+    function v = conv_out(v, u)
+        switch upper(u)
+            case 'C', v = v - 273.15;
+            case 'F', v = (v - 273.15) * 9/5 + 32;
+        end
     end
 
     function step_case(delta)
