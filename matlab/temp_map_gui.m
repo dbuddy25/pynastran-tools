@@ -195,8 +195,10 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         if isempty(sel)
             uialert(fig, 'No CSV files selected.', 'Nothing to map'); return
         end
-        dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Indeterminate', 'on', ...
-                            'Message', sprintf('Reading BDF and mapping %d cloud(s)...', numel(sel)));
+        dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Value', 0, ...
+                            'Message', 'Starting ...');
+        t0 = tic;
+        prog = @(frac, msg) set_progress(dlg, frac, msg, t0);
         try
             [R, S] = temp_map_matlab( ...
                 'BDF_FILE',          bdfE.Value, ...
@@ -207,6 +209,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
                 'METHOD',            methodDD.Value, ...
                 'EXTRAP_WARN_DIST',  warn_dist(), ...
                 'OUT_UNITS',         unitsDD.Value, ...
+                'PROGRESS',          prog, ...
                 'WRITE',             false);
         catch ME
             close(dlg);
@@ -290,6 +293,13 @@ end
 
 
 % =========================================================================
+function set_progress(dlg, frac, msg, t0)
+    dlg.Value = frac;
+    dlg.Message = sprintf('%s   (%.0f s elapsed)', msg, toc(t0));
+    drawnow limitrate
+end
+
+
 function lbl(parent, row, text)
     t = uilabel(parent, 'Text', text);
     t.Layout.Row = row; t.Layout.Column = 1;

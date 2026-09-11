@@ -76,9 +76,10 @@ C.EXTRAP_WARN_DIST = [];        % [] = off; else warn when a grid's nearest clou
                                 % point is farther than this (model length units)
                                 % and flag those grids in R(k).far
 
-% --- GUI hook: pass a previous R here to write it without re-mapping ------
-%   (SIDs stay as assigned at mapping time)
-C.RESULTS        = [];
+% --- GUI hooks -------------------------------------------------------------
+C.RESULTS        = [];          % pass a previous R here to write it without
+                                % re-mapping (SIDs stay as assigned at mapping time)
+C.PROGRESS       = [];          % @(fraction, message) called at each stage
 
 % =========================================================================
 %                               MACHINERY
@@ -88,15 +89,22 @@ validate_config(C);
 
 if isempty(C.RESULTS)
     tic;
+    progress(C, 0, sprintf('Reading GRIDs from %s ...', shortname(C.BDF_FILE)));
     [gid, gxyz] = read_grids(C.BDF_FILE);
     fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
 
     files = resolve_csv_files(C);
-    R = repmat(empty_result(), numel(files), 1);
-    for k = 1:numel(files)
+    nf = numel(files);
+    R = repmat(empty_result(), nf, 1);
+    for k = 1:nf
         tic;
+        f0 = 0.05 + 0.95 * (k - 1) / nf;          % this file's share of the bar
+        fw = 0.95 / nf;
+        stage = @(frac, msg) progress(C, f0 + fw * frac, ...
+                    sprintf('[%d/%d] %s: %s', k, nf, shortname(files{k}), msg));
+        stage(0, 'reading CSV ...');
         [t, cxyz, cT] = read_cloud(files{k}, C.CSV_HAS_HEADER);
-        [gT, extrap, nndist, method] = map_temps(cxyz, cT, gxyz, C);
+        [gT, extrap, nndist, method] = map_temps(cxyz, cT, gxyz, C, stage);
         r = empty_result();
         r.csv_file  = files{k};
         r.bdf_file  = C.BDF_FILE;
@@ -143,6 +151,7 @@ if C.WRITE
     end
 end
 
+progress(C, 1, 'Done.');
 S = summary_table(R, C);
 if nargout == 0
     disp(S);
@@ -196,6 +205,15 @@ function validate_config(C)
     end
     if C.SID_FROM_TIME && C.TIME_SCALE <= 0
         error('temp_map_matlab:badScale', 'C.TIME_SCALE must be positive.');
+    end
+end
+
+
+% =========================================================================
+function progress(C, frac, msg)
+%PROGRESS  Forward a stage update to C.PROGRESS, if one was given.
+    if ~isempty(C.PROGRESS)
+        C.PROGRESS(min(max(frac, 0), 1), msg);
     end
 end
 
@@ -427,13 +445,14 @@ end
 
 
 % =========================================================================
-function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
+function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
 %MAP_TEMPS  Cloud (P,T) -> query points Q by C.METHOD.
 %   linear : Delaunay barycentric interpolation, nearest outside the hull.
 %            Planar / collinear clouds are projected down first.
 %   nearest: closest cloud point (kd-tree if Statistics Toolbox, else the
 %            triangulation's nearestNeighbor).
 %   idw    : inverse-distance-weighted mean of the IDW_K closest points.
+    if nargin < 5, stage = @(~, ~) []; end
     % duplicate cloud points would break the triangulation: average them
     [P, ~, ic] = unique(P, 'rows');
     T = accumarray(ic, T, [], @mean);
@@ -456,6 +475,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
             'knnsearch (Statistics Toolbox) not available; using the triangulation for METHOD=%s.', meth);
     end
     if strcmp(meth, 'nearest') && have_knn
+        stage(0.3, sprintf('kd-tree nearest: %d grids vs %d cloud points ...', nQ, nP));
         [nn, nndist] = knnsearch(P, Q);
         Tg = T(nn);
         extrap = false(nQ, 1);
@@ -463,6 +483,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
         return
     elseif strcmp(meth, 'idw') && have_knn
         k = min(C.IDW_K, nP);
+        stage(0.3, sprintf('kd-tree IDW (k=%d): %d grids vs %d cloud points ...', k, nQ, nP));
         [nn, d] = knnsearch(P, Q, 'K', k);
         w  = 1 ./ max(d, eps) .^ C.IDW_POWER;
         Tg = sum(w .* T(nn), 2) ./ sum(w, 2);
@@ -486,6 +507,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
     switch dim
         case {2, 3}
             try
+                stage(0.25, sprintf('Delaunay triangulation of %d cloud points (the slow step) ...', nP));
                 DT = delaunayTriangulation(Pp);
             catch ME
                 warning('temp_map_matlab:delaunay', ...
@@ -498,6 +520,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
                 extrap = true(nQ, 1);
                 method = 'nearest (brute force)';
             else
+                stage(0.75, sprintf('locating %d grids in the triangulation ...', nQ));
                 nn = nearestNeighbor(DT, Qp);
                 Tg = T(nn);                                  % nearest everywhere ...
                 if strcmp(meth, 'linear')
