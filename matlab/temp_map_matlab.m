@@ -732,6 +732,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
 %            triangulation's nearestNeighbor).
 %   idw    : inverse-distance-weighted mean of the IDW_K closest points.
     if nargin < 5, stage = @(~, ~) []; end
+    stage(0.10, sprintf('checking %d cloud points for duplicates ...', size(P, 1)));
     % duplicate cloud points would break the triangulation: average them
     [P, ~, ic] = unique(P, 'rows');
     T = accumarray(ic, T, [], @mean);
@@ -825,6 +826,7 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
                     % interpolating across those smears local hot/cold spots.
                     nbridge = 0;
                     if ~isempty(C.SLIVER_FACTOR) && any(inside)
+                        stage(0.88, 'checking for bridging cells across concavities ...');
                         E = edges(DT);
                         h = median(vecnorm(Pp(E(:, 1), :) - Pp(E(:, 2), :), 2, 2));
                         maxedge = zeros(size(tri, 1), 1);

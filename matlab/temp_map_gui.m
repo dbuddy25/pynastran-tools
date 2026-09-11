@@ -433,12 +433,13 @@ end
 function set_progress(dlg, frac, msg, t0)
 %   Called by the engine between stages; a running triangulation cannot be
 %   interrupted, so Cancel takes effect at the next stage boundary.
+    drawnow                                   % register a Cancel click made during the last step
     if dlg.CancelRequested
         error('temp_map_gui:cancelled', 'Cancelled by user.');
     end
     dlg.Value = frac;
     dlg.Message = sprintf('%s   (%.0f s elapsed)', msg, toc(t0));
-    drawnow limitrate
+    drawnow
 end
 
 
