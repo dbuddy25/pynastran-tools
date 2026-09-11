@@ -189,20 +189,30 @@ end
 % =========================================================================
 function set_view(ax, name)
 %SET_VIEW  Snap to a named view.  '+X' = looking at the model FROM +X.
-%   Also undoes any zoom / pan so the whole model is back in frame.
-    camva(ax, 'auto'); camtarget(ax, 'auto'); campos(ax, 'auto');
-    axis(ax, 'auto'); axis(ax, 'equal'); axis(ax, 'vis3d');
+%   Camera is placed explicitly (direction + up vector) so every axis view is
+%   upright and un-mirrored, then the model is re-framed to fill the axes.
+    camva(ax, 'auto'); camtarget(ax, 'auto'); campos(ax, 'auto'); camup(ax, 'auto');
+    axis(ax, 'auto'); axis(ax, 'equal'); axis(ax, 'tight');
+    set(ax, 'Projection', 'orthographic');
     switch upper(strtrim(char(name)))
-        case '+X',  view(ax,  90,   0);
-        case '-X',  view(ax, -90,   0);
-        case '+Y',  view(ax, 180,   0);
-        case '-Y',  view(ax,   0,   0);
-        case '+Z',  view(ax,   0,  90);
-        case '-Z',  view(ax,   0, -90);
-        case 'ISO', view(ax, -37.5, 30);
+        case '+X',  dirn = [ 1  0  0]; up = [0 0 1];
+        case '-X',  dirn = [-1  0  0]; up = [0 0 1];
+        case '+Y',  dirn = [ 0  1  0]; up = [0 0 1];
+        case '-Y',  dirn = [ 0 -1  0]; up = [0 0 1];
+        case '+Z',  dirn = [ 0  0  1]; up = [0 1 0];
+        case '-Z',  dirn = [ 0  0 -1]; up = [0 1 0];
+        case 'ISO', dirn = [-1 -1  1] / sqrt(3); up = [0 0 1];   % MATLAB's classic view(3) feel
         otherwise
             error('temp_map_plot:badView', 'Unknown view "%s".', name);
     end
+    lim = [xlim(ax); ylim(ax); zlim(ax)];
+    ctr = mean(lim, 2)';
+    span = max(diff(lim, 1, 2));
+    camtarget(ax, ctr);
+    campos(ax, ctr + dirn * span * 4);
+    camup(ax, up);
+    camva(ax, 'auto');
+    axis(ax, 'vis3d');                      % freeze aspect so dragging stays rigid
 end
 
 
