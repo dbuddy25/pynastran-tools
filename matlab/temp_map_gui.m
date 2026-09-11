@@ -195,7 +195,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         if isempty(sel)
             uialert(fig, 'No CSV files selected.', 'Nothing to map'); return
         end
-        dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Value', 0, ...
+        dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Value', 0, 'Cancelable', 'on', ...
                             'Message', 'Starting ...');
         t0 = tic;
         prog = @(frac, msg) set_progress(dlg, frac, msg, t0);
@@ -214,7 +214,11 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         catch ME
             close(dlg);
             R = [];
-            uialert(fig, ME.message, 'Mapping failed');
+            if strcmp(ME.identifier, 'temp_map_gui:cancelled')
+                status('Cancelled.');
+            else
+                uialert(fig, ME.message, 'Mapping failed');
+            end
             return
         end
         close(dlg);
@@ -294,6 +298,11 @@ end
 
 % =========================================================================
 function set_progress(dlg, frac, msg, t0)
+%   Called by the engine between stages; a running triangulation cannot be
+%   interrupted, so Cancel takes effect at the next stage boundary.
+    if dlg.CancelRequested
+        error('temp_map_gui:cancelled', 'Cancelled by user.');
+    end
     dlg.Value = frac;
     dlg.Message = sprintf('%s   (%.0f s elapsed)', msg, toc(t0));
     drawnow limitrate
