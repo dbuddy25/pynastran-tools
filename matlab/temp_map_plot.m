@@ -142,6 +142,13 @@ end
 set(ax, 'CLim', lims);
 h.cbar = colorbar(ax);
 h.cbar.Label.String = sprintf('T [deg %s]', units);
+% ticks run exactly from the coldest to the hottest grid, ends labelled as such
+tk = linspace(lims(1), lims(2), 9);
+tl = arrayfun(@(v) sprintf('%.1f', v), tk, 'UniformOutput', false);
+tl{1}   = sprintf('min %.1f', tk(1));
+tl{end} = sprintf('max %.1f', tk(end));
+h.cbar.Ticks = tk;
+h.cbar.TickLabels = tl;
 
 % --- dressing --------------------------------------------------------------
 axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');

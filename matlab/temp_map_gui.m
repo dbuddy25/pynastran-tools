@@ -26,9 +26,9 @@ root.ColumnWidth = {520, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [22 3]);
+L = uigridlayout(root, [23 3]);
 L.ColumnWidth = {100, '1x', 34};
-L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 150, '1x'};
+L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 24, 150, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
@@ -155,23 +155,25 @@ extrapCB.Layout.Row = row; extrapCB.Layout.Column = [2 3];
 row = 19;
 surfCB = uicheckbox(L, 'Text', 'Cloud surface (alpha shape)', 'Value', true, ...
                     'ValueChangedFcn', @(src, ~) toggle('surface', src.Value));
-surfCB.Layout.Row = row; surfCB.Layout.Column = [1 2];
-mmCB = uicheckbox(L, 'Text', 'Min / max labels', 'Value', true, ...
-                  'ValueChangedFcn', @(src, ~) toggle('minmax', src.Value));
-mmCB.Layout.Row = row; mmCB.Layout.Column = [2 3];
+surfCB.Layout.Row = row; surfCB.Layout.Column = [1 3];
 
-row = 20;
+row = row + 1;
+mmCB = uicheckbox(L, 'Text', 'Min / max markers on the model', 'Value', true, ...
+                  'ValueChangedFcn', @(src, ~) toggle('minmax', src.Value));
+mmCB.Layout.Row = row; mmCB.Layout.Column = [1 3];
+
+row = 21;
 lbl(L, row, 'Colormap');
 cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Value', 'jet', ...
                     'ValueChangedFcn', @(src, ~) colormap_now(src.Value));
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
-row = 21;
+row = 22;
 sumT = uitable(L, 'ColumnName', {'File', 'Time', 'SID', 'Cloud', 'Grids', 'Outside', 'Far', 'Tmin', 'Tmax'}, ...
                'ColumnWidth', {120, 55, 40, 65, 65, 55, 45, 60, 60}, 'RowName', [], 'Data', {});
 sumT.Layout.Row = row; sumT.Layout.Column = [1 3];
 
-row = 22;
+row = 23;
 statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', 'FontSize', 11, ...
                       'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
