@@ -743,7 +743,7 @@ function [t, xyz, T] = read_cloud(csv_file, has_header)
         cl = onCleanup(@() fclose(fid));
         try
             if has_header, fgetl(fid); end
-            c = textscan(fid, '%f%f%f%f%f%*[^\n]', 'Delimiter', ',', 'CollectOutput', true);
+            c = textscan(fid, '%f%f%f%f%f', 'Delimiter', ',', 'CollectOutput', true);
             M = c{1};
             if ~feof(fid), M = []; end       % stopped early on something odd: fall back
         catch
