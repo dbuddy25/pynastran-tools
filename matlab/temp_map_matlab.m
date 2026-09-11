@@ -75,6 +75,10 @@ C.TIME_SCALE     = 1;
 C.METHOD         = 'linear';    % 'linear' | 'nearest' | 'idw'   (see help)
 C.IDW_K          = 8;           % neighbours used by 'idw'
 C.IDW_POWER      = 2;           % 1/d^p weighting for 'idw'
+C.SLIVER_FACTOR  = 3;           % linear only: a grid whose Delaunay cell has an edge
+                                % longer than this x the cloud's median spacing is in a
+                                % "bridging" cell across a concavity -> nearest point is
+                                % used instead of interpolating.  [] = off
 
 % --- cloud surface for the check plot --------------------------------------
 C.SURFACE_POINTS = 5e4;         % alpha-shape skin of the cloud from at most this
@@ -741,10 +745,32 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
                     [ti, bc] = pointLocation(DT, Qp);
                     inside = ~isnan(ti);
                     tri = DT.ConnectivityList(ti(inside), :);    % (n_in x dim+1)
-                    Tg(inside) = sum(bc(inside, :) .* T(tri), 2); % ... linear inside the hull
+                    Tlin = sum(bc(inside, :) .* T(tri), 2);      % ... linear inside the hull
+                    % bridging cells: Delaunay spans concavities of the body with
+                    % long flat cells whose vertices are far-apart surface points;
+                    % interpolating across those smears local hot/cold spots.
+                    nbridge = 0;
+                    if ~isempty(C.SLIVER_FACTOR) && any(inside)
+                        E = edges(DT);
+                        h = median(vecnorm(Pp(E(:, 1), :) - Pp(E(:, 2), :), 2, 2));
+                        maxedge = zeros(size(tri, 1), 1);
+                        for a = 1:size(tri, 2) - 1
+                            for b = a + 1:size(tri, 2)
+                                maxedge = max(maxedge, vecnorm(Pp(tri(:, a), :) - Pp(tri(:, b), :), 2, 2));
+                            end
+                        end
+                        bridge = maxedge > C.SLIVER_FACTOR * h;
+                        Tnear = Tg(inside);                  % nearest-point values
+                        Tlin(bridge) = Tnear(bridge);
+                        nbridge = nnz(bridge);
+                    end
+                    Tg(inside) = Tlin;
                     extrap = ~inside;
                     if dim == 3, method = 'linear (3D Delaunay)';
                     else,        method = 'linear (planar cloud)'; end
+                    if nbridge > 0
+                        method = sprintf('%s, %d grids in bridging cells -> nearest', method, nbridge);
+                    end
                 else
                     extrap = false(nQ, 1);
                     method = 'nearest (triangulation)';
