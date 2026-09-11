@@ -102,16 +102,20 @@ validate_config(C);
 
 if isempty(C.RESULTS)
     if ~isempty(C.GRIDS) && ~C.READ_ONLY
-        gid = C.GRIDS.ids; gxyz = C.GRIDS.xyz;
+        gid = C.GRIDS.ids; gxyz = C.GRIDS.xyz; gfaces = C.GRIDS.faces;
         fprintf('Using %d cached grids from %s\n', numel(gid), C.GRIDS.bdf_file);
     else
         tic;
         progress(C, 0, sprintf('Reading GRIDs from %s ...', shortname(C.BDF_FILE)));
         [gid, gxyz] = read_grids(C.BDF_FILE);
         fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
+        tic;
+        progress(C, 0.03, 'Reading elements for the contour view ...');
+        gfaces = read_faces(C.BDF_FILE, gid);
+        fprintf('Read %d drawable element faces  (%.1f s)\n', size(gfaces, 1), toc);
     end
     if C.READ_ONLY
-        R = struct('ids', gid, 'xyz', gxyz, 'bdf_file', C.BDF_FILE);
+        R = struct('ids', gid, 'xyz', gxyz, 'faces', gfaces, 'bdf_file', C.BDF_FILE);
         S = [];
         progress(C, 1, 'Done.');
         return
@@ -137,6 +141,7 @@ if isempty(C.RESULTS)
         r.sid       = assign_sid(C, k, t);
         r.grid_ids  = gid;
         r.grid_xyz  = gxyz;
+        r.faces     = gfaces;
         r.grid_T    = gT;         % Kelvin, always
         r.cloud_xyz = cxyz;
         r.cloud_T   = cT;         % Kelvin, always
@@ -219,7 +224,7 @@ function validate_config(C)
         if isempty(C.GRIDS) && exist(C.BDF_FILE, 'file') ~= 2
             error('temp_map_matlab:noFile', 'BDF file not found: %s', C.BDF_FILE);
         end
-        if ~isempty(C.GRIDS) && ~all(isfield(C.GRIDS, {'ids', 'xyz', 'bdf_file'}))
+        if ~isempty(C.GRIDS) && ~all(isfield(C.GRIDS, {'ids', 'xyz', 'faces', 'bdf_file'}))
             error('temp_map_matlab:badGrids', 'C.GRIDS must come from a READ_ONLY call.');
         end
         if C.READ_ONLY, return; end
@@ -256,7 +261,7 @@ function r = empty_result()
     r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
                'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
                'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
-               'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'out_file', '');
+               'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'faces', [], 'out_file', '');
 end
 
 
@@ -445,6 +450,166 @@ function v = nas_real(c)
     if any(isnan(v))
         bad = c(isnan(v));
         error('temp_map_matlab:badReal', 'Cannot parse "%s" as a real.', bad{1});
+    end
+end
+
+
+% =========================================================================
+function F = read_faces(bdf_file, grid_ids)
+%READ_FACES  Drawable faces (rows into grid_ids, NaN-padded to 4 columns)
+%   from the shell and solid elements in the BDF: shells as-is, solids as
+%   their free (outer) faces.  [] if the deck has no supported elements.
+    try
+        E = read_elements_file(bdf_file, true);
+    catch ME
+        warning('temp_map_matlab:elements', 'Element read failed (%s); contour view unavailable.', ME.message);
+        F = []; return
+    end
+    if isempty(E), F = []; return; end
+    faces = zeros(0, 4);
+    % --- shells: one face each ---------------------------------------------
+    for t = {'CQUAD4', 'CQUADR', 'CQUAD8'}
+        g = E.(t{1});
+        if ~isempty(g), faces = [faces; g(:, 1:4)]; end                 %#ok<AGROW>
+    end
+    for t = {'CTRIA3', 'CTRIAR', 'CTRIA6'}
+        g = E.(t{1});
+        if ~isempty(g), faces = [faces; g(:, 1:3) nan(size(g, 1), 1)]; end %#ok<AGROW>
+    end
+    % --- solids: free faces only ----------------------------------------------
+    sf = zeros(0, 4);
+    g = E.CTETRA;
+    if ~isempty(g)
+        sf = [sf; g(:, [1 2 3]) nan(size(g,1),1); g(:, [1 2 4]) nan(size(g,1),1); ...
+                  g(:, [2 3 4]) nan(size(g,1),1); g(:, [1 3 4]) nan(size(g,1),1)];
+    end
+    g = E.CHEXA;
+    if ~isempty(g)
+        sf = [sf; g(:, [1 2 3 4]); g(:, [5 6 7 8]); g(:, [1 2 6 5]); ...
+                  g(:, [2 3 7 6]); g(:, [3 4 8 7]); g(:, [4 1 5 8])];
+    end
+    g = E.CPENTA;
+    if ~isempty(g)
+        sf = [sf; g(:, [1 2 3]) nan(size(g,1),1); g(:, [4 5 6]) nan(size(g,1),1); ...
+                  g(:, [1 2 5 4]); g(:, [2 3 6 5]); g(:, [3 1 4 6])];
+    end
+    if ~isempty(sf)
+        key = sort(sf, 2);                     % NaN sorts last -> consistent key
+        key(isnan(key)) = 0;
+        [~, ~, ic] = unique(key, 'rows');
+        cnt = accumarray(ic, 1);
+        faces = [faces; sf(cnt(ic) == 1, :)];  % faces used by exactly one element
+    end
+    if isempty(faces), F = []; return; end
+    % node ids -> rows of grid_ids; drop faces touching unknown grids
+    [tf, loc] = ismember(faces, grid_ids);
+    ok = all(tf | isnan(faces), 2);
+    F = loc(ok, :);
+    F(isnan(faces(ok, :))) = NaN;
+    F = double(F);
+end
+
+
+function E = read_elements_file(fname, is_top)
+%READ_ELEMENTS_FILE  Corner-node ids per supported element type, following
+%   INCLUDEs.  Same vectorised slicing as read_grids_file; continuation lines
+%   are assumed to directly follow their parent (true for every mesher).
+    types = {'CQUAD4', 4; 'CQUADR', 4; 'CQUAD8', 4; 'CTRIA3', 3; 'CTRIAR', 3; 'CTRIA6', 3; ...
+             'CTETRA', 4; 'CPENTA', 6; 'CHEXA', 8};
+    E = struct();
+    for t = 1:size(types, 1), E.(types{t, 1}) = zeros(0, types{t, 2}); end
+
+    txt = fileread(fname);
+    txt = strrep(txt, sprintf('\t'), ' ');
+    lines = splitlines(string(txt));
+    base_dir = fileparts(fname);
+    n = numel(lines);
+    up = upper(strip(lines, 'left'));
+    first = 1;
+    if is_top
+        ib = find(startsWith(up, "BEGIN"), 1);
+        if ~isempty(ib) && ~isempty(regexp(char(up(ib)), '^BEGIN\s+BULK', 'once')), first = ib + 1; end
+    end
+    last = find(startsWith(up, "ENDDATA"), 1);
+    if isempty(last), last = n; else, last = last - 1; end
+    lines = lines(first:last); up = up(first:last); n = numel(lines);
+
+    pat = ['^(' strjoin(types(:, 1)', '|') ')(\*?)\s*(,|\s|$)'];
+    tok = regexp(cellstr(up), pat, 'tokens', 'once');
+    hit = find(~cellfun('isempty', tok));
+    for t = 1:size(types, 1)
+        name = types{t, 1}; ng = types{t, 2}; nf = 2 + ng;      % EID PID G1..Gng
+        mine = hit(cellfun(@(c) strcmp(c{1}, name), tok(hit)));
+        if isempty(mine), continue; end
+        isfree  = contains(lines(mine), ",");
+        islarge = ~isfree & cellfun(@(c) ~isempty(c{2}), tok(mine));
+        issmall = ~isfree & ~islarge;
+        rows = zeros(0, nf);
+        if any(issmall)
+            li = mine(issmall);
+            nl = ceil(nf / 8);
+            M = zeros(numel(li), 0);  M = char(M);                 % grow columns
+            for j = 1:nl
+                Lj = pad_cols(char(lines(min(li + j - 1, n))), 72);
+                M = [M Lj(:, 9:72)];                                 %#ok<AGROW>
+            end
+            rows = [rows; fields_to_num(M, 8, nf)];                  %#ok<AGROW>
+        end
+        if any(islarge)
+            li = mine(islarge);
+            nl = ceil(nf / 4);
+            M = char(zeros(numel(li), 0));
+            for j = 1:nl
+                Lj = pad_cols(char(lines(min(li + j - 1, n))), 72);
+                M = [M Lj(:, 9:72)];                                 %#ok<AGROW>
+            end
+            rows = [rows; fields_to_num(M, 16, nf)];                 %#ok<AGROW>
+        end
+        if any(isfree)
+            for i = mine(isfree)'
+                f = strtrim(strsplit(char(lines(i)), ',', 'CollapseDelimiters', false));
+                if isempty(f{end}), f(end) = []; end
+                j = i + 1;
+                while numel(f) < nf + 1 && j <= n
+                    nxt = char(lines(j));
+                    if isempty(nxt) || nxt(1) == '$', break; end
+                    f2 = strtrim(strsplit(nxt, ',', 'CollapseDelimiters', false));
+                    if ~isempty(f2) && (isempty(f2{1}) || f2{1}(1) == '+' || f2{1}(1) == '*')
+                        f2 = f2(2:end);
+                    end
+                    f = [f f2];                                      %#ok<AGROW>
+                    j = j + 1;
+                end
+                f(end+1:nf+1) = {''};
+                rows = [rows; str2double(f(2:nf+1))];                %#ok<AGROW>
+            end
+        end
+        rows = rows(all(~isnan(rows(:, 3:end)), 2), :);
+        E.(name) = [E.(name); rows(:, 3:end)];
+    end
+
+    % ---- INCLUDEs ------------------------------------------------------------
+    for i = find(startsWith(up, "INCLUDE"))'
+        rest = regexprep(char(lines(i)), '^\s*INCLUDE\s*', '', 'ignorecase');
+        j = i + 1;
+        while nnz(rest == '''') < 2 && j <= n
+            rest = [rest strtrim(char(lines(j)))];                   %#ok<AGROW>
+            j = j + 1;
+        end
+        inc = strtrim(regexprep(strtrim(rest), '^''|''$', ''));
+        E2 = read_elements_file(resolve_include(inc, base_dir), false);
+        for t = 1:size(types, 1)
+            E.(types{t, 1}) = [E.(types{t, 1}); E2.(types{t, 1})];
+        end
+    end
+end
+
+
+function A = fields_to_num(M, w, nf)
+%FIELDS_TO_NUM  First nf fixed-width fields of each row of a char matrix.
+    A = zeros(size(M, 1), nf);
+    for k = 1:nf
+        A(:, k) = str2double(cellstr(M(:, (k-1)*w + 1 : k*w)));
     end
 end
 

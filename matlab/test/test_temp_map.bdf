@@ -21,5 +21,12 @@ $ shorthand exponent
 GRID           9             2.5    1.-1    5.-1
 $ outside the cloud hull
 GRID         999             8.0     8.0     8.0
+$ elements (for the contour view): 1 quad + 1 tri + 1 hexa + 1 tetra = 12 free faces
+CQUAD4         1       1       1       2       3       4
+CTRIA3,2,1,5,6,7
+CHEXA          3       1       1       2       3       4       5       6+
++              7       8
+CTETRA*                4               1               9              11*
+*                     12             999
 INCLUDE 'test_temp_map_inc.bdf'
 ENDDATA

@@ -9,6 +9,9 @@ function h = temp_map_plot(r, varargin)
 %
 %   H = TEMP_MAP_PLOT(R(k), 'Name', value, ...) options:
 %       'Parent'      axes to draw into (e.g. a uiaxes) -- no buttons are added
+%       'Style'       'points' (default) | 'contour'  -- contour paints the
+%                     element faces read from the BDF with the temperature
+%                     interpolated across each face (needs shell/solid elements)
 %       'Units'       'K' (default) | 'C'  -- display units
 %       'ShowCloud'   true | false           (default true)
 %       'ShowSurface' true | false           (default true)  translucent skin of
@@ -29,7 +32,7 @@ function h = temp_map_plot(r, varargin)
 %
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_GUI.
 
-o = struct('Parent', [], 'Units', 'K', 'ShowCloud', true, 'ShowSurface', true, 'ShowExtrap', true, ...
+o = struct('Parent', [], 'Style', 'points', 'Units', 'K', 'ShowCloud', true, 'ShowSurface', true, 'ShowExtrap', true, ...
            'Colormap', 'jet', 'CLim', [], 'MarkerSize', 36, 'CloudSize', 8, ...
            'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on');
 for k = 1:2:numel(varargin)
@@ -69,7 +72,19 @@ end
 hold(ax, 'on');
 
 % --- data ----------------------------------------------------------------
-h = struct('fig', fig, 'ax', ax, 'grids', [], 'cloud', [], 'surface', [], 'extrap', [], 'cbar', []);
+h = struct('fig', fig, 'ax', ax, 'grids', [], 'mesh', [], 'cloud', [], 'surface', [], 'extrap', [], 'cbar', []);
+
+contour = strcmpi(o.Style, 'contour');
+if contour && (~isfield(r, 'faces') || isempty(r.faces))
+    warning('temp_map_plot:noFaces', 'No shell/solid elements were read from the BDF; showing points.');
+    contour = false;
+end
+if contour
+    % full mesh, never thinned: the faces index every grid
+    h.mesh = patch('Parent', ax, 'Faces', r.faces, 'Vertices', r.grid_xyz, ...
+                   'FaceVertexCData', Tg, 'FaceColor', 'interp', 'EdgeColor', 'none', ...
+                   'DisplayName', 'mesh (interpolated T)');
+end
 
 if isfield(r, 'surface') && ~isempty(r.surface)
     h.surface = patch('Parent', ax, 'Faces', r.surface.F, 'Vertices', r.surface.V, ...
@@ -87,6 +102,7 @@ h.cloud.Visible = onoff(o.ShowCloud);
 
 h.grids = scatter3(ax, gxyz(:,1), gxyz(:,2), gxyz(:,3), ...
                    o.MarkerSize, Tg(gsel), 'filled', 'DisplayName', 'grids (mapped T)');
+h.grids.Visible = onoff(~contour);
 
 exs = ex(gsel);
 h.extrap = scatter3(ax, gxyz(exs,1), gxyz(exs,2), gxyz(exs,3), ...

@@ -26,9 +26,9 @@ root.ColumnWidth = {520, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [20 3]);
+L = uigridlayout(root, [21 3]);
 L.ColumnWidth = {90, '1x', 34};
-L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 150, '1x'};
+L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 150, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
@@ -118,6 +118,13 @@ wallB = uibutton(L, 'Text', 'Write all', 'Enable', 'off', ...
 wallB.Layout.Row = row; wallB.Layout.Column = [1 3];
 
 row = 16;
+lbl(L, row, 'Display');
+styleDD = uidropdown(L, 'Items', {'Points (grids)', 'Smooth contour (element faces)'}, ...
+                     'ItemsData', {'points', 'contour'}, 'Value', 'points', ...
+                     'ValueChangedFcn', @(~, ~) replot());
+styleDD.Layout.Row = row; styleDD.Layout.Column = [2 3];
+
+row = 17;
 cloudCB = uicheckbox(L, 'Text', 'Show cloud', 'Value', true, ...
                      'ValueChangedFcn', @(src, ~) toggle('cloud', src.Value));
 cloudCB.Layout.Row = row; cloudCB.Layout.Column = [1 2];
@@ -125,23 +132,23 @@ extrapCB = uicheckbox(L, 'Text', 'Ring outside/far', 'Value', true, ...
                       'ValueChangedFcn', @(src, ~) toggle('extrap', src.Value));
 extrapCB.Layout.Row = row; extrapCB.Layout.Column = [2 3];
 
-row = 17;
+row = 18;
 surfCB = uicheckbox(L, 'Text', 'Show cloud surface (alpha shape)', 'Value', true, ...
                     'ValueChangedFcn', @(src, ~) toggle('surface', src.Value));
 surfCB.Layout.Row = row; surfCB.Layout.Column = [1 3];
 
-row = 18;
+row = 19;
 lbl(L, row, 'Colormap');
 cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Value', 'jet', ...
                     'ValueChangedFcn', @(src, ~) colormap_now(src.Value));
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
-row = 19;
+row = 20;
 sumT = uitable(L, 'ColumnName', {'File', 'Time', 'SID', 'Cloud', 'Grids', 'Outside', 'Far', 'Tmin', 'Tmax'}, ...
                'ColumnWidth', {120, 55, 40, 65, 65, 55, 45, 60, 60}, 'RowName', [], 'Data', {});
 sumT.Layout.Row = row; sumT.Layout.Column = [1 3];
 
-row = 20;
+row = 21;
 statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', 'FontSize', 11, ...
                       'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
@@ -199,7 +206,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
             return
         end
         close(dlg);
-        readB.Text = sprintf('BDF loaded: %d grids  (re-read)', numel(G.ids));
+        readB.Text = sprintf('BDF loaded: %d grids, %d faces  (re-read)', numel(G.ids), size(G.faces, 1));
         status(sprintf('Read %d grids from %s in %.1f s', numel(G.ids), shortname(G.bdf_file), toc(t0)));
         ok = true;
     end
@@ -319,7 +326,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
     function replot()
         if isempty(R) || isempty(viewDD.ItemsData), return; end
         k = viewDD.Value;
-        H = temp_map_plot(R(k), 'Parent', ax, ...
+        H = temp_map_plot(R(k), 'Parent', ax, 'Style', styleDD.Value, ...
                           'Units',      unitsDD.Value, ...
                           'ShowCloud',  cloudCB.Value, ...
                           'ShowSurface', surfCB.Value, ...
