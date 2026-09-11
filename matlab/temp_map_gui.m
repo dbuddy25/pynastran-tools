@@ -222,14 +222,19 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
 
     function ok = on_read_bdf(~, ~)
         ok = false;
-        dlg = uiprogressdlg(fig, 'Title', 'Reading BDF', 'Indeterminate', 'on', ...
-                            'Message', sprintf('Parsing GRIDs from %s ...', shortname(bdfE.Value)));
+        dlg = uiprogressdlg(fig, 'Title', 'Reading BDF', 'Value', 0, 'Cancelable', 'on', ...
+                            'Message', 'Starting ...');
         t0 = tic;
         try
-            G = temp_map_matlab('BDF_FILE', bdfE.Value, 'READ_ONLY', true);
+            G = temp_map_matlab('BDF_FILE', bdfE.Value, 'READ_ONLY', true, ...
+                                'PROGRESS', @(frac, msg) set_progress(dlg, frac, msg, t0));
         catch ME
             close(dlg);
-            uialert(fig, ME.message, 'Read failed');
+            if ~strcmp(ME.identifier, 'temp_map_gui:cancelled')
+                uialert(fig, ME.message, 'Read failed');
+            else
+                status('Cancelled.');
+            end
             return
         end
         close(dlg);

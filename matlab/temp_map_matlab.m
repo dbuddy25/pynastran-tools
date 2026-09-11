@@ -124,12 +124,12 @@ if isempty(C.RESULTS)
         fprintf('Using %d cached grids from %s\n', numel(gid), C.GRIDS.bdf_file);
     else
         tic;
-        progress(C, 0, sprintf('Reading GRIDs from %s ...', shortname(C.BDF_FILE)));
-        [gid, gxyz] = read_grids(C.BDF_FILE);
+        gstage = @(f, m) progress(C, 0.00 + 0.45 * f, sprintf('GRIDs: %s', m));
+        [gid, gxyz] = read_grids(C.BDF_FILE, gstage);
         fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
         tic;
-        progress(C, 0.03, 'Reading elements for the contour view ...');
-        gfaces = read_faces(C.BDF_FILE, gid);
+        estage = @(f, m) progress(C, 0.45 + 0.50 * f, sprintf('Elements: %s', m));
+        gfaces = read_faces(C.BDF_FILE, gid, estage);
         fprintf('Read %d drawable element faces  (%.1f s)\n', size(gfaces, 1), toc);
     end
     if C.READ_ONLY
@@ -339,10 +339,12 @@ end
 
 
 % =========================================================================
-function [ids, xyz] = read_grids(bdf_file)
+function [ids, xyz] = read_grids(bdf_file, stage)
 %READ_GRIDS  GRID id and basic-frame xyz from a BDF, following INCLUDEs.
 %   Handles small-field, large-field (GRID*) and free-field (comma) cards.
-    [ids, xyz, ncp] = read_grids_file(bdf_file, true);
+    if nargin < 2, stage = @(~, ~) []; end
+    [ids, xyz, ncp] = read_grids_file(bdf_file, true, stage, [0 1]);
+    stage(1, sprintf('%d grids read', numel(ids)));
     if isempty(ids)
         error('temp_map_matlab:noGrids', 'No GRID cards found in %s', bdf_file);
     end
@@ -355,12 +357,16 @@ function [ids, xyz] = read_grids(bdf_file)
 end
 
 
-function [ids, xyz, ncp] = read_grids_file(fname, is_top)
+function [ids, xyz, ncp] = read_grids_file(fname, is_top, stage, span)
 %   Vectorised: the whole deck is split into lines once, GRID lines are picked
 %   out with one regexp, and small/large-field cards are sliced as char
 %   matrices.  Only free-field GRIDs and INCLUDEs are handled line by line.
+%   stage(frac, msg) reports progress; span = [lo hi] is this file's share.
+    sub = @(f, m) stage(span(1) + f * (span(2) - span(1)), sprintf('%s: %s', shortname(fname), m));
+    sub(0.00, 'reading file ...');
     txt = fileread(fname);
     txt = strrep(txt, sprintf('\t'), ' ');
+    sub(0.15, 'splitting lines ...');
     lines = splitlines(string(txt));
     base_dir = fileparts(fname);
     n = numel(lines);
@@ -380,7 +386,9 @@ function [ids, xyz, ncp] = read_grids_file(fname, is_top)
     ids = zeros(0, 1); xyz = zeros(0, 3); ncp = 0; lineno = zeros(0, 1);
 
     % ---- GRID lines --------------------------------------------------------
+    sub(0.35, sprintf('scanning %d lines for GRID cards ...', n));
     isg = ~cellfun('isempty', regexp(cellstr(up), '^GRID\*?\s*(,|\s|$)', 'once'));
+    sub(0.55, sprintf('parsing %d GRID cards ...', nnz(isg)));
     gi  = find(isg);
     g   = lines(gi);
     isfree  = contains(g, ",");
@@ -424,7 +432,9 @@ function [ids, xyz, ncp] = read_grids_file(fname, is_top)
     ids = ids(order); xyz = xyz(order, :);
 
     % ---- INCLUDE 'file'  (quoted path may span lines) ----------------------
-    for i = find(startsWith(up, "INCLUDE"))'
+    incs = find(startsWith(up, "INCLUDE"))';
+    for q = 1:numel(incs)
+        i = incs(q);
         rest = regexprep(char(lines(i)), '^\s*INCLUDE\s*', '', 'ignorecase');
         j = i + 1;
         while nnz(rest == '''') < 2 && j <= n   % unclosed quote: join next line
@@ -432,7 +442,10 @@ function [ids, xyz, ncp] = read_grids_file(fname, is_top)
             j = j + 1;
         end
         inc = strtrim(regexprep(strtrim(rest), '^''|''$', ''));
-        [i2, x2, c2] = read_grids_file(resolve_include(inc, base_dir), false);
+        % includes share the last 30% of this file's bar, evenly
+        lo = span(1) + (0.70 + 0.30 * (q - 1) / numel(incs)) * (span(2) - span(1));
+        hi = span(1) + (0.70 + 0.30 * q / numel(incs)) * (span(2) - span(1));
+        [i2, x2, c2] = read_grids_file(resolve_include(inc, base_dir), false, stage, [lo hi]);
         ids = [ids; i2]; xyz = [xyz; x2]; ncp = ncp + c2;  %#ok<AGROW>
     end
 end
@@ -484,17 +497,19 @@ end
 
 
 % =========================================================================
-function F = read_faces(bdf_file, grid_ids)
+function F = read_faces(bdf_file, grid_ids, stage)
 %READ_FACES  Drawable faces (rows into grid_ids, NaN-padded to 4 columns)
 %   from the shell and solid elements in the BDF: shells as-is, solids as
 %   their free (outer) faces.  [] if the deck has no supported elements.
+    if nargin < 3, stage = @(~, ~) []; end
     try
-        E = read_elements_file(bdf_file, true);
+        E = read_elements_file(bdf_file, true, stage, [0 0.8]);
     catch ME
         warning('temp_map_matlab:elements', 'Element read failed (%s); contour view unavailable.', ME.message);
         F = []; return
     end
     if isempty(E), F = []; return; end
+    stage(0.85, 'building free faces of solids ...');
     faces = zeros(0, 4);
     % --- shells: one face each ---------------------------------------------
     for t = {'CQUAD4', 'CQUADR', 'CQUAD8'}
@@ -530,6 +545,7 @@ function F = read_faces(bdf_file, grid_ids)
         faces = [faces; sf(cnt(ic) == 1, :)];  % faces used by exactly one element
     end
     if isempty(faces), F = []; return; end
+    stage(0.95, sprintf('indexing %d faces to grids ...', size(faces, 1)));
     % node ids -> rows of grid_ids; drop faces touching unknown grids
     [tf, loc] = ismember(faces, grid_ids);
     ok = all(tf | isnan(faces), 2);
@@ -539,10 +555,12 @@ function F = read_faces(bdf_file, grid_ids)
 end
 
 
-function E = read_elements_file(fname, is_top)
+function E = read_elements_file(fname, is_top, stage, span)
 %READ_ELEMENTS_FILE  Corner-node ids per supported element type, following
 %   INCLUDEs.  Same vectorised slicing as read_grids_file; continuation lines
 %   are assumed to directly follow their parent (true for every mesher).
+    sub = @(f, m) stage(span(1) + f * (span(2) - span(1)), sprintf('%s: %s', shortname(fname), m));
+    sub(0.00, 'reading file ...');
     types = {'CQUAD4', 4; 'CQUADR', 4; 'CQUAD8', 4; 'CTRIA3', 3; 'CTRIAR', 3; 'CTRIA6', 3; ...
              'CTETRA', 4; 'CPENTA', 6; 'CHEXA', 8};
     E = struct();
@@ -564,6 +582,7 @@ function E = read_elements_file(fname, is_top)
     lines = lines(first:last); up = up(first:last); n = numel(lines);
 
     % card name of every line (letters/digits before the first blank, comma or *)
+    sub(0.20, sprintf('scanning %d lines for element cards ...', n));
     cand = startsWith(up, "C");                       % cheap pre-filter
     name_of = strings(n, 1);
     name_of(cand) = regexp(up(cand), '^[A-Z0-9]+', 'match', 'once');
@@ -573,6 +592,7 @@ function E = read_elements_file(fname, is_top)
         name = types{t, 1}; ng = types{t, 2}; nf = 2 + ng;      % EID PID G1..Gng
         mine = find(name_of == name);
         if isempty(mine), continue; end
+        sub(0.35 + 0.35 * t / size(types, 1), sprintf('parsing %d %s ...', numel(mine), name));
         isfree  = contains(lines(mine), ",");
         islarge = ~isfree & star(mine);
         issmall = ~isfree & ~islarge;
@@ -621,7 +641,9 @@ function E = read_elements_file(fname, is_top)
     end
 
     % ---- INCLUDEs ------------------------------------------------------------
-    for i = find(startsWith(up, "INCLUDE"))'
+    incs = find(startsWith(up, "INCLUDE"))';
+    for q = 1:numel(incs)
+        i = incs(q);
         rest = regexprep(char(lines(i)), '^\s*INCLUDE\s*', '', 'ignorecase');
         j = i + 1;
         while nnz(rest == '''') < 2 && j <= n
@@ -629,7 +651,9 @@ function E = read_elements_file(fname, is_top)
             j = j + 1;
         end
         inc = strtrim(regexprep(strtrim(rest), '^''|''$', ''));
-        E2 = read_elements_file(resolve_include(inc, base_dir), false);
+        lo = span(1) + (0.70 + 0.30 * (q - 1) / numel(incs)) * (span(2) - span(1));
+        hi = span(1) + (0.70 + 0.30 * q / numel(incs)) * (span(2) - span(1));
+        E2 = read_elements_file(resolve_include(inc, base_dir), false, stage, [lo hi]);
         for t = 1:size(types, 1)
             E.(types{t, 1}) = [E.(types{t, 1}); E2.(types{t, 1})];
         end
