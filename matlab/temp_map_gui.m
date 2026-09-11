@@ -25,9 +25,9 @@ root.ColumnWidth = {360, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [17 3]);
+L = uigridlayout(root, [18 3]);
 L.ColumnWidth = {90, '1x', 34};
-L.RowHeight   = {24, 24, 180, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, '1x'};
+L.RowHeight   = {24, 24, 180, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
@@ -120,12 +120,17 @@ extrapCB = uicheckbox(L, 'Text', 'Ring outside/far', 'Value', true, ...
 extrapCB.Layout.Row = row; extrapCB.Layout.Column = [2 3];
 
 row = 16;
+surfCB = uicheckbox(L, 'Text', 'Show cloud surface (alpha shape)', 'Value', true, ...
+                    'ValueChangedFcn', @(src, ~) toggle('surface', src.Value));
+surfCB.Layout.Row = row; surfCB.Layout.Column = [1 3];
+
+row = 17;
 lbl(L, row, 'Colormap');
 cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Value', 'jet', ...
                     'ValueChangedFcn', @(src, ~) colormap_now(src.Value));
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
-row = 17;
+row = 18;
 statusTA = uitextarea(L, 'Editable', 'off', 'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
 
@@ -264,6 +269,7 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         H = temp_map_plot(R(k), 'Parent', ax, ...
                           'Units',      unitsDD.Value, ...
                           'ShowCloud',  cloudCB.Value, ...
+                          'ShowSurface', surfCB.Value, ...
                           'ShowExtrap', extrapCB.Value, ...
                           'Colormap',   cmapDD.Value);
     end

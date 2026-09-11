@@ -71,6 +71,10 @@ C.METHOD         = 'linear';    % 'linear' | 'nearest' | 'idw'   (see help)
 C.IDW_K          = 8;           % neighbours used by 'idw'
 C.IDW_POWER      = 2;           % 1/d^p weighting for 'idw'
 
+% --- cloud surface for the check plot --------------------------------------
+C.SURFACE_POINTS = 5e4;         % alpha-shape skin of the cloud from at most this
+                                % many (random) cloud points; 0 = skip
+
 % --- checks --------------------------------------------------------------
 C.EXTRAP_WARN_DIST = [];        % [] = off; else warn when a grid's nearest cloud
                                 % point is farther than this (model length units)
@@ -119,6 +123,8 @@ if isempty(C.RESULTS)
         r.nn_dist   = nndist;
         r.far       = false(size(nndist));
         r.method    = method;
+        stage(0.95, 'cloud surface (alpha shape) ...');
+        r.surface   = cloud_surface(cxyz, C.SURFACE_POINTS);
         if ~isempty(C.EXTRAP_WARN_DIST)
             r.far = nndist > C.EXTRAP_WARN_DIST;
             if any(r.far)
@@ -223,7 +229,7 @@ function r = empty_result()
     r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
                'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
                'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
-               'far', [], 'method', '', 'out_file', '');
+               'far', [], 'method', '', 'surface', [], 'out_file', '');
 end
 
 
@@ -553,6 +559,29 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
     end
     nndist = vecnorm(Q - P(nn, :), 2, 2);
     Tg = Tg(:); extrap = extrap(:); nndist = nndist(:);
+end
+
+
+% =========================================================================
+function srf = cloud_surface(P, nmax)
+%CLOUD_SURFACE  Boundary of the cloud as an alpha shape (concave-aware),
+%   built from a thinned subset so it is cheap.  Returns struct .F .V
+%   (triangle faces / vertices) or [] if it cannot be built (planar cloud).
+    srf = [];
+    if nmax <= 0 || size(P, 1) < 4, return; end
+    n = size(P, 1);
+    if n > nmax
+        rs = RandStream('mt19937ar', 'Seed', 0);
+        P = P(sort(randperm(rs, n, round(nmax))), :);
+    end
+    try
+        shp = alphaShape(P(:, 1), P(:, 2), P(:, 3));
+        shp.Alpha = 1.5 * criticalAlpha(shp, 'one-region');   % closed, but not convex
+        [F, V] = boundaryFacets(shp);
+        srf = struct('F', F, 'V', V, 'alpha', shp.Alpha, 'npts', size(P, 1));
+    catch
+        srf = [];
+    end
 end
 
 

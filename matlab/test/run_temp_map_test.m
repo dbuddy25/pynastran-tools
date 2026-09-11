@@ -79,6 +79,8 @@ check(str2double(L(9:24)) == 10 && str2double(L(25:40)) == R(1).grid_ids(1) && .
       str2double(L(57:72)) == R(1).grid_ids(2) && L(73) == '*', ...
       'large-field SID / G1 / T1(Celsius) / G2 / continuation columns');
 
+check(~isempty(R(1).surface) && size(R(1).surface.F, 2) == 3, 'cloud surface (alpha shape) built');
+
 % --- plot smoke test --------------------------------------------------------
 h = temp_map_plot(R(1), 'Visible', 'off', 'Units', 'C');
 h.set_view('+Z'); h.set_view('ISO');
