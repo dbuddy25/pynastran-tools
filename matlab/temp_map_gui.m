@@ -27,7 +27,7 @@ root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
 L = uigridlayout(root, [22 3]);
-L.ColumnWidth = {90, '1x', 34};
+L.ColumnWidth = {100, '1x', 34};
 L.RowHeight   = {24, 30, 24, 150, 24, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, 24, 150, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
@@ -64,26 +64,29 @@ b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_out);
 b.Layout.Row = row; b.Layout.Column = 3;
 
 row = 6;
-lbl(L, row, 'Units');
-ug = uigridlayout(L, [1 6]);
+lbl(L, row, 'Cloud units');
+ug = uigridlayout(L, [1 4]);
 ug.Layout.Row = row; ug.Layout.Column = [2 3];
-ug.ColumnWidth = {30, '1x', 38, '1x', 38, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
-uilabel(ug, 'Text', 'BDF');
-bdfUnitsDD = uidropdown(ug, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
-                        'Tooltip', 'Length units of the structural model');
-uilabel(ug, 'Text', 'cloud');
+ug.ColumnWidth = {46, '1x', 40, '1x'}; ug.Padding = [0 0 0 0]; ug.ColumnSpacing = 4;
+uilabel(ug, 'Text', 'length');
 csvUnitsDD = uidropdown(ug, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
                         'Tooltip', 'Length units of the CSV x/y/z');
-uilabel(ug, 'Text', 'cld T');
+uilabel(ug, 'Text', 'temp');
 csvTempDD = uidropdown(ug, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                        'Tooltip', 'Temperature units of the CSV 5th column');
 
 row = 7;
-lbl(L, row, 'Model T');
-unitsDD = uidropdown(L, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
+lbl(L, row, 'Structural units');
+sg = uigridlayout(L, [1 4]);
+sg.Layout.Row = row; sg.Layout.Column = [2 3];
+sg.ColumnWidth = {46, '1x', 40, '1x'}; sg.Padding = [0 0 0 0]; sg.ColumnSpacing = 4;
+uilabel(sg, 'Text', 'length');
+bdfUnitsDD = uidropdown(sg, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
+                        'Tooltip', 'Length units of the structural model (BDF)');
+uilabel(sg, 'Text', 'temp');
+unitsDD = uidropdown(sg, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                      'Tooltip', 'Temperature units of the structural model = units written on the TEMP cards', ...
                      'ValueChangedFcn', @(~, ~) replot());
-unitsDD.Layout.Row = row; unitsDD.Layout.Column = [2 3];
 
 row = 8;
 lbl(L, row, 'SID start');
