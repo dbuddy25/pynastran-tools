@@ -35,6 +35,8 @@ for k = 1:2
     check(R(k).sid == 9 + k, 'SID numbering from SID_START');
 end
 check(abs(R(2).time - 100) < 1e-12, 'time read from CSV');
+check(contains(R(2).method, '(reused)') && ~contains(R(1).method, '(reused)'), ...
+      'second CSV with identical points reused the first mapping');
 check(isequal(R(1).far, R(1).grid_ids == 999), 'EXTRAP_WARN_DIST flags only grid 999 as far');
 
 % --- cached grids -----------------------------------------------------------

@@ -41,7 +41,10 @@ function [R, S] = temp_map_matlab(varargin)
 %   'idw'     - inverse-distance-weighted mean of the IDW_K closest points.
 %   'nearest' and 'idw' use a kd-tree (knnsearch, Statistics Toolbox) and take
 %   seconds at 1M x 1M; without that toolbox they fall back to the
-%   triangulation.  R(k).nn_dist always holds each grid's distance to its
+%   triangulation.
+%   Consecutive CSVs with IDENTICAL point locations (same thermal mesh, new
+%   temperatures) reuse the previous mapping: the expensive geometry is done
+%   once and each further time step is a sparse matrix-vector product.  R(k).nn_dist always holds each grid's distance to its
 %   nearest cloud point; EXTRAP_WARN_DIST turns that into R(k).far.
 %
 %   Pure MATLAB -- no Python, no pyNastran.  GRIDs are assumed to be in the
@@ -142,7 +145,8 @@ if isempty(C.RESULTS)
     files = resolve_csv_files(C);
     nf = numel(files);
     R = repmat(empty_result(), nf, 1);
-    for k = 1:nf
+    cache = struct('xyz', [], 'M', [], 'surface', []);   % reused while the cloud
+    for k = 1:nf                                          % locations stay the same
         tic;
         f0 = 0.05 + 0.95 * (k - 1) / nf;          % this file's share of the bar
         fw = 0.95 / nf;
@@ -152,7 +156,18 @@ if isempty(C.RESULTS)
         [t, cxyz, cT] = read_cloud(files{k}, C.CSV_HAS_HEADER);
         cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
         cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
-        [gT, extrap, nndist, method] = map_temps(cxyz, cT, gxyz, C, stage);
+        if same_cloud(cache.xyz, cxyz)
+            stage(0.5, 'same cloud locations as the previous case: reusing the mapping ...');
+            M = cache.M; srf = cache.surface; reused = true;
+        else
+            M = build_map(cxyz, gxyz, C, stage);
+            stage(0.95, 'cloud surface (alpha shape) ...');
+            srf = cloud_surface(cxyz, C.SURFACE_POINTS);
+            cache.xyz = cxyz; cache.M = M; cache.surface = srf; reused = false;
+        end
+        gT = apply_map(M, cT);
+        extrap = M.extrap; nndist = M.nndist; method = M.method;
+        if reused, method = [method ' (reused)']; end
         r = empty_result();
         r.csv_file  = files{k};
         r.bdf_file  = C.BDF_FILE;
@@ -169,8 +184,7 @@ if isempty(C.RESULTS)
         r.nn_dist   = nndist;
         r.far       = false(size(nndist));
         r.method    = method;
-        stage(0.95, 'cloud surface (alpha shape) ...');
-        r.surface   = cloud_surface(cxyz, C.SURFACE_POINTS);
+        r.surface   = srf;
         if ~isempty(C.EXTRAP_WARN_DIST)
             r.far = nndist > C.EXTRAP_WARN_DIST;
             if any(r.far)
@@ -721,12 +735,29 @@ end
 
 % =========================================================================
 function [t, xyz, T] = read_cloud(csv_file, has_header)
-%READ_CLOUD  time, xyz, T(Kelvin) from a 5-column CSV.
-    opts = detectImportOptions(csv_file, 'FileType', 'text');
-    if ~has_header
-        opts.DataLines = [1 Inf];
+%READ_CLOUD  time, xyz, T from a 5-column CSV.  textscan fast path (a few
+%   seconds per million rows); readmatrix as the tolerant fallback.
+    M = [];
+    fid = fopen(csv_file, 'r');
+    if fid > 0
+        cl = onCleanup(@() fclose(fid));
+        try
+            if has_header, fgetl(fid); end
+            c = textscan(fid, '%f%f%f%f%f%*[^\n]', 'Delimiter', ',', 'CollectOutput', true);
+            M = c{1};
+            if ~feof(fid), M = []; end       % stopped early on something odd: fall back
+        catch
+            M = [];
+        end
+        clear cl
     end
-    M = readmatrix(csv_file, opts);
+    if isempty(M)
+        opts = detectImportOptions(csv_file, 'FileType', 'text');
+        if ~has_header
+            opts.DataLines = [1 Inf];
+        end
+        M = readmatrix(csv_file, opts);
+    end
     if size(M, 2) < 5
         error('temp_map_matlab:badCsv', ...
             '%s: expected 5 columns (time,x,y,z,T) but found %d.', csv_file, size(M, 2));
@@ -748,27 +779,30 @@ end
 
 
 % =========================================================================
-function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
-%MAP_TEMPS  Cloud (P,T) -> query points Q by C.METHOD.
-%   linear : Delaunay barycentric interpolation, nearest outside the hull.
-%            Planar / collinear clouds are projected down first.
-%   nearest: closest cloud point (kd-tree if Statistics Toolbox, else the
-%            triangulation's nearestNeighbor).
-%   idw    : inverse-distance-weighted mean of the IDW_K closest points.
-    if nargin < 5, stage = @(~, ~) []; end
+function M = build_map(P, Q, C, stage)
+%BUILD_MAP  Everything about mapping cloud POINTS P onto grids Q that does not
+%   depend on the temperatures: returned as a mapping object M so that every
+%   later time step with the same cloud locations is just APPLY_MAP(M, T).
+%
+%   M.W       sparse (nQ x nPu) weights: Tg = W * Tu, with Tu the temperatures
+%             of the unique cloud points (duplicates averaged via M.ic).
+%   M.F       (scattered method only) a scatteredInterpolant instead of W.
+%   M.extrap  grids outside the cloud hull      M.nndist  distance to nearest pt
+%   M.method  description                       M.ic / M.nPu  duplicate map
+    if nargin < 4, stage = @(~, ~) []; end
     stage(0.10, sprintf('checking %d cloud points for duplicates ...', size(P, 1)));
-    % duplicate cloud points would break the triangulation: average them
-    [P, ~, ic] = unique(P, 'rows');
-    T = accumarray(ic, T, [], @mean);
+    [P, ~, ic] = unique(P, 'rows');          % duplicates would break Delaunay
     nP = size(P, 1);
     nQ = size(Q, 1);
     meth = lower(char(C.METHOD));
+    M = struct('W', [], 'F', [], 'Q', [], 'ic', ic, 'nPu', nP, ...
+               'extrap', false(nQ, 1), 'nndist', [], 'method', '');
 
     if nP == 1
-        Tg = repmat(T, nQ, 1);
-        extrap = true(nQ, 1);
-        nndist = vecnorm(Q - P, 2, 2);
-        method = 'single point';
+        M.W = sparse(ones(nQ, 1), 1, 1, nQ, 1);
+        M.extrap = true(nQ, 1);
+        M.nndist = vecnorm(Q - P, 2, 2);
+        M.method = 'single point';
         return
     end
 
@@ -780,46 +814,42 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
     end
     if strcmp(meth, 'scattered')
         stage(0.25, sprintf('scatteredInterpolant (linear/nearest) on %d cloud points ...', nP));
-        F = scatteredInterpolant(P, T, 'linear', 'nearest');
-        stage(0.6, sprintf('evaluating at %d grids ...', nQ));
-        Tg = F(Q);
-        extrap = false(nQ, 1);
+        M.F = scatteredInterpolant(P, zeros(nP, 1), 'linear', 'nearest');
+        M.Q = Q;
         if have_knn
-            [~, nndist] = knn_chunked(P, Q, 1, stage, 'nearest distance');
+            [~, M.nndist] = knn_chunked(P, Q, 1, stage, 'nearest distance');
         else
-            nndist = nan(nQ, 1);       % not worth a second triangulation
+            M.nndist = nan(nQ, 1);       % not worth a second triangulation
         end
-        method = 'scatteredInterpolant linear/nearest';
-        Tg = Tg(:); nndist = nndist(:);
+        M.method = 'scatteredInterpolant linear/nearest';
         return
     end
     if strcmp(meth, 'nearest') && have_knn
-        [nn, nndist] = knn_chunked(P, Q, 1, stage, 'nearest');
-        Tg = T(nn);
-        extrap = false(nQ, 1);
-        method = 'nearest (kd-tree)';
+        [nn, M.nndist] = knn_chunked(P, Q, 1, stage, 'nearest');
+        M.W = sparse((1:nQ)', nn, 1, nQ, nP);
+        M.method = 'nearest (kd-tree)';
         return
     elseif strcmp(meth, 'idw') && have_knn
         k = min(C.IDW_K, nP);
         [nn, d] = knn_chunked(P, Q, k, stage, sprintf('IDW k=%d', k));
         w  = 1 ./ max(d, eps) .^ C.IDW_POWER;
-        Tg = sum(w .* T(nn), 2) ./ sum(w, 2);
-        hit = d(:, 1) == 0;                     % sitting on a cloud point
-        Tg(hit) = T(nn(hit, 1));
-        nndist = d(:, 1);
-        extrap = false(nQ, 1);
-        method = sprintf('IDW (k=%d, p=%g)', k, C.IDW_POWER);
+        hit = d(:, 1) == 0;                     % sitting on a cloud point: take it
+        w(hit, :) = 0; w(hit, 1) = 1;
+        w  = w ./ sum(w, 2);
+        M.W = sparse(repmat((1:nQ)', k, 1), nn(:), w(:), nQ, nP);
+        M.nndist = d(:, 1);
+        M.method = sprintf('IDW (k=%d, p=%g)', k, C.IDW_POWER);
         return
     end
 
     % ---- triangulation path --------------------------------------------------
-    % effective dimension of the cloud via SVD of the centred points
-    mu = mean(P, 1);
+    mu = mean(P, 1);                          % effective dimension via SVD
     [~, Sv, V] = svd(P - mu, 'econ');
     sv = diag(Sv);
     dim = nnz(sv > 1e-9 * sv(1));
     Pp = (P - mu) * V(:, 1:dim);
     Qp = (Q - mu) * V(:, 1:dim);
+    rows = (1:nQ)';
 
     switch dim
         case {2, 3}
@@ -833,18 +863,16 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
             end
             if isempty(DT)
                 nn = dsearchn(Pp, Qp);
-                Tg = T(nn);
-                extrap = true(nQ, 1);
-                method = 'nearest (brute force)';
+                M.W = sparse(rows, nn, 1, nQ, nP);
+                M.extrap = true(nQ, 1);
+                M.method = 'nearest (brute force)';
             else
                 stage(0.75, sprintf('locating %d grids in the triangulation ...', nQ));
                 nn = nearestNeighbor(DT, Qp);
-                Tg = T(nn);                                  % nearest everywhere ...
                 if strcmp(meth, 'linear')
                     [ti, bc] = pointLocation(DT, Qp);
                     inside = ~isnan(ti);
                     tri = DT.ConnectivityList(ti(inside), :);    % (n_in x dim+1)
-                    Tlin = sum(bc(inside, :) .* T(tri), 2);      % ... linear inside the hull
                     % bridging cells: Delaunay spans concavities of the body with
                     % long flat cells whose vertices are far-apart surface points;
                     % interpolating across those smears local hot/cold spots.
@@ -860,39 +888,62 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
                             end
                         end
                         bridge = maxedge > C.SLIVER_FACTOR * h;
-                        Tnear = Tg(inside);                  % nearest-point values
-                        Tlin(bridge) = Tnear(bridge);
                         nbridge = nnz(bridge);
+                    else
+                        bridge = false(size(tri, 1), 1);
                     end
-                    Tg(inside) = Tlin;
-                    extrap = ~inside;
-                    if dim == 3, method = 'linear (3D Delaunay)';
-                    else,        method = 'linear (planar cloud)'; end
+                    % weights: barycentric inside well-formed cells, nearest elsewhere
+                    lin  = find(inside); lin = lin(~bridge);
+                    trl  = tri(~bridge, :); bcl = bc(inside, :); bcl = bcl(~bridge, :);
+                    near = setdiff(rows, lin);
+                    M.W = sparse([repmat(lin, size(trl, 2), 1); near], [trl(:); nn(near)], ...
+                                 [bcl(:); ones(numel(near), 1)], nQ, nP);
+                    M.extrap = ~inside;
+                    if dim == 3, M.method = 'linear (3D Delaunay)';
+                    else,        M.method = 'linear (planar cloud)'; end
                     if nbridge > 0
-                        method = sprintf('%s, %d grids in bridging cells -> nearest', method, nbridge);
+                        M.method = sprintf('%s, %d grids in bridging cells -> nearest', M.method, nbridge);
                     end
                 else
-                    extrap = false(nQ, 1);
-                    method = 'nearest (triangulation)';
+                    M.W = sparse(rows, nn, 1, nQ, nP);
+                    M.method = 'nearest (triangulation)';
                 end
             end
         otherwise   % dim == 1: collinear cloud
             [s, order] = unique(Pp(:, 1));
-            Ts = T(order);
             sq = min(max(Qp(:, 1), s(1)), s(end));
             nn = order(interp1(s, 1:numel(s), sq, 'nearest'));
-            if strcmp(meth, 'linear')
-                Tg = interp1(s, Ts, sq, 'linear');
-                extrap = Qp(:, 1) < s(1) | Qp(:, 1) > s(end);
-                method = 'linear (collinear cloud)';
+            if strcmp(meth, 'linear') && numel(s) > 1
+                seg = discretize(sq, s);                      % s(seg) <= sq <= s(seg+1)
+                w = (sq - s(seg)) ./ (s(seg + 1) - s(seg));
+                M.W = sparse([rows; rows], [order(seg); order(seg + 1)], [1 - w; w], nQ, nP);
+                M.extrap = Qp(:, 1) < s(1) | Qp(:, 1) > s(end);
+                M.method = 'linear (collinear cloud)';
             else
-                Tg = T(nn);
-                extrap = false(nQ, 1);
-                method = 'nearest (collinear cloud)';
+                M.W = sparse(rows, nn, 1, nQ, nP);
+                M.method = 'nearest (collinear cloud)';
             end
     end
-    nndist = vecnorm(Q - P(nn, :), 2, 2);
-    Tg = Tg(:); extrap = extrap(:); nndist = nndist(:);
+    M.nndist = vecnorm(Q - P(nn, :), 2, 2);
+end
+
+
+function Tg = apply_map(M, T)
+%APPLY_MAP  Temperatures at the grids from cloud temperatures T (raw rows).
+    Tu = accumarray(M.ic, T(:), [M.nPu 1], @mean);   % duplicates averaged
+    if ~isempty(M.F)
+        M.F.Values = Tu;
+        Tg = M.F(M.Q);
+    else
+        Tg = M.W * Tu;
+    end
+    Tg = Tg(:);
+end
+
+
+function tf = same_cloud(A, B)
+%SAME_CLOUD  True when two clouds have identical point locations.
+    tf = ~isempty(A) && isequal(size(A), size(B)) && isequal(A, B);
 end
 
 
