@@ -1,0 +1,25 @@
+$ temp_map_matlab test deck
+SOL 101
+CEND
+TITLE = temp map fixture
+BEGIN BULK
+$ small field
+GRID           1              0.      0.      0.
+GRID           2             1.0     0.0     0.0
+GRID           3             2.0     1.0     0.5
+GRID           4       0     3.0     2.0     1.0
+$ large field
+GRID*                  5               0             1.5             0.5*
+*                    1.0
+GRID*                  6                             2.5             1.5*
+*                   0.25
+$ free field (blank CP), short line continued
+GRID,7,,0.5,1.0,0.75
+GRID,8,,1.25,
+,1.75,0.5
+$ shorthand exponent
+GRID           9             2.5    1.-1    5.-1
+$ outside the cloud hull
+GRID         999             8.0     8.0     8.0
+INCLUDE 'test_temp_map_inc.bdf'
+ENDDATA

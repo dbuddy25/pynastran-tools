@@ -1,0 +1,656 @@
+function [R, S] = temp_map_matlab(varargin)
+%TEMP_MAP_MATLAB  Map CSV temperature point clouds onto Nastran GRIDs, write TEMP cards.
+%
+%   TEMP_MAP_MATLAB with no arguments runs the CONFIG block below: it reads the
+%   GRID coordinates out of the BDF (INCLUDEs followed), then for every CSV
+%   point cloud interpolates the cloud temperature onto each grid and writes a
+%   bulk-data file of TEMP cards -- one file, one SID, per CSV.
+%
+%   [R, S] = TEMP_MAP_MATLAB(...) also returns:
+%       R   - results struct array, one element per CSV, carrying the grid ids,
+%             coordinates, mapped temperatures (Kelvin) and the cloud itself,
+%             so TEMP_MAP_PLOT can draw them without re-reading anything.
+%       S   - summary table, one row per CSV (file, time, SID, counts, T range).
+%
+%   Any CONFIG field can be overridden per call without editing the file:
+%       >> temp_map_matlab('BDF_FILE', 'wing.bdf', 'CSV_DIR', 'clouds', 'OUT_UNITS', 'C')
+%
+%   CSV FORMAT (one file = one time step)
+%   -------------------------------------
+%       time_s, x, y, z, T_kelvin        (header row optional, see CSV_HAS_HEADER)
+%   x/y/z must be in the SAME units and frame as the BDF GRIDs (basic frame).
+%
+%   MAPPING  (C.METHOD)
+%   -------------------
+%   'linear'  - linear interpolation on a Delaunay triangulation of the cloud
+%               (what scatteredInterpolant does), nearest point outside the
+%               cloud's convex hull.  Planar / collinear clouds are projected
+%               first.  Grids outside the hull are flagged in R(k).extrap.
+%               Exact for smooth fields, but the 3D triangulation costs ~1 min
+%               and several GB at 1M cloud points.
+%   'nearest' - each grid takes the temperature of its closest cloud point.
+%   'idw'     - inverse-distance-weighted mean of the IDW_K closest points.
+%   'nearest' and 'idw' use a kd-tree (knnsearch, Statistics Toolbox) and take
+%   seconds at 1M x 1M; without that toolbox they fall back to the
+%   triangulation.  R(k).nn_dist always holds each grid's distance to its
+%   nearest cloud point; EXTRAP_WARN_DIST turns that into R(k).far.
+%
+%   Pure MATLAB -- no Python, no pyNastran.  GRIDs are assumed to be in the
+%   basic coordinate system (CP = 0 or blank); a warning is issued otherwise.
+%
+%   See also TEMP_MAP_PLOT, TEMP_MAP_GUI.
+
+% =========================================================================
+%                                 CONFIG
+%   Edit this block. Everything below it is machinery.
+% =========================================================================
+C = struct();
+
+% --- input ---------------------------------------------------------------
+C.BDF_FILE       = 'model.bdf';
+C.CSV_DIR        = '.';         % folder holding the temperature clouds
+C.CSV_FILES      = {};          % {} = every *.csv in CSV_DIR (natural-sorted),
+                                % or an explicit cell list of file names
+C.CSV_HAS_HEADER = true;        % first CSV row is a header
+
+% --- output --------------------------------------------------------------
+C.OUT_DIR        = 'temp_cards';    % created if missing
+C.OUT_UNITS      = 'K';             % 'K' | 'C'   (C = K - 273.15)
+C.FIELD_SIZE     = 8;               % 8 = small field | 16 = large field
+C.WRITE_TEMPD    = false;           % also emit TEMPD,SID,<mean T> for unlisted grids
+C.WRITE          = true;            % false = map only, write nothing (GUI preview)
+C.SAVE_PNG       = false;           % true = save an ISO-view PNG next to each .bdf
+
+% --- load set IDs --------------------------------------------------------
+C.SID_START      = 1;           % SID = SID_START + (file index - 1) ...
+C.SID_FROM_TIME  = false;       % ... or SID = round(time * TIME_SCALE)
+C.TIME_SCALE     = 1;
+
+% --- mapping -------------------------------------------------------------
+C.METHOD         = 'linear';    % 'linear' | 'nearest' | 'idw'   (see help)
+C.IDW_K          = 8;           % neighbours used by 'idw'
+C.IDW_POWER      = 2;           % 1/d^p weighting for 'idw'
+
+% --- checks --------------------------------------------------------------
+C.EXTRAP_WARN_DIST = [];        % [] = off; else warn when a grid's nearest cloud
+                                % point is farther than this (model length units)
+                                % and flag those grids in R(k).far
+
+% --- GUI hook: pass a previous R here to write it without re-mapping ------
+%   (SIDs stay as assigned at mapping time)
+C.RESULTS        = [];
+
+% =========================================================================
+%                               MACHINERY
+% =========================================================================
+C = apply_overrides(C, varargin);
+validate_config(C);
+
+if isempty(C.RESULTS)
+    tic;
+    [gid, gxyz] = read_grids(C.BDF_FILE);
+    fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
+
+    files = resolve_csv_files(C);
+    R = repmat(empty_result(), numel(files), 1);
+    for k = 1:numel(files)
+        tic;
+        [t, cxyz, cT] = read_cloud(files{k}, C.CSV_HAS_HEADER);
+        [gT, extrap, nndist, method] = map_temps(cxyz, cT, gxyz, C);
+        r = empty_result();
+        r.csv_file  = files{k};
+        r.bdf_file  = C.BDF_FILE;
+        r.time      = t;
+        r.sid       = assign_sid(C, k, t);
+        r.grid_ids  = gid;
+        r.grid_xyz  = gxyz;
+        r.grid_T    = gT;         % Kelvin, always
+        r.cloud_xyz = cxyz;
+        r.cloud_T   = cT;         % Kelvin, always
+        r.extrap    = extrap;
+        r.nn_dist   = nndist;
+        r.far       = false(size(nndist));
+        r.method    = method;
+        if ~isempty(C.EXTRAP_WARN_DIST)
+            r.far = nndist > C.EXTRAP_WARN_DIST;
+            if any(r.far)
+                warning('temp_map_matlab:farGrids', ...
+                    '%s: %d grid(s) are farther than %g from any cloud point (max %.4g).', ...
+                    files{k}, nnz(r.far), C.EXTRAP_WARN_DIST, max(nndist));
+            end
+        end
+        R(k) = r;
+        fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
+            shortname(files{k}), t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
+    end
+else
+    R = C.RESULTS(:);       % SIDs were assigned when these were mapped
+end
+
+if C.WRITE
+    if exist(C.OUT_DIR, 'dir') ~= 7, mkdir(C.OUT_DIR); end
+    for k = 1:numel(R)
+        tic;
+        [~, base] = fileparts(R(k).csv_file);
+        R(k).out_file = fullfile(C.OUT_DIR, [base '_temp.bdf']);
+        write_temp_cards(R(k), C);
+        fprintf('  wrote %s  (%.1f s)\n', R(k).out_file, toc);
+        if C.SAVE_PNG
+            h = temp_map_plot(R(k), 'Visible', 'off', 'Units', C.OUT_UNITS);
+            saveas(h.fig, fullfile(C.OUT_DIR, [base '_temp.png']));
+            close(h.fig);
+        end
+    end
+end
+
+S = summary_table(R, C);
+if nargout == 0
+    disp(S);
+    clear R S
+end
+end
+
+
+% =========================================================================
+function C = apply_overrides(C, args)
+%APPLY_OVERRIDES  Fold name/value pairs into the CONFIG struct.
+    if isempty(args), return; end
+    if mod(numel(args), 2) ~= 0
+        error('temp_map_matlab:badArgs', ...
+              'Overrides must be name/value pairs, e.g. ''OUT_UNITS'', ''C''.');
+    end
+    for k = 1:2:numel(args)
+        name = args{k};
+        if ~ischar(name) && ~isstring(name)
+            error('temp_map_matlab:badArgs', 'Override name must be a string.');
+        end
+        name = char(name);
+        if ~isfield(C, name)
+            error('temp_map_matlab:unknownOption', ...
+                  'Unknown option "%s". Valid names are the CONFIG field names.', name);
+        end
+        C.(name) = args{k + 1};
+    end
+end
+
+
+% =========================================================================
+function validate_config(C)
+%VALIDATE_CONFIG  Fail early and readably.
+    if isempty(C.RESULTS)
+        if exist(C.BDF_FILE, 'file') ~= 2
+            error('temp_map_matlab:noFile', 'BDF file not found: %s', C.BDF_FILE);
+        end
+        if isempty(C.CSV_FILES) && exist(C.CSV_DIR, 'dir') ~= 7
+            error('temp_map_matlab:noDir', 'CSV folder not found: %s', C.CSV_DIR);
+        end
+    end
+    if ~ismember(upper(char(C.OUT_UNITS)), {'K', 'C'})
+        error('temp_map_matlab:badUnits', 'C.OUT_UNITS must be ''K'' or ''C''.');
+    end
+    if ~ismember(C.FIELD_SIZE, [8 16])
+        error('temp_map_matlab:badField', 'C.FIELD_SIZE must be 8 or 16.');
+    end
+    if ~ismember(lower(char(C.METHOD)), {'linear', 'nearest', 'idw'})
+        error('temp_map_matlab:badMethod', 'C.METHOD must be ''linear'', ''nearest'' or ''idw''.');
+    end
+    if C.SID_FROM_TIME && C.TIME_SCALE <= 0
+        error('temp_map_matlab:badScale', 'C.TIME_SCALE must be positive.');
+    end
+end
+
+
+% =========================================================================
+function r = empty_result()
+    r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
+               'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
+               'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
+               'far', [], 'method', '', 'out_file', '');
+end
+
+
+% =========================================================================
+function sid = assign_sid(C, k, t)
+    if C.SID_FROM_TIME
+        sid = round(t * C.TIME_SCALE);
+    else
+        sid = C.SID_START + k - 1;
+    end
+    if sid < 1
+        error('temp_map_matlab:badSid', 'Computed SID %d < 1 (file %d, t=%g).', sid, k, t);
+    end
+end
+
+
+% =========================================================================
+function files = resolve_csv_files(C)
+%RESOLVE_CSV_FILES  Explicit list, or every *.csv in CSV_DIR in natural order.
+    if ~isempty(C.CSV_FILES)
+        files = cellstr(C.CSV_FILES);
+        files = files(:);
+        for k = 1:numel(files)
+            if exist(files{k}, 'file') ~= 2
+                cand = fullfile(C.CSV_DIR, files{k});
+                if exist(cand, 'file') == 2
+                    files{k} = cand;
+                else
+                    error('temp_map_matlab:noCsv', 'CSV not found: %s', files{k});
+                end
+            end
+        end
+        return
+    end
+    d = dir(fullfile(C.CSV_DIR, '*.csv'));
+    if isempty(d)
+        error('temp_map_matlab:noCsv', 'No *.csv files in %s', C.CSV_DIR);
+    end
+    names = {d.name};
+    % natural sort: zero-pad every digit run so t2 < t10
+    keys = regexprep(names, '(\d+)', '${sprintf(''%012d'', str2double($1))}');
+    [~, order] = sort(lower(keys));
+    files = fullfile(C.CSV_DIR, names(order));
+    files = files(:);
+end
+
+
+% =========================================================================
+function [ids, xyz] = read_grids(bdf_file)
+%READ_GRIDS  GRID id and basic-frame xyz from a BDF, following INCLUDEs.
+%   Handles small-field, large-field (GRID*) and free-field (comma) cards.
+    [ids, xyz, ncp] = read_grids_file(bdf_file, true);
+    if isempty(ids)
+        error('temp_map_matlab:noGrids', 'No GRID cards found in %s', bdf_file);
+    end
+    [ids, iu] = unique(ids, 'stable');
+    xyz = xyz(iu, :);
+    if ncp > 0
+        warning('temp_map_matlab:nonBasicCP', ...
+            '%d GRID(s) have CP <> 0. Their coordinates are taken AS WRITTEN (no transform).', ncp);
+    end
+end
+
+
+function [ids, xyz, ncp] = read_grids_file(fname, is_top)
+%   Vectorised: the whole deck is split into lines once, GRID lines are picked
+%   out with one regexp, and small/large-field cards are sliced as char
+%   matrices.  Only free-field GRIDs and INCLUDEs are handled line by line.
+    txt = fileread(fname);
+    txt = strrep(txt, sprintf('\t'), ' ');
+    lines = splitlines(string(txt));
+    base_dir = fileparts(fname);
+    n = numel(lines);
+    up = upper(strip(lines, 'left'));
+
+    first = 1;
+    if is_top
+        ib = find(startsWith(up, "BEGIN"), 1);
+        if ~isempty(ib) && ~isempty(regexp(char(up(ib)), '^BEGIN\s+BULK', 'once')), first = ib + 1; end
+    end
+    last = find(startsWith(up, "ENDDATA"), 1);
+    if isempty(last), last = n; else, last = last - 1; end
+    lines = lines(first:last);
+    up    = up(first:last);
+    n     = numel(lines);
+
+    ids = zeros(0, 1); xyz = zeros(0, 3); ncp = 0; lineno = zeros(0, 1);
+
+    % ---- GRID lines --------------------------------------------------------
+    isg = ~cellfun('isempty', regexp(cellstr(up), '^GRID\*?\s*(,|\s|$)', 'once'));
+    gi  = find(isg);
+    g   = lines(gi);
+    isfree  = contains(g, ",");
+    islarge = ~isfree & startsWith(up(gi), "GRID*");
+    issmall = ~isfree & ~islarge;
+
+    if any(issmall)
+        M = pad_cols(char(g(issmall)), 48);
+        [id, cp, x] = parse_fields(M(:, 9:16), M(:, 17:24), M(:, 25:32), M(:, 33:40), M(:, 41:48));
+        ids = [ids; id]; xyz = [xyz; x]; ncp = ncp + cp; lineno = [lineno; gi(issmall)];
+    end
+    if any(islarge)
+        li = gi(islarge);
+        L1 = pad_cols(char(lines(li)), 72);
+        L2 = pad_cols(char(lines(min(li + 1, n))), 72);   % continuation = next line
+        [id, cp, x] = parse_fields(L1(:, 9:24), L1(:, 25:40), L1(:, 41:56), L1(:, 57:72), L2(:, 9:24));
+        ids = [ids; id]; xyz = [xyz; x]; ncp = ncp + cp; lineno = [lineno; li];
+    end
+    if any(isfree)
+        fi = gi(isfree);
+        for i = fi(:)'
+            f = strtrim(strsplit(char(lines(i)), ',', 'CollapseDelimiters', false));
+            if isempty(f{end}), f(end) = []; end   % trailing comma = continues
+            j = i + 1;
+            while numel(f) < 6 && j <= n
+                nxt = char(lines(j));
+                if isempty(nxt) || nxt(1) == '$', break; end
+                f2 = strtrim(strsplit(nxt, ',', 'CollapseDelimiters', false));
+                if ~isempty(f2) && (isempty(f2{1}) || f2{1}(1) == '+' || f2{1}(1) == '*')
+                    f2 = f2(2:end);               % drop continuation marker
+                end
+                f = [f f2];                       %#ok<AGROW>
+                j = j + 1;
+            end
+            f(end+1:6) = {''};
+            [id, cp, x] = parse_fields(f{2}, f{3}, f{4}, f{5}, f{6});
+            ids = [ids; id]; xyz = [xyz; x]; ncp = ncp + cp; lineno = [lineno; i]; %#ok<AGROW>
+        end
+    end
+    [~, order] = sort(lineno);      % keep deck order
+    ids = ids(order); xyz = xyz(order, :);
+
+    % ---- INCLUDE 'file'  (quoted path may span lines) ----------------------
+    for i = find(startsWith(up, "INCLUDE"))'
+        rest = regexprep(char(lines(i)), '^\s*INCLUDE\s*', '', 'ignorecase');
+        j = i + 1;
+        while nnz(rest == '''') < 2 && j <= n   % unclosed quote: join next line
+            rest = [rest strtrim(char(lines(j)))];    %#ok<AGROW>
+            j = j + 1;
+        end
+        inc = strtrim(regexprep(strtrim(rest), '^''|''$', ''));
+        [i2, x2, c2] = read_grids_file(resolve_include(inc, base_dir), false);
+        ids = [ids; i2]; xyz = [xyz; x2]; ncp = ncp + c2;  %#ok<AGROW>
+    end
+end
+
+
+function [id, ncp, xyz] = parse_fields(fid, fcp, fx, fy, fz)
+%PARSE_FIELDS  Char-matrix (or single char) fields -> id, CP<>0 count, xyz.
+    id  = str2double(cellstr(fid));
+    cpv = str2double(cellstr(fcp));
+    ncp = nnz(~isnan(cpv) & cpv ~= 0);
+    xyz = [nas_real(cellstr(fx)) nas_real(cellstr(fy)) nas_real(cellstr(fz))];
+    ok  = ~isnan(id);
+    id  = id(ok); xyz = xyz(ok, :);
+end
+
+
+function p = resolve_include(inc, base_dir)
+    inc = strrep(inc, '\', filesep);
+    inc = strrep(inc, '/', filesep);
+    cands = {fullfile(base_dir, inc), inc};
+    for k = 1:numel(cands)
+        if exist(cands{k}, 'file') == 2, p = cands{k}; return; end
+    end
+    error('temp_map_matlab:noInclude', 'INCLUDE file not found: %s (relative to %s)', inc, base_dir);
+end
+
+
+function M = pad_cols(M, w)
+%PAD_COLS  Right-pad a char matrix with blanks to at least w columns.
+    if isempty(M), M = repmat(' ', 0, w); end
+    if size(M, 2) < w, M(:, end+1:w) = ' '; end
+end
+
+
+function v = nas_real(c)
+%NAS_REAL  Parse Nastran reals: '1.5', '1.5E-3', '1.5-3', '.5', '1.', blank = 0.
+%   c is a cellstr; returns a column.
+    c = strtrim(c(:));
+    blank = cellfun('isempty', c);
+    c = regexprep(upper(c), 'D', 'E');
+    c = regexprep(c, '^([+-]?[\d.]+)([+-]\d+)$', '$1E$2');   % 1.5-3 -> 1.5E-3
+    v = str2double(c);
+    v(blank) = 0;
+    if any(isnan(v))
+        bad = c(isnan(v));
+        error('temp_map_matlab:badReal', 'Cannot parse "%s" as a real.', bad{1});
+    end
+end
+
+
+% =========================================================================
+function [t, xyz, T] = read_cloud(csv_file, has_header)
+%READ_CLOUD  time, xyz, T(Kelvin) from a 5-column CSV.
+    opts = detectImportOptions(csv_file, 'FileType', 'text');
+    if ~has_header
+        opts.DataLines = [1 Inf];
+    end
+    M = readmatrix(csv_file, opts);
+    if size(M, 2) < 5
+        error('temp_map_matlab:badCsv', ...
+            '%s: expected 5 columns (time,x,y,z,T) but found %d.', csv_file, size(M, 2));
+    end
+    M = M(:, 1:5);
+    M(any(isnan(M), 2), :) = [];
+    if isempty(M)
+        error('temp_map_matlab:emptyCsv', '%s: no numeric rows.', csv_file);
+    end
+    t   = M(1, 1);
+    xyz = M(:, 2:4);
+    T   = M(:, 5);
+    if any(abs(M(:, 1) - t) > 1e-9 * max(1, abs(t)))
+        warning('temp_map_matlab:multiTime', ...
+            '%s: time column is not constant (%g .. %g); using the first value.', ...
+            csv_file, min(M(:, 1)), max(M(:, 1)));
+    end
+end
+
+
+% =========================================================================
+function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C)
+%MAP_TEMPS  Cloud (P,T) -> query points Q by C.METHOD.
+%   linear : Delaunay barycentric interpolation, nearest outside the hull.
+%            Planar / collinear clouds are projected down first.
+%   nearest: closest cloud point (kd-tree if Statistics Toolbox, else the
+%            triangulation's nearestNeighbor).
+%   idw    : inverse-distance-weighted mean of the IDW_K closest points.
+    % duplicate cloud points would break the triangulation: average them
+    [P, ~, ic] = unique(P, 'rows');
+    T = accumarray(ic, T, [], @mean);
+    nP = size(P, 1);
+    nQ = size(Q, 1);
+    meth = lower(char(C.METHOD));
+
+    if nP == 1
+        Tg = repmat(T, nQ, 1);
+        extrap = true(nQ, 1);
+        nndist = vecnorm(Q - P, 2, 2);
+        method = 'single point';
+        return
+    end
+
+    % ---- kd-tree methods (fast at 1M x 1M) ---------------------------------
+    have_knn = exist('knnsearch', 'file') == 2 && license('test', 'Statistics_Toolbox');
+    if ~strcmp(meth, 'linear') && ~have_knn
+        warning('temp_map_matlab:noKnn', ...
+            'knnsearch (Statistics Toolbox) not available; using the triangulation for METHOD=%s.', meth);
+    end
+    if strcmp(meth, 'nearest') && have_knn
+        [nn, nndist] = knnsearch(P, Q);
+        Tg = T(nn);
+        extrap = false(nQ, 1);
+        method = 'nearest (kd-tree)';
+        return
+    elseif strcmp(meth, 'idw') && have_knn
+        k = min(C.IDW_K, nP);
+        [nn, d] = knnsearch(P, Q, 'K', k);
+        w  = 1 ./ max(d, eps) .^ C.IDW_POWER;
+        Tg = sum(w .* T(nn), 2) ./ sum(w, 2);
+        hit = d(:, 1) == 0;                     % sitting on a cloud point
+        Tg(hit) = T(nn(hit, 1));
+        nndist = d(:, 1);
+        extrap = false(nQ, 1);
+        method = sprintf('IDW (k=%d, p=%g)', k, C.IDW_POWER);
+        return
+    end
+
+    % ---- triangulation path --------------------------------------------------
+    % effective dimension of the cloud via SVD of the centred points
+    mu = mean(P, 1);
+    [~, Sv, V] = svd(P - mu, 'econ');
+    sv = diag(Sv);
+    dim = nnz(sv > 1e-9 * sv(1));
+    Pp = (P - mu) * V(:, 1:dim);
+    Qp = (Q - mu) * V(:, 1:dim);
+
+    switch dim
+        case {2, 3}
+            try
+                DT = delaunayTriangulation(Pp);
+            catch ME
+                warning('temp_map_matlab:delaunay', ...
+                    'Triangulation failed (%s); falling back to nearest point.', ME.message);
+                DT = [];
+            end
+            if isempty(DT)
+                nn = dsearchn(Pp, Qp);
+                Tg = T(nn);
+                extrap = true(nQ, 1);
+                method = 'nearest (brute force)';
+            else
+                nn = nearestNeighbor(DT, Qp);
+                Tg = T(nn);                                  % nearest everywhere ...
+                if strcmp(meth, 'linear')
+                    [ti, bc] = pointLocation(DT, Qp);
+                    inside = ~isnan(ti);
+                    tri = DT.ConnectivityList(ti(inside), :);    % (n_in x dim+1)
+                    Tg(inside) = sum(bc(inside, :) .* T(tri), 2); % ... linear inside the hull
+                    extrap = ~inside;
+                    if dim == 3, method = 'linear (3D Delaunay)';
+                    else,        method = 'linear (planar cloud)'; end
+                else
+                    extrap = false(nQ, 1);
+                    method = 'nearest (triangulation)';
+                end
+            end
+        otherwise   % dim == 1: collinear cloud
+            [s, order] = unique(Pp(:, 1));
+            Ts = T(order);
+            sq = min(max(Qp(:, 1), s(1)), s(end));
+            nn = order(interp1(s, 1:numel(s), sq, 'nearest'));
+            if strcmp(meth, 'linear')
+                Tg = interp1(s, Ts, sq, 'linear');
+                extrap = Qp(:, 1) < s(1) | Qp(:, 1) > s(end);
+                method = 'linear (collinear cloud)';
+            else
+                Tg = T(nn);
+                extrap = false(nQ, 1);
+                method = 'nearest (collinear cloud)';
+            end
+    end
+    nndist = vecnorm(Q - P(nn, :), 2, 2);
+    Tg = Tg(:); extrap = extrap(:); nndist = nndist(:);
+end
+
+
+% =========================================================================
+function write_temp_cards(r, C)
+%WRITE_TEMP_CARDS  One bulk-data file of TEMP cards for one result.
+%   Built as a char matrix and written in one go -- a 1M-grid file takes
+%   seconds, not minutes.
+    units = upper(char(C.OUT_UNITS));
+    T = r.grid_T(:);
+    if units == 'C', T = T - 273.15; end
+    ids = r.grid_ids(:);
+    n = numel(ids);
+    w = C.FIELD_SIZE;
+
+    fid = fopen(r.out_file, 'w');
+    if fid < 0
+        error('temp_map_matlab:cantWrite', 'Cannot open %s for writing.', r.out_file);
+    end
+    cl = onCleanup(@() fclose(fid));
+
+    fprintf(fid, '$ TEMP cards generated by temp_map_matlab  (%s)\n', datestr(now, 'yyyy-mm-dd HH:MM'));
+    fprintf(fid, '$ BDF    : %s\n', r.bdf_file);
+    fprintf(fid, '$ CSV    : %s   (time = %g s)\n', r.csv_file, r.time);
+    fprintf(fid, '$ Units  : deg %s   grids: %d   outside cloud hull (nearest used): %d\n', ...
+            units, n, nnz(r.extrap));
+    fprintf(fid, '$ Method : %s\n', r.method);
+    fprintf(fid, '$ Trange : %.3f .. %.3f\n', min(T), max(T));
+
+    sidS = sprintf('%*d', w, r.sid);
+    if C.WRITE_TEMPD
+        if w == 8, fprintf(fid, 'TEMPD   %s%s\n',  sidS, fmt_real(mean(T), w));
+        else,      fprintf(fid, 'TEMPD*  %s%s\n', sidS, fmt_real(mean(T), w)); end
+    end
+
+    % fixed-width columns for every grid, padded to a multiple of 3 pairs
+    idS = sprintf(sprintf('%%%dd', w), ids);
+    if numel(idS) ~= w * n
+        error('temp_map_matlab:idWidth', 'A grid id does not fit in %d characters.', w);
+    end
+    idS = reshape(idS, w, n)';
+    tS  = fmt_real(T, w);
+    pad = mod(-n, 3);
+    idS = [idS; repmat(' ', pad, w)];
+    tS  = [tS;  repmat(' ', pad, w)];
+    m   = (n + pad) / 3;
+    P1 = [idS(1:3:end, :) tS(1:3:end, :)];
+    P2 = [idS(2:3:end, :) tS(2:3:end, :)];
+    P3 = [idS(3:3:end, :) tS(3:3:end, :)];
+    sidCol = repmat(sidS, m, 1);
+
+    if w == 8
+        % TEMP  SID  G1 T1  G2 T2  G3 T3   (64 columns)
+        rows = [repmat('TEMP    ', m, 1) sidCol P1 P2 P3];
+    else
+        % TEMP* SID G1 T1 G2 *      /   * T2 G3 T3
+        r1 = [repmat('TEMP*   ', m, 1) sidCol P1 idS(2:3:end, :) repmat('*', m, 1)];   % 73 cols
+        r2 = [repmat('*       ', m, 1) tS(2:3:end, :) P3];                              % 56 cols
+        r2(:, end+1:size(r1, 2)) = ' ';
+        rows = [r1; r2];
+        rows = rows(reshape([1:m; m+1:2*m], [], 1), :);   % interleave
+    end
+    rows(:, end+1) = newline;
+    fwrite(fid, rows', 'char');
+end
+
+
+function S = fmt_real(v, w)
+%FMT_REAL  Right-justified Nastran reals, one per row of an (n x w) char matrix.
+%   Always carries a decimal point; drops the 'E' when that is what it takes
+%   to fit ('1.2345-5'); falls back to fewer significant digits.  Vectorised.
+    v = v(:);
+    n = numel(v);
+    S = repmat(' ', n, w);
+    done = false(n, 1);
+    z = v == 0;
+    S(z, :) = repmat([blanks(w-2) '0.'], nnz(z), 1);
+    done(z) = true;
+    for p = (w-1):-1:1
+        idx = find(~done);
+        if isempty(idx), break; end
+        c = compose(sprintf('%%.%dG', p), v(idx));                % "300.1235", "1.5E-05"
+        c = regexprep(c, 'E([+-])0*(\d)', 'E$1$2');               % E-05 -> E-5
+        c = regexprep(c, '^([+-]?\d+)(E|$)', '$1.$2');            % 300 -> 300.
+        long = strlength(c) > w & contains(c, 'E');
+        c(long) = strrep(c(long), 'E', '');                        % 1.5E-5 -> 1.5-5
+        ok = strlength(c) <= w;
+        if any(ok)
+            S(idx(ok), :) = char(pad(c(ok), w, 'left'));
+            done(idx(ok)) = true;
+        end
+    end
+    if ~all(done)
+        error('temp_map_matlab:fmt', 'Cannot format %g in %d characters.', v(find(~done, 1)), w);
+    end
+end
+
+
+% =========================================================================
+function S = summary_table(R, C)
+    n = numel(R);
+    File = cell(n, 1); Time = zeros(n, 1); SID = zeros(n, 1);
+    CloudPts = zeros(n, 1); Grids = zeros(n, 1); Extrap = zeros(n, 1);
+    Tmin = zeros(n, 1); Tmax = zeros(n, 1); OutFile = cell(n, 1);
+    off = 0; if upper(char(C.OUT_UNITS)) == 'C', off = 273.15; end
+    for k = 1:n
+        File{k}     = shortname(R(k).csv_file);
+        Time(k)     = R(k).time;
+        SID(k)      = R(k).sid;
+        CloudPts(k) = numel(R(k).cloud_T);
+        Grids(k)    = numel(R(k).grid_ids);
+        Extrap(k)   = nnz(R(k).extrap);
+        Tmin(k)     = min(R(k).grid_T) - off;
+        Tmax(k)     = max(R(k).grid_T) - off;
+        OutFile{k}  = R(k).out_file;
+    end
+    S = table(File, Time, SID, CloudPts, Grids, Extrap, Tmin, Tmax, OutFile);
+end
+
+
+function s = shortname(p)
+    [~, b, e] = fileparts(p);
+    s = [b e];
+end
