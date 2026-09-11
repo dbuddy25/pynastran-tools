@@ -178,18 +178,25 @@ Rg = uigridlayout(root, [2 1]);
 Rg.RowHeight = {30, '1x'};
 Rg.Padding = [0 0 0 0];
 
-bar = uigridlayout(Rg, [1 9]);
-bar.ColumnWidth = [{50, '1x'}, repmat({48}, 1, 7)];
+bar = uigridlayout(Rg, [1 11]);
+bar.ColumnWidth = [{50, 34, '1x', 34}, repmat({48}, 1, 7)];
 bar.Padding = [0 0 0 0];
 t = uilabel(bar, 'Text', 'View:');
 t.Layout.Column = 1;
 viewDD = uidropdown(bar, 'Items', {'(nothing mapped yet)'}, ...
                     'ValueChangedFcn', @(~, ~) on_view_change());
-viewDD.Layout.Column = 2;
+viewDD.Layout.Column = 3;
+prevB = uibutton(bar, 'Text', '<', 'Tooltip', 'Previous case (Left arrow)', ...
+                 'ButtonPushedFcn', @(~, ~) step_case(-1));
+prevB.Layout.Column = 2;
+nextB = uibutton(bar, 'Text', '>', 'Tooltip', 'Next case (Right arrow)', ...
+                 'ButtonPushedFcn', @(~, ~) step_case(+1));
+nextB.Layout.Column = 4;
 for k = 1:numel(VIEWS)
     b = uibutton(bar, 'Text', VIEWS{k}, 'ButtonPushedFcn', @(src, ~) snap(src.Text));
-    b.Layout.Column = 2 + k;
+    b.Layout.Column = 4 + k;
 end
+fig.KeyPressFcn = @(~, ev) on_key(ev);
 
 ax = uiaxes(Rg);
 ax.Layout.Row = 2;
@@ -376,6 +383,22 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
     function on_view_change()
         replot();
         show_coverage();
+    end
+
+    function step_case(delta)
+        if isempty(R) || isempty(viewDD.ItemsData), return; end
+        k = viewDD.Value + delta;
+        if k < 1 || k > numel(R), return; end
+        viewDD.Value = k;
+        on_view_change();
+    end
+
+    function on_key(ev)
+        switch ev.Key
+            case 'leftarrow',  step_case(-1);
+            case 'rightarrow', step_case(+1);
+            case 'home',       snap('ISO');
+        end
     end
 
     function snap(name)
