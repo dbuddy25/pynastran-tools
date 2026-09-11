@@ -49,6 +49,9 @@ D = pdist2_plain(Rn.grid_xyz, Rn.cloud_xyz);
 [dmin, nn] = min(D, [], 2);
 check(max(abs(Rn.grid_T - Rn.cloud_T(nn))) < 1e-9, 'nearest: matches brute-force nearest point');
 check(max(abs(Rn.nn_dist - dmin)) < 1e-9, 'nearest: nn_dist matches brute force');
+Rs = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
+                     'METHOD', 'scattered', 'WRITE', false);
+check(max(abs(Rs.grid_T - R(1).grid_T)) < 1e-6, 'scattered: matches linear on the fixture');
 Ri = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
                      'METHOD', 'idw', 'WRITE', false);
 check(all(Ri.grid_T >= min(Ri.cloud_T) - 1e-9 & Ri.grid_T <= max(Ri.cloud_T) + 1e-9), ...

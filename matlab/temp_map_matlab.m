@@ -33,6 +33,9 @@ function [R, S] = temp_map_matlab(varargin)
 %               first.  Grids outside the hull are flagged in R(k).extrap.
 %               Exact for smooth fields, but the 3D triangulation costs ~1 min
 %               and several GB at 1M cloud points.
+%   'scattered' - MATLAB's scatteredInterpolant(P, T, 'linear', 'nearest'),
+%               verbatim: same maths as 'linear' but without the bridging-cell
+%               guard, for one-to-one comparison with other scripts.
 %   'nearest' - each grid takes the temperature of its closest cloud point.
 %   'idw'     - inverse-distance-weighted mean of the IDW_K closest points.
 %   'nearest' and 'idw' use a kd-tree (knnsearch, Statistics Toolbox) and take
@@ -72,7 +75,7 @@ C.SID_FROM_TIME  = false;       % ... or SID = round(time * TIME_SCALE)
 C.TIME_SCALE     = 1;
 
 % --- mapping -------------------------------------------------------------
-C.METHOD         = 'linear';    % 'linear' | 'nearest' | 'idw'   (see help)
+C.METHOD         = 'linear';    % 'linear' | 'scattered' | 'nearest' | 'idw'   (see help)
 C.IDW_K          = 8;           % neighbours used by 'idw'
 C.IDW_POWER      = 2;           % 1/d^p weighting for 'idw'
 C.SLIVER_FACTOR  = 3;           % linear only: a grid whose Delaunay cell has an edge
@@ -242,8 +245,8 @@ function validate_config(C)
     if ~ismember(C.FIELD_SIZE, [8 16])
         error('temp_map_matlab:badField', 'C.FIELD_SIZE must be 8 or 16.');
     end
-    if ~ismember(lower(char(C.METHOD)), {'linear', 'nearest', 'idw'})
-        error('temp_map_matlab:badMethod', 'C.METHOD must be ''linear'', ''nearest'' or ''idw''.');
+    if ~ismember(lower(char(C.METHOD)), {'linear', 'scattered', 'nearest', 'idw'})
+        error('temp_map_matlab:badMethod', 'C.METHOD must be ''linear'', ''scattered'', ''nearest'' or ''idw''.');
     end
     if C.SID_FROM_TIME && C.TIME_SCALE <= 0
         error('temp_map_matlab:badScale', 'C.TIME_SCALE must be positive.');
@@ -690,9 +693,24 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
 
     % ---- kd-tree methods (fast at 1M x 1M) ---------------------------------
     have_knn = exist('knnsearch', 'file') == 2 && license('test', 'Statistics_Toolbox');
-    if ~strcmp(meth, 'linear') && ~have_knn
+    if ismember(meth, {'nearest', 'idw'}) && ~have_knn
         warning('temp_map_matlab:noKnn', ...
             'knnsearch (Statistics Toolbox) not available; using the triangulation for METHOD=%s.', meth);
+    end
+    if strcmp(meth, 'scattered')
+        stage(0.25, sprintf('scatteredInterpolant (linear/nearest) on %d cloud points ...', nP));
+        F = scatteredInterpolant(P, T, 'linear', 'nearest');
+        stage(0.6, sprintf('evaluating at %d grids ...', nQ));
+        Tg = F(Q);
+        extrap = false(nQ, 1);
+        if have_knn
+            [~, nndist] = knn_chunked(P, Q, 1, stage, 'nearest distance');
+        else
+            nndist = nan(nQ, 1);       % not worth a second triangulation
+        end
+        method = 'scatteredInterpolant linear/nearest';
+        Tg = Tg(:); nndist = nndist(:);
+        return
     end
     if strcmp(meth, 'nearest') && have_knn
         [nn, nndist] = knn_chunked(P, Q, 1, stage, 'nearest');
