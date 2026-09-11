@@ -22,6 +22,8 @@ function h = temp_map_plot(r, varargin)
 %       'CLim'        [] = auto from the grid temps, else [lo hi]
 %       'MarkerSize'  grid marker area      (default 36)
 %       'CloudSize'   cloud marker area     (default 8)
+%       'ShowMinMax'  true | false (default true)  label the hottest and coldest
+%                     grid with its ID and temperature
 %       'MaxPoints'   draw at most this many grids / cloud points (default 2e5);
 %                     larger sets are randomly thinned for a responsive view
 %       'View'        '+X' '-X' '+Y' '-Y' '+Z' '-Z' 'ISO'   (default 'ISO')
@@ -34,7 +36,7 @@ function h = temp_map_plot(r, varargin)
 
 o = struct('Parent', [], 'Style', 'points', 'Units', 'K', 'ShowCloud', true, 'ShowSurface', true, 'ShowExtrap', true, ...
            'Colormap', 'jet', 'CLim', [], 'MarkerSize', 36, 'CloudSize', 8, ...
-           'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on');
+           'ShowMinMax', true, 'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on');
 for k = 1:2:numel(varargin)
     name = char(varargin{k});
     if ~isfield(o, name)
@@ -76,7 +78,8 @@ end
 hold(ax, 'on');
 
 % --- data ----------------------------------------------------------------
-h = struct('fig', fig, 'ax', ax, 'grids', [], 'mesh', [], 'cloud', [], 'surface', [], 'extrap', [], 'cbar', []);
+h = struct('fig', fig, 'ax', ax, 'grids', [], 'mesh', [], 'cloud', [], 'surface', [], 'extrap', [], ...
+           'minmax', [], 'cbar', []);
 
 contour = strcmpi(o.Style, 'contour');
 if contour && (~isfield(r, 'faces') || isempty(r.faces))
@@ -114,6 +117,20 @@ h.extrap = scatter3(ax, gxyz(exs,1), gxyz(exs,2), gxyz(exs,3), ...
                     'MarkerFaceColor', 'none', 'LineWidth', 1.0, ...
                     'DisplayName', sprintf('outside hull / far (%d)', nnz(ex)));
 h.extrap.Visible = onoff(o.ShowExtrap && any(ex));
+
+% --- min / max markers -------------------------------------------------------
+[Tmax, imax] = max(Tg); [Tmin, imin] = min(Tg);
+pm = r.grid_xyz([imax imin], :);
+h.minmax = hggroup('Parent', ax, 'DisplayName', 'min / max grid');
+scatter3(ax, pm(:,1), pm(:,2), pm(:,3), o.MarkerSize * 4, 'Marker', 'p', ...
+         'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'w', 'LineWidth', 1.2, 'Parent', h.minmax);
+text(pm(1,1), pm(1,2), pm(1,3), sprintf('  MAX %.1f %s  (grid %d)', Tmax, units, r.grid_ids(imax)), ...
+     'Parent', h.minmax, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1 0.75], 'Margin', 2, ...
+     'Interpreter', 'none', 'Clipping', 'off');
+text(pm(2,1), pm(2,2), pm(2,3), sprintf('  MIN %.1f %s  (grid %d)', Tmin, units, r.grid_ids(imin)), ...
+     'Parent', h.minmax, 'FontWeight', 'bold', 'BackgroundColor', [1 1 1 0.75], 'Margin', 2, ...
+     'Interpreter', 'none', 'Clipping', 'off');
+h.minmax.Visible = onoff(o.ShowMinMax);
 
 % --- colour ----------------------------------------------------------------
 colormap(ax, o.Colormap);
