@@ -12,6 +12,7 @@ function fig = temp_map_gui()
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_PLOT.
 
 R = [];          % results from the last Load & Map
+G = [];          % cached grids from Read BDF (ids, xyz, bdf_file)
 H = [];          % plot handles from temp_map_plot
 VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
 
@@ -25,20 +26,25 @@ root.ColumnWidth = {360, '1x'};
 root.Padding = [8 8 8 8];
 
 % --- left column -----------------------------------------------------------
-L = uigridlayout(root, [18 3]);
+L = uigridlayout(root, [19 3]);
 L.ColumnWidth = {90, '1x', 34};
-L.RowHeight   = {24, 24, 180, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, '1x'};
+L.RowHeight   = {24, 30, 24, 180, 24, 24, 24, 24, 24, 24, 24, 24, 30, 30, 30, 24, 24, 24, '1x'};
 L.RowSpacing  = 6;
 L.Padding     = [0 0 0 0];
 
 row = 1;
 lbl(L, row, 'BDF file');
-bdfE = uieditfield(L, 'text', 'Placeholder', 'model.bdf');
+bdfE = uieditfield(L, 'text', 'Placeholder', 'model.bdf', ...
+                   'ValueChangedFcn', @(~, ~) invalidate_grids());
 bdfE.Layout.Row = row; bdfE.Layout.Column = 2;
 b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_bdf);
 b.Layout.Row = row; b.Layout.Column = 3;
 
 row = 2;
+readB = uibutton(L, 'Text', 'Read BDF', 'ButtonPushedFcn', @on_read_bdf);
+readB.Layout.Row = row; readB.Layout.Column = [1 3];
+
+row = 4;
 lbl(L, row, 'CSV folder');
 csvE = uieditfield(L, 'text', 'Placeholder', 'folder of *.csv clouds', ...
                    'ValueChangedFcn', @(~, ~) refresh_list());
@@ -46,35 +52,35 @@ csvE.Layout.Row = row; csvE.Layout.Column = 2;
 b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_csv);
 b.Layout.Row = row; b.Layout.Column = 3;
 
-row = 3;
+row = 4;
 csvLB = uilistbox(L, 'Items', {}, 'Multiselect', 'on');
 csvLB.Layout.Row = row; csvLB.Layout.Column = [1 3];
 
-row = 4;
+row = 5;
 lbl(L, row, 'Output dir');
 outE = uieditfield(L, 'text', 'Value', 'temp_cards');
 outE.Layout.Row = row; outE.Layout.Column = 2;
 b = uibutton(L, 'Text', '...', 'ButtonPushedFcn', @on_browse_out);
 b.Layout.Row = row; b.Layout.Column = 3;
 
-row = 5;
+row = 6;
 lbl(L, row, 'Units out');
 unitsDD = uidropdown(L, 'Items', {'K', 'C'}, 'Value', 'K', ...
                      'ValueChangedFcn', @(~, ~) replot());
 unitsDD.Layout.Row = row; unitsDD.Layout.Column = [2 3];
 
-row = 6;
+row = 7;
 lbl(L, row, 'SID start');
 sidE = uieditfield(L, 'numeric', 'Value', 1, 'Limits', [1 Inf], 'RoundFractionalValues', 'on');
 sidE.Layout.Row = row; sidE.Layout.Column = [2 3];
 
-row = 7;
+row = 8;
 lbl(L, row, 'Field size');
 fieldDD = uidropdown(L, 'Items', {'8 (small field)', '16 (large field)'}, ...
                      'ItemsData', [8 16], 'Value', 8);
 fieldDD.Layout.Row = row; fieldDD.Layout.Column = [2 3];
 
-row = 8;
+row = 9;
 lbl(L, row, 'Method');
 methodDD = uidropdown(L, 'Items', {'linear (Delaunay) - exact, slow at 1M', ...
                                    'nearest (kd-tree) - fast', ...
@@ -82,36 +88,36 @@ methodDD = uidropdown(L, 'Items', {'linear (Delaunay) - exact, slow at 1M', ...
                       'ItemsData', {'linear', 'nearest', 'idw'}, 'Value', 'linear');
 methodDD.Layout.Row = row; methodDD.Layout.Column = [2 3];
 
-row = 9;
+row = 10;
 lbl(L, row, 'Warn dist');
 warnE = uieditfield(L, 'numeric', 'Value', 0, 'Limits', [0 Inf], ...
                     'Tooltip', 'Warn when a grid is farther than this from any cloud point. 0 = off.');
 warnE.Layout.Row = row; warnE.Layout.Column = [2 3];
 
-row = 10;
+row = 11;
 tempdCB = uicheckbox(L, 'Text', 'Also write TEMPD (mean T)', 'Value', false);
 tempdCB.Layout.Row = row; tempdCB.Layout.Column = [1 3];
 
-row = 11;
+row = 12;
 headerCB = uicheckbox(L, 'Text', 'CSV has header row', 'Value', true);
 headerCB.Layout.Row = row; headerCB.Layout.Column = [1 3];
 
-row = 12;
+row = 13;
 mapB = uibutton(L, 'Text', 'Load & Map', 'FontWeight', 'bold', ...
                 'ButtonPushedFcn', @on_map);
 mapB.Layout.Row = row; mapB.Layout.Column = [1 3];
 
-row = 13;
+row = 14;
 wselB = uibutton(L, 'Text', 'Write selected', 'Enable', 'off', ...
                  'ButtonPushedFcn', @(~, ~) on_write(false));
 wselB.Layout.Row = row; wselB.Layout.Column = [1 3];
 
-row = 14;
+row = 15;
 wallB = uibutton(L, 'Text', 'Write all', 'Enable', 'off', ...
                  'ButtonPushedFcn', @(~, ~) on_write(true));
 wallB.Layout.Row = row; wallB.Layout.Column = [1 3];
 
-row = 15;
+row = 16;
 cloudCB = uicheckbox(L, 'Text', 'Show cloud', 'Value', true, ...
                      'ValueChangedFcn', @(src, ~) toggle('cloud', src.Value));
 cloudCB.Layout.Row = row; cloudCB.Layout.Column = [1 2];
@@ -119,18 +125,18 @@ extrapCB = uicheckbox(L, 'Text', 'Ring outside/far', 'Value', true, ...
                       'ValueChangedFcn', @(src, ~) toggle('extrap', src.Value));
 extrapCB.Layout.Row = row; extrapCB.Layout.Column = [2 3];
 
-row = 16;
+row = 17;
 surfCB = uicheckbox(L, 'Text', 'Show cloud surface (alpha shape)', 'Value', true, ...
                     'ValueChangedFcn', @(src, ~) toggle('surface', src.Value));
 surfCB.Layout.Row = row; surfCB.Layout.Column = [1 3];
 
-row = 17;
+row = 18;
 lbl(L, row, 'Colormap');
 cmapDD = uidropdown(L, 'Items', {'jet', 'parula', 'turbo', 'hot', 'cool'}, 'Value', 'jet', ...
                     'ValueChangedFcn', @(src, ~) colormap_now(src.Value));
 cmapDD.Layout.Row = row; cmapDD.Layout.Column = [2 3];
 
-row = 18;
+row = 19;
 statusTA = uitextarea(L, 'Editable', 'off', 'FontName', 'Courier New', ...
                       'Value', {'Pick a BDF and a CSV folder, then Load & Map.'});
 statusTA.Layout.Row = row; statusTA.Layout.Column = [1 3];
@@ -166,7 +172,31 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         figure(fig);
         if isequal(f, 0), return; end
         bdfE.Value = fullfile(p, f);
+        invalidate_grids();
         if isempty(csvE.Value), csvE.Value = p; refresh_list(); end
+    end
+
+    function invalidate_grids()
+        G = [];
+        readB.Text = 'Read BDF';
+    end
+
+    function ok = on_read_bdf(~, ~)
+        ok = false;
+        dlg = uiprogressdlg(fig, 'Title', 'Reading BDF', 'Indeterminate', 'on', ...
+                            'Message', sprintf('Parsing GRIDs from %s ...', shortname(bdfE.Value)));
+        t0 = tic;
+        try
+            G = temp_map_matlab('BDF_FILE', bdfE.Value, 'READ_ONLY', true);
+        catch ME
+            close(dlg);
+            uialert(fig, ME.message, 'Read failed');
+            return
+        end
+        close(dlg);
+        readB.Text = sprintf('BDF loaded: %d grids  (re-read)', numel(G.ids));
+        status(sprintf('Read %d grids from %s in %.1f s', numel(G.ids), shortname(G.bdf_file), toc(t0)));
+        ok = true;
     end
 
     function on_browse_csv(~, ~)
@@ -201,13 +231,14 @@ title(ax, 'Load & Map to see the grids coloured by temperature');
         if isempty(sel)
             uialert(fig, 'No CSV files selected.', 'Nothing to map'); return
         end
+        if isempty(G) && ~on_read_bdf(), return; end   % first run: read it now
         dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Value', 0, 'Cancelable', 'on', ...
                             'Message', 'Starting ...');
         t0 = tic;
         prog = @(frac, msg) set_progress(dlg, frac, msg, t0);
         try
             [R, S] = temp_map_matlab( ...
-                'BDF_FILE',          bdfE.Value, ...
+                'GRIDS',             G, ...
                 'CSV_DIR',           csvE.Value, ...
                 'CSV_FILES',         fullfile(csvE.Value, sel), ...
                 'CSV_HAS_HEADER',    headerCB.Value, ...

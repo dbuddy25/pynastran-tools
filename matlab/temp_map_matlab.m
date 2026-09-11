@@ -15,6 +15,11 @@ function [R, S] = temp_map_matlab(varargin)
 %   Any CONFIG field can be overridden per call without editing the file:
 %       >> temp_map_matlab('BDF_FILE', 'wing.bdf', 'CSV_DIR', 'clouds', 'OUT_UNITS', 'C')
 %
+%   Parse a big BDF once and reuse the grids across several runs:
+%       >> G = temp_map_matlab('BDF_FILE', 'wing.bdf', 'READ_ONLY', true);
+%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_run1');
+%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_run2', 'METHOD', 'idw');
+%
 %   CSV FORMAT (one file = one time step)
 %   -------------------------------------
 %       time_s, x, y, z, T_kelvin        (header row optional, see CSV_HAS_HEADER)
@@ -84,6 +89,10 @@ C.EXTRAP_WARN_DIST = [];        % [] = off; else warn when a grid's nearest clou
 C.RESULTS        = [];          % pass a previous R here to write it without
                                 % re-mapping (SIDs stay as assigned at mapping time)
 C.PROGRESS       = [];          % @(fraction, message) called at each stage
+C.GRIDS          = [];          % grids struct from a previous READ_ONLY call:
+                                % skips re-parsing the BDF (1M grids = seconds saved)
+C.READ_ONLY      = false;       % true = parse the BDF and return the grids struct only:
+                                %   G = temp_map_matlab('BDF_FILE', f, 'READ_ONLY', true)
 
 % =========================================================================
 %                               MACHINERY
@@ -92,10 +101,21 @@ C = apply_overrides(C, varargin);
 validate_config(C);
 
 if isempty(C.RESULTS)
-    tic;
-    progress(C, 0, sprintf('Reading GRIDs from %s ...', shortname(C.BDF_FILE)));
-    [gid, gxyz] = read_grids(C.BDF_FILE);
-    fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
+    if ~isempty(C.GRIDS) && ~C.READ_ONLY
+        gid = C.GRIDS.ids; gxyz = C.GRIDS.xyz;
+        fprintf('Using %d cached grids from %s\n', numel(gid), C.GRIDS.bdf_file);
+    else
+        tic;
+        progress(C, 0, sprintf('Reading GRIDs from %s ...', shortname(C.BDF_FILE)));
+        [gid, gxyz] = read_grids(C.BDF_FILE);
+        fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
+    end
+    if C.READ_ONLY
+        R = struct('ids', gid, 'xyz', gxyz, 'bdf_file', C.BDF_FILE);
+        S = [];
+        progress(C, 1, 'Done.');
+        return
+    end
 
     files = resolve_csv_files(C);
     nf = numel(files);
@@ -112,6 +132,7 @@ if isempty(C.RESULTS)
         r = empty_result();
         r.csv_file  = files{k};
         r.bdf_file  = C.BDF_FILE;
+        if ~isempty(C.GRIDS), r.bdf_file = C.GRIDS.bdf_file; end
         r.time      = t;
         r.sid       = assign_sid(C, k, t);
         r.grid_ids  = gid;
@@ -195,9 +216,13 @@ end
 function validate_config(C)
 %VALIDATE_CONFIG  Fail early and readably.
     if isempty(C.RESULTS)
-        if exist(C.BDF_FILE, 'file') ~= 2
+        if isempty(C.GRIDS) && exist(C.BDF_FILE, 'file') ~= 2
             error('temp_map_matlab:noFile', 'BDF file not found: %s', C.BDF_FILE);
         end
+        if ~isempty(C.GRIDS) && ~all(isfield(C.GRIDS, {'ids', 'xyz', 'bdf_file'}))
+            error('temp_map_matlab:badGrids', 'C.GRIDS must come from a READ_ONLY call.');
+        end
+        if C.READ_ONLY, return; end
         if isempty(C.CSV_FILES) && exist(C.CSV_DIR, 'dir') ~= 7
             error('temp_map_matlab:noDir', 'CSV folder not found: %s', C.CSV_DIR);
         end

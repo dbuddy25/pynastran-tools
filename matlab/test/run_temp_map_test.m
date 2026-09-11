@@ -37,6 +37,11 @@ end
 check(abs(R(2).time - 100) < 1e-12, 'time read from CSV');
 check(isequal(R(1).far, R(1).grid_ids == 999), 'EXTRAP_WARN_DIST flags only grid 999 as far');
 
+% --- cached grids -----------------------------------------------------------
+G = temp_map_matlab('BDF_FILE', bdf, 'READ_ONLY', true);
+Rg = temp_map_matlab('GRIDS', G, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false);
+check(isequal(G.ids, want_ids) && isequal(Rg.grid_T, R(1).grid_T), 'READ_ONLY + GRIDS reuse gives the same result');
+
 % --- nearest / idw methods against brute force ------------------------------
 Rn = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
                      'METHOD', 'nearest', 'WRITE', false);
