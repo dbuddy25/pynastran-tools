@@ -538,6 +538,7 @@ function E = read_elements_file(fname, is_top)
     cand = startsWith(up, "C");                       % cheap pre-filter
     name_of = strings(n, 1);
     name_of(cand) = regexp(up(cand), '^[A-Z0-9]+', 'match', 'once');
+    name_of(ismissing(name_of)) = "";
     star = cand & startsWith(extractAfter(up, strlength(name_of)), "*");
     for t = 1:size(types, 1)
         name = types{t, 1}; ng = types{t, 2}; nf = 2 + ng;      % EID PID G1..Gng
