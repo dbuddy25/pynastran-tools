@@ -673,16 +673,14 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
             'knnsearch (Statistics Toolbox) not available; using the triangulation for METHOD=%s.', meth);
     end
     if strcmp(meth, 'nearest') && have_knn
-        stage(0.3, sprintf('kd-tree nearest: %d grids vs %d cloud points ...', nQ, nP));
-        [nn, nndist] = knnsearch(P, Q);
+        [nn, nndist] = knn_chunked(P, Q, 1, stage, 'nearest');
         Tg = T(nn);
         extrap = false(nQ, 1);
         method = 'nearest (kd-tree)';
         return
     elseif strcmp(meth, 'idw') && have_knn
         k = min(C.IDW_K, nP);
-        stage(0.3, sprintf('kd-tree IDW (k=%d): %d grids vs %d cloud points ...', k, nQ, nP));
-        [nn, d] = knnsearch(P, Q, 'K', k);
+        [nn, d] = knn_chunked(P, Q, k, stage, sprintf('IDW k=%d', k));
         w  = 1 ./ max(d, eps) .^ C.IDW_POWER;
         Tg = sum(w .* T(nn), 2) ./ sum(w, 2);
         hit = d(:, 1) == 0;                     % sitting on a cloud point
@@ -751,6 +749,23 @@ function [Tg, extrap, nndist, method] = map_temps(P, T, Q, C, stage)
     end
     nndist = vecnorm(Q - P(nn, :), 2, 2);
     Tg = Tg(:); extrap = extrap(:); nndist = nndist(:);
+end
+
+
+% =========================================================================
+function [nn, d] = knn_chunked(P, Q, k, stage, label)
+%KNN_CHUNKED  k nearest cloud points for every query, built once and searched
+%   in chunks so the progress bar moves and Cancel gets a chance to fire.
+    nQ = size(Q, 1);
+    stage(0.25, sprintf('%s: building kd-tree on %d cloud points ...', label, size(P, 1)));
+    Mdl = KDTreeSearcher(P);
+    nn = zeros(nQ, k); d = zeros(nQ, k);
+    chunk = 50000;
+    for a = 1:chunk:nQ
+        b = min(a + chunk - 1, nQ);
+        stage(0.3 + 0.6 * (a - 1) / nQ, sprintf('%s: searching grids %d-%d of %d ...', label, a, b, nQ));
+        [nn(a:b, :), d(a:b, :)] = knnsearch(Mdl, Q(a:b, :), 'K', k);
+    end
 end
 
 
