@@ -29,6 +29,8 @@ function h = temp_map_plot(r, varargin)
 %       'View'        '+X' '-X' '+Y' '-Y' '+Z' '-Z' 'ISO'   (default 'ISO');
 %                     H.set_view('FIT') re-frames without changing direction
 %       'Visible'     'on' | 'off'  (figure visibility, standalone only)
+%       'Buttons'     true | false   add the view buttons / toggles to a
+%                     standalone figure (false for figures you will export)
 %
 %   H is a struct of handles: .fig .ax .grids .cloud .extrap .cbar, plus
 %   H.set_view(name) to snap the view programmatically.
@@ -37,7 +39,7 @@ function h = temp_map_plot(r, varargin)
 
 o = struct('Parent', [], 'Style', 'points', 'Units', 'K', 'ShowCloud', true, 'ShowSurface', true, 'ShowExtrap', true, ...
            'Colormap', 'jet', 'CLim', [], 'MarkerSize', 36, 'CloudSize', 8, ...
-           'ShowMinMax', true, 'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on');
+           'ShowMinMax', true, 'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on', 'Buttons', true);
 for k = 1:2:numel(varargin)
     name = char(varargin{k});
     if ~isfield(o, name)
@@ -185,7 +187,7 @@ catch
 end
 
 % --- view buttons (standalone figure only) ---------------------------------
-if standalone
+if standalone && o.Buttons
     labels = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
     w = 0.055; x0 = 0.08;
     for k = 1:numel(labels)

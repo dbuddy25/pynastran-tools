@@ -321,8 +321,13 @@ if C.WRITE
     if C.SAVE_PNG
         for k = 1:size(R, 2)
             [~, base] = fileparts(R(1, k).csv_file);
-            h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS);
-            saveas(h.fig, fullfile(C.OUT_DIR, [base '_temp.png']));
+            h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS, 'Buttons', false);
+            png = fullfile(C.OUT_DIR, [base '_temp.png']);
+            try
+                exportgraphics(h.ax, png, 'Resolution', 150);      % R2020a+
+            catch
+                print(h.fig, png, '-dpng', '-r150');
+            end
             close(h.fig);
         end
     end
