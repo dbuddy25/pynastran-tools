@@ -42,7 +42,7 @@ root.Padding = [8 8 8 8];
 %                              LEFT: STEPS
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
-Lg.RowHeight = {26, 196, '1x', 96, 182, 150, 128};
+Lg.RowHeight = {26, 196, '1x', 124, 210, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 
 % --- setup file: everything below except the CSV list ----------------------------
@@ -123,8 +123,8 @@ put(uilabel(g2, 'Text', 'columns: time, x, y, z, T', 'FontColor', [0.45 0.45 0.4
 
 % --- 3  Map ------------------------------------------------------------------
 p3 = uipanel(Lg, 'Title', '3  Map', 'FontWeight', 'bold');
-g3 = uigridlayout(p3, [2 4]);
-g3.ColumnWidth = {60, '1x', 90, 64}; g3.RowHeight = {24, 30};
+g3 = uigridlayout(p3, [3 4]);
+g3.ColumnWidth = {60, '1x', 90, 64}; g3.RowHeight = {24, 22, 30};
 g3.Padding = [8 4 8 4]; g3.RowSpacing = 5;
 
 put(uilabel(g3, 'Text', 'Method'), 1, 1);
@@ -143,15 +143,19 @@ put(uilabel(g3, 'Text', 'Warn distance', 'HorizontalAlignment', 'right'), 1, 3);
 warnE = put(uieditfield(g3, 'numeric', 'Value', 0, 'Limits', [0 Inf], ...
             'Tooltip', 'Flag grids farther than this (model length units) from any cloud point. 0 = off.'), 1, 4);
 
+parCB = put(uicheckbox(g3, 'Text', 'Parallel steps (Parallel Computing Toolbox)', 'Value', false, ...
+            'Tooltip', sprintf(['Map the steps after the first in a parfor. The first step of each part builds the\n' ...
+                                'mapping; the rest reuse it, so the CSV read is what gets parallelised.']), ...
+            'ValueChangedFcn', @(~, ~) save_prefs()), 2, [1 4]);
 mapB = put(uibutton(g3, 'Text', 'Load & Map', 'FontWeight', 'bold', 'FontSize', 13, ...
            'BackgroundColor', ACCENT, 'FontColor', 'w', 'Enable', 'off', ...
            'Tooltip', 'Map every ticked CSV onto the grids and show the result. Nothing is written yet.', ...
-           'ButtonPushedFcn', @on_map), 2, [1 4]);
+           'ButtonPushedFcn', @on_map), 3, [1 4]);
 
 % --- 4  Write ----------------------------------------------------------------
 p4 = uipanel(Lg, 'Title', '4  Write TEMP cards', 'FontWeight', 'bold');
-g4 = uigridlayout(p4, [5 4]);
-g4.ColumnWidth = {60, '1x', 90, 64}; g4.RowHeight = {24, 24, 24, 24, 28};
+g4 = uigridlayout(p4, [6 4]);
+g4.ColumnWidth = {60, '1x', 90, 64}; g4.RowHeight = {24, 24, 24, 24, 22, 28};
 g4.Padding = [8 4 8 4]; g4.RowSpacing = 5;
 
 put(uilabel(g4, 'Text', 'Output'), 1, 1);
@@ -185,7 +189,14 @@ trefE = put(uieditfield(g4, 'text', 'Value', '', 'Placeholder', 'none', ...
             'Tooltip', 'Reference (stress-free) temperature in model units -> TEMPD card + global TEMPERATURE(INITIAL) above the subcases. Blank = none.', ...
             'ValueChangedFcn', @(~, ~) save_prefs()), 4, 4);
 
-wr = uigridlayout(g4, [1 3]); put(wr, 5, [1 4]);
+reportCB = put(uicheckbox(g4, 'Text', 'HTML report', 'Value', true, ...
+               'Tooltip', 'temp_map_report.html: settings, coverage warnings, min/max chart, per-step table, check plots.', ...
+               'ValueChangedFcn', @(~, ~) save_prefs()), 5, [1 2]);
+pngCB = put(uicheckbox(g4, 'Text', 'PNG per step (slow at 1M)', 'Value', false, ...
+            'Tooltip', 'Save an ISO-view check plot per time step next to the TEMP files (and into the report).', ...
+            'ValueChangedFcn', @(~, ~) save_prefs()), 5, [3 4]);
+
+wr = uigridlayout(g4, [1 3]); put(wr, 6, [1 4]);
 wr.ColumnWidth = {'1x', '1x', '1x'}; wr.Padding = [0 0 0 0]; wr.ColumnSpacing = 6;
 wselB = uibutton(wr, 'Text', 'Write selected', 'Enable', 'off', ...
                  'Tooltip', 'Write the CSVs highlighted in the list (they must have been mapped).', ...
@@ -449,6 +460,7 @@ update_state();
                 'METHOD',            methodDD.Value, ...
                 'EXTRAP_WARN_DIST',  warn_dist(), ...
                 'OUT_UNITS',         unitsDD.Value, ...
+                'PARALLEL',          parCB.Value, ...
                 'PROGRESS',          prog, ...
                 'WRITE',             false);
         catch ME
@@ -517,6 +529,8 @@ update_state();
                 'SUBTITLE',     subE.Value, ...
                 'CASE_EXTRA',   split_lines(extraE.Value), ...
                 'TREF',         tref_value(), ...
+                'REPORT',       reportCB.Value, ...
+                'SAVE_PNG',     pngCB.Value, ...
                 'WRITE',        true);
         catch ME
             uialert(fig, ME.message, 'Write failed');
@@ -526,6 +540,9 @@ update_state();
         extra = {};
         if caseCB.Value
             extra = {fullfile(outE.Value, 'temp_subcases.dat'); fullfile(outE.Value, 'temp_includes.bdf')};
+        end
+        if reportCB.Value
+            extra = [extra; {fullfile(outE.Value, 'temp_map_report.html')}];
         end
         status([{sprintf('Wrote %d file(s) to %s:', height(S) + numel(extra), outE.Value)}; extra; S.OutFile(:)]);
     end
@@ -715,6 +732,7 @@ update_state();
                     'method', methodDD.Value, 'field', fieldDD.Value, 'header', headerCB.Value, ...
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
                     'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
+                    'parallel', parCB.Value, 'report', reportCB.Value, 'png', pngCB.Value, ...
                     'style', styleDD.Value, 'colormap', cmapDD.Value);
     end
 
@@ -736,6 +754,9 @@ update_state();
         subE.Value       = f('subtitle', '{file}  t = {time} s');
         extraE.Value     = f('extra', '');
         trefE.Value      = f('tref', '');
+        parCB.Value      = f('parallel', false);
+        reportCB.Value   = f('report', true);
+        pngCB.Value      = f('png', false);
         styleDD.Value    = f('style', 'points');
         cmapDD.Value     = f('colormap', 'jet');
         partsT.Data      = P;
@@ -812,16 +833,21 @@ update_state();
         subE.Value        = getpref(PREF, 'subtitle', '{file}  t = {time} s');
         extraE.Value      = getpref(PREF, 'extra',    '');
         trefE.Value       = getpref(PREF, 'tref',     '');
+        parCB.Value       = getpref(PREF, 'parallel', false);
+        reportCB.Value    = getpref(PREF, 'report',   true);
+        pngCB.Value       = getpref(PREF, 'png',      false);
     end
 
     function save_prefs()
         P = parts();
         pj = jsonencode(struct('parts', struct('name', P(:, 1), 'bdf', P(:, 2), 'csv_dir', P(:, 3))));
         setpref(PREF, {'parts_json', 'outdir', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
-                       'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref'}, ...
+                       'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref', ...
+                       'parallel', 'report', 'png'}, ...
                       {pj, outE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
                        csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value, ...
-                       caseCB.Value, subE.Value, extraE.Value, trefE.Value});
+                       caseCB.Value, subE.Value, extraE.Value, trefE.Value, ...
+                       parCB.Value, reportCB.Value, pngCB.Value});
     end
 end
 

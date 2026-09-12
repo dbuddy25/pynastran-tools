@@ -160,6 +160,21 @@ h = temp_map_plot(RM(1), 'Visible', 'off', 'Style', 'contour');
 check(~isempty(h.mesh), 'merged assembly contour plot');
 close(h.fig);
 
+% --- parallel path (falls back to serial without the toolbox) + report ---------
+outP = fullfile(tempdir, 'temp_map_test_par');
+if exist(outP, 'dir'), rmdir(outP, 's'); end
+[Rp, ~, ~] = temp_map_matlab('BDF_FILE', bdf, 'CSV_DIR', here, 'OUT_DIR', outP, 'SID_START', 10, ...
+                             'PARALLEL', true, 'REPORT', true, 'SAVE_PNG', true);
+check(isequal(size(Rp), [1 2]) && max(abs(Rp(2).grid_T - R(2).grid_T)) < 1e-12, ...
+      'PARALLEL gives the same temperatures as serial');
+check(contains(Rp(2).method, '(reused)'), 'PARALLEL step 2 reused the step-1 mapping');
+rep = fullfile(outP, 'temp_map_report.html');
+check(exist(rep, 'file') == 2, 'HTML report written');
+txt = fileread(rep);
+check(contains(txt, 't100.csv') && contains(txt, '<svg') && contains(txt, 'overhangs') && contains(txt, 't000_temp.png'), ...
+      'report has the step table, chart, warnings and plot links');
+check(exist(fullfile(outP, 't100_temp.png'), 'file') == 2, 'PNG per step written');
+
 % --- plot smoke test --------------------------------------------------------
 h = temp_map_plot(R(1), 'Visible', 'off', 'Units', 'C');
 h.set_view('+Z'); h.set_view('ISO');

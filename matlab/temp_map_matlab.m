@@ -35,6 +35,9 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %       temp_includes.bdf         one INCLUDE per TEMP file (+ TEMPD for TREF).
 %                                 Paste below BEGIN BULK.         (WRITE_CASE)
 %       <csv>_temp.png            ISO check plot per step          (SAVE_PNG)
+%       temp_map_report.html      run record: settings, coverage warnings,
+%                                 min/max-vs-time chart, per-step table,
+%                                 check plots                     (REPORT)
 %
 %   OUTPUTS
 %   -------
@@ -57,6 +60,8 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %   Consecutive CSVs with identical point locations (same thermal mesh, new
 %   temperatures) reuse the previous mapping automatically: the geometry is
 %   built once and each further step is a sparse matrix-vector product.
+%   PARALLEL = true maps those later steps in a parfor (Parallel Computing
+%   Toolbox) -- reading 500 CSVs is what takes the time once the map exists.
 %
 %   CSV FORMAT  (one file = one time step; header row optional)
 %   -----------------------------------------------------------
@@ -120,6 +125,12 @@ C.FIELD_SIZE     = 8;               % 8 = small field | 16 = large field
 C.WRITE_TEMPD    = false;           % also emit TEMPD,SID,<mean T> for unlisted grids
 C.WRITE          = true;            % false = map only, write nothing (GUI preview)
 C.SAVE_PNG       = false;           % true = save an ISO-view PNG next to each .bdf
+C.REPORT         = false;           % true = OUT_DIR/temp_map_report.html: settings,
+                                    % per-step table, coverage, warnings, min/max chart,
+                                    % and the PNGs when SAVE_PNG is on
+C.PARALLEL       = false;           % true = map the steps of each part in a parfor
+                                    % (Parallel Computing Toolbox). The first step of a
+                                    % part builds the mapping; the rest reuse it.
 
 % --- case control (optional, one file for the whole batch) ---------------------
 C.WRITE_CASE     = true;            % write OUT_DIR/temp_subcases.dat + temp_includes.bdf
@@ -236,68 +247,48 @@ if isempty(C.RESULTS)
     end
 
     % ---- map every part at every step ------------------------------------------------
+    %   Part-major: step 1 of a part builds the mapping (the slow geometry),
+    %   later steps of the same cloud reuse it -- serially, or in a parfor
+    %   with PARALLEL (the CSV read is what parallelises).
     R = repmat(empty_result(), np, ns);
-    cache = repmat(struct('xyz', [], 'M', [], 'surface', []), 1, np);   % per part: reused
-    total = np * ns;                                                     % while the cloud
-    for k = 1:ns                                                         % points stay put
-        for i = 1:np
-            tic;
-            idx = (k - 1) * np + i;
-            f0 = 0.05 + 0.95 * (idx - 1) / total;
-            fw = 0.95 / total;
-            stage = @(frac, msg) progress(C, f0 + fw * frac, ...
-                        sprintf('[%d/%d] %s%s: %s', k, ns, pfx(G(i).name), steps{k}, msg));
-            stage(0, 'reading CSV ...');
-            [t, cxyz, cT] = read_cloud(files{i}{k}, C.CSV_HAS_HEADER);
-            cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
-            cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
-            if same_cloud(cache(i).xyz, cxyz)
-                stage(0.5, 'same cloud locations as the previous case: reusing the mapping ...');
-                M = cache(i).M; srf = cache(i).surface; reused = true;
-            else
-                M = build_map(cxyz, G(i).xyz, C, stage);
-                stage(0.95, 'cloud surface (alpha shape) ...');
-                srf = cloud_surface(cxyz, C.SURFACE_POINTS);
-                cache(i).xyz = cxyz; cache(i).M = M; cache(i).surface = srf; reused = false;
-            end
-            gT = apply_map(M, cT);
-            extrap = M.extrap; nndist = M.nndist; method = M.method;
-            if reused, method = [method ' (reused)']; end
-            r = empty_result();
-            r.part      = G(i).name;
-            r.csv_file  = files{i}{k};
-            r.bdf_file  = G(i).bdf_file;
-            r.time      = t;
-            r.sid       = assign_sid(C, k, t);
-            r.grid_ids  = G(i).ids;
-            r.grid_xyz  = G(i).xyz;
-            r.faces     = G(i).faces;
-            r.grid_T    = gT;         % Kelvin, always
-            r.cloud_xyz = cxyz;
-            r.cloud_T   = cT;         % Kelvin, always
-            r.extrap    = extrap;
-            r.nn_dist   = nndist;
-            r.far       = false(size(nndist));
-            r.method    = method;
-            r.surface   = srf;
-            if ~isempty(C.EXTRAP_WARN_DIST)
-                r.far = nndist > C.EXTRAP_WARN_DIST;
-                if any(r.far)
-                    warning('temp_map_matlab:farGrids', ...
-                        '%s%s: %d grid(s) are farther than %g from any cloud point (max %.4g).', ...
-                        pfx(G(i).name), steps{k}, nnz(r.far), C.EXTRAP_WARN_DIST, max(nndist));
+    total = np * ns;
+    use_par = C.PARALLEL && ns > 1 && parallel_ok();
+    for i = 1:np
+        Gi = G(i);
+        cache = struct('xyz', [], 'M', [], 'surface', []);
+        fi = files{i};
+        % step 1 always serial: it builds the cache
+        st = @(k) @(frac, msg) progress(C, 0.05 + 0.95 * (((i - 1) * ns + k - 1) + frac) / total, ...
+                                        sprintf('[%d/%d] %s%s: %s', k, ns, pfx(Gi.name), steps{k}, msg));
+        tic;
+        [q, cache] = map_step(fi{1}, C, Gi, cache, st(1));
+        report_step(q, Gi, steps{1}, toc);
+        R(i, 1) = assemble_result(q, C, Gi, fi{1}, 1, cache);
+        if ns > 1
+            if use_par
+                Cw = C; Cw.PROGRESS = []; Cw.RESULTS = []; Cw.GRIDS = [];   % nothing GUI-bound goes to workers
+                dq = parallel.pool.DataQueue;
+                cnt = containers.Map('KeyType', 'char', 'ValueType', 'double'); cnt('done') = 0;
+                afterEach(dq, @(k) par_progress(C, cnt, i, k, ns, total, Gi.name, steps{k}));
+                t0 = tic;
+                Qp = cell(1, ns - 1);
+                parfor j = 1:ns - 1
+                    Qp{j} = map_step(fi{j + 1}, Cw, Gi, cache, @(~, ~) []);
+                    send(dq, j + 1);
                 end
-            end
-            r.coverage  = coverage_report(r);
-            r.warnings  = coverage_warnings(r, C);
-            R(i, k) = r;
-            fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
-                [pfx(G(i).name) steps{k}], t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
-            fprintf('      %s\n', r.coverage{:});
-            if ~isempty(r.warnings)
-                fprintf('\n  ********** COVERAGE WARNING: %s%s **********\n', pfx(G(i).name), steps{k});
-                fprintf('  ** %s\n', r.warnings{:});
-                fprintf('  ***********************************************************\n\n');
+                fprintf('  %s%d steps mapped in parallel  (%.1f s)\n', pfx(Gi.name), ns - 1, toc(t0));
+                for k = 2:ns
+                    report_step(Qp{k - 1}, Gi, steps{k}, NaN);
+                    R(i, k) = assemble_result(Qp{k - 1}, C, Gi, fi{k}, k, cache);
+                end
+                clear Qp
+            else
+                for k = 2:ns
+                    tic;
+                    [q, cache] = map_step(fi{k}, C, Gi, cache, st(k));
+                    report_step(q, Gi, steps{k}, toc);
+                    R(i, k) = assemble_result(q, C, Gi, fi{k}, k, cache);
+                end
             end
         end
     end
@@ -306,6 +297,7 @@ else
     if isvector(R), R = R(:)'; end       % 1 x nSteps for a single part
 end
 RM = merge_parts(R);
+
 
 if C.WRITE
     if exist(C.OUT_DIR, 'dir') ~= 7, mkdir(C.OUT_DIR); end
@@ -333,16 +325,114 @@ if C.WRITE
     end
 end
 
-progress(C, 1, 'Done.');
 if C.WRITE && C.WRITE_CASE && ~isempty(R)
     write_case_control(R, C);
 end
 
 S = summary_table(R, C);
+if C.WRITE && C.REPORT && ~isempty(R)
+    write_report(R, RM, S, C);
+end
+progress(C, 1, 'Done.');
 if nargout == 0
     disp(S);
     clear R S RM
 end
+end
+
+
+% =========================================================================
+function [q, cache] = map_step(file, C, Gi, cache, stage)
+%MAP_STEP  Read one CSV and map it onto part Gi.  Reuses cache when the cloud
+%   points are unchanged, else builds a new mapping (returned in cache so the
+%   caller can keep it for the next step).  q is a slim per-step result.
+    stage(0, 'reading CSV ...');
+    [t, cxyz, cT] = read_cloud(file, C.CSV_HAS_HEADER);
+    cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
+    cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
+    q = struct('t', t, 'cT', cT, 'gT', [], 'extrap', [], 'nndist', [], 'far', [], ...
+               'method', '', 'reused', false, 'cxyz', [], 'srf', []);
+    if same_cloud(cache.xyz, cxyz)
+        stage(0.5, 'same cloud locations as the previous case: reusing the mapping ...');
+        M = cache.M;
+        q.reused = true;
+    else
+        M = build_map(cxyz, Gi.xyz, C, stage);
+        stage(0.95, 'cloud surface (alpha shape) ...');
+        srf = cloud_surface(cxyz, C.SURFACE_POINTS);
+        cache = struct('xyz', cxyz, 'M', M, 'surface', srf);
+        q.cxyz = cxyz; q.srf = srf;
+    end
+    q.gT     = apply_map(M, cT);
+    q.extrap = M.extrap;
+    q.nndist = M.nndist;
+    q.method = M.method;
+    if q.reused, q.method = [q.method ' (reused)']; end
+    q.far = false(size(q.nndist));
+    if ~isempty(C.EXTRAP_WARN_DIST)
+        q.far = q.nndist > C.EXTRAP_WARN_DIST;
+    end
+end
+
+
+function r = assemble_result(q, C, Gi, file, k, cache)
+%ASSEMBLE_RESULT  Full per-step result from the slim map_step output.  Shared
+%   arrays (grids, a reused cloud) are assigned from one variable so MATLAB
+%   keeps a single copy in memory across all the steps.
+    r = empty_result();
+    r.part      = Gi.name;
+    r.csv_file  = file;
+    r.bdf_file  = Gi.bdf_file;
+    r.time      = q.t;
+    r.sid       = assign_sid(C, k, q.t);
+    r.grid_ids  = Gi.ids;
+    r.grid_xyz  = Gi.xyz;
+    r.faces     = Gi.faces;
+    r.grid_T    = q.gT;                 % Kelvin, always
+    if q.reused, r.cloud_xyz = cache.xyz; r.surface = cache.surface;
+    else,        r.cloud_xyz = q.cxyz;   r.surface = q.srf; end
+    r.cloud_T   = q.cT;                 % Kelvin, always
+    r.extrap    = q.extrap;
+    r.nn_dist   = q.nndist;
+    r.far       = q.far;
+    r.method    = q.method;
+    r.coverage  = coverage_report(r);
+    r.warnings  = coverage_warnings(r, C);
+    if ~isempty(r.warnings)
+        fprintf('\n  ********** COVERAGE WARNING: %s%s **********\n', pfx(Gi.name), shortname(file));
+        fprintf('  ** %s\n', r.warnings{:});
+        fprintf('  ***********************************************************\n\n');
+    end
+end
+
+
+function report_step(q, Gi, step, secs)
+    if isnan(secs), tstr = ''; else, tstr = sprintf('  (%.1f s)', secs); end
+    fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s%s\n', ...
+        [pfx(Gi.name) step], q.t, numel(q.cT), nnz(q.extrap), nnz(q.far), min(q.gT), max(q.gT), q.method, tstr);
+end
+
+
+function ok = parallel_ok()
+%PARALLEL_OK  Parallel Computing Toolbox present and a pool available?
+    ok = license('test', 'Distrib_Computing_Toolbox') && exist('parpool', 'file') == 2;
+    if ~ok
+        warning('temp_map_matlab:noParallel', 'PARALLEL requested but the Parallel Computing Toolbox is not available; running serially.');
+        return
+    end
+    try
+        if isempty(gcp('nocreate')), parpool; end
+    catch ME
+        warning('temp_map_matlab:noPool', 'Could not start a parallel pool (%s); running serially.', ME.message);
+        ok = false;
+    end
+end
+
+
+function par_progress(C, cnt, i, k, ns, total, name, step)
+    cnt('done') = cnt('done') + 1;
+    progress(C, 0.05 + 0.95 * (((i - 1) * ns + cnt('done') + 1) / total), ...
+             sprintf('[%d/%d] %s%s mapped in parallel  (%d of %d done)', k, ns, pfx(name), step, cnt('done'), ns - 1));
 end
 
 
@@ -1394,6 +1484,120 @@ function s = fill_tokens(s, file, t, sid, idx)
     s = strrep(s, '{sid}',   sprintf('%d', sid));
     s = strrep(s, '{index}', sprintf('%d', idx));
     if numel(s) > 72, s = s(1:72); end          % Nastran title field limit
+end
+
+
+% =========================================================================
+function write_report(R, RM, S, C)
+%WRITE_REPORT  Self-contained HTML run record in OUT_DIR/temp_map_report.html.
+    f = fullfile(C.OUT_DIR, 'temp_map_report.html');
+    fid = fopen(f, 'w');
+    if fid < 0, error('temp_map_matlab:cantWrite', 'Cannot open %s for writing.', f); end
+    cl = onCleanup(@() fclose(fid));
+    [np, ns] = size(R);
+    units = upper(char(C.OUT_UNITS));
+    esc = @(t) regexprep(char(t), {'&', '<', '>'}, {'&amp;', '&lt;', '&gt;'});
+    w = @(varargin) fprintf(fid, varargin{:});
+
+    w('<!DOCTYPE html><html><head><meta charset="utf-8"><title>TEMP mapping report</title>\n');
+    w(['<style>body{font:14px/1.4 Segoe UI,Arial,sans-serif;margin:24px;color:#222}h1{font-size:22px}' ...
+       'h2{font-size:17px;margin-top:28px;border-bottom:1px solid #ccc}table{border-collapse:collapse;font-size:13px}' ...
+       'th,td{border:1px solid #ccc;padding:3px 8px;text-align:right}th{background:#eee}td:first-child,td:nth-child(2){text-align:left}' ...
+       '.warn{background:#fde8e8;border-left:4px solid #c00;padding:8px 12px;margin:6px 0}.ok{background:#e8f5e9;border-left:4px solid #2a2;padding:8px 12px}' ...
+       'pre{background:#f6f6f6;padding:8px;font-size:12px;overflow-x:auto}details{margin:4px 0}img{max-width:100%%;border:1px solid #ccc;margin:4px 0}' ...
+       'svg{background:#fff;border:1px solid #ccc}</style></head><body>\n']);
+    w('<h1>TEMP mapping report</h1>\n');
+    w('<p>%s &nbsp;&middot;&nbsp; %d part(s) &times; %d time step(s)</p>\n', datestr(now, 'yyyy-mm-dd HH:MM'), np, ns);
+
+    % ---- settings ------------------------------------------------------------------
+    w('<h2>Settings</h2><table>\n');
+    for i = 1:np
+        w('<tr><td>part</td><td>%s</td><td style="text-align:left">%s &nbsp;&larr;&nbsp; %s</td></tr>\n', ...
+          esc(R(i, 1).part), esc(R(i, 1).bdf_file), esc(fileparts(R(i, 1).csv_file)));
+    end
+    rows = {'method', C.METHOD; 'model length units', C.BDF_LENGTH_UNITS; 'cloud length units', C.CSV_LENGTH_UNITS; ...
+            'cloud temperature units', C.CSV_TEMP_UNITS; 'output temperature units', units; ...
+            'SID start', sprintf('%d', C.SID_START); 'card format', sprintf('%d', C.FIELD_SIZE); ...
+            'output folder', C.OUT_DIR};
+    for q = 1:size(rows, 1)
+        w('<tr><td>%s</td><td colspan="2" style="text-align:left">%s</td></tr>\n', esc(rows{q, 1}), esc(rows{q, 2}));
+    end
+    w('</table>\n');
+
+    % ---- warnings ------------------------------------------------------------------
+    w('<h2>Coverage</h2>\n');
+    nwarn = 0;
+    for k = 1:ns
+        if ~isempty(RM(k).warnings)
+            nwarn = nwarn + 1;
+            w('<div class="warn"><b>%s</b><br>%s</div>\n', esc(shortname(RM(k).csv_file)), ...
+              strjoin(cellfun(esc, RM(k).warnings(:)', 'UniformOutput', false), '<br>'));
+        end
+    end
+    if nwarn == 0
+        w('<div class="ok">No coverage warnings: every step''s mesh lies within its cloud (overhang < %.0f%%, outside-hull < 20%%).</div>\n', ...
+          100 * C.OVERHANG_WARN);
+    end
+    w('<details><summary>Coverage detail, first step</summary><pre>%s</pre></details>\n', ...
+      esc(strjoin(RM(1).coverage(:)', newline)));
+
+    % ---- min / max chart (inline SVG) -------------------------------------------------
+    t = [RM.time]; [t, order] = sort(t);
+    tmin = arrayfun(@(r) from_kelvin(min(r.grid_T), units), RM(order));
+    tmax = arrayfun(@(r) from_kelvin(max(r.grid_T), units), RM(order));
+    if ns > 1
+        W = 900; Hh = 260; ml = 60; mr = 20; mt = 20; mb = 40;
+        x = @(v) ml + (W - ml - mr) * (v - t(1)) / max(t(end) - t(1), eps);
+        lo = min(tmin); hi = max(tmax); if hi == lo, hi = lo + 1; end
+        y = @(v) mt + (Hh - mt - mb) * (1 - (v - lo) / (hi - lo));
+        pts = @(v) strjoin(arrayfun(@(a, b) sprintf('%.1f,%.1f', x(a), y(b)), t, v, 'UniformOutput', false), ' ');
+        w('<h2>Min / max mapped temperature vs time [%s]</h2>\n', units);
+        w('<svg width="%d" height="%d">', W, Hh);
+        for g = 0:4
+            yy = y(lo + (hi - lo) * g / 4);
+            w('<line x1="%d" y1="%.1f" x2="%d" y2="%.1f" stroke="#ddd"/><text x="%d" y="%.1f" font-size="11" text-anchor="end">%.1f</text>', ...
+              ml, yy, W - mr, yy, ml - 6, yy + 4, lo + (hi - lo) * g / 4);
+        end
+        for g = 0:5
+            tt = t(1) + (t(end) - t(1)) * g / 5;
+            w('<text x="%.1f" y="%d" font-size="11" text-anchor="middle">%g</text>', x(tt), Hh - mb + 16, tt);
+        end
+        w('<polyline fill="none" stroke="#c22" stroke-width="2" points="%s"/>', pts(tmax));
+        w('<polyline fill="none" stroke="#25c" stroke-width="2" points="%s"/>', pts(tmin));
+        w('<text x="%d" y="%d" font-size="12" fill="#c22">max</text><text x="%d" y="%d" font-size="12" fill="#25c">min</text>', ...
+          W - mr - 60, mt + 12, W - mr - 30, mt + 12);
+        w('<text x="%.1f" y="%d" font-size="12" text-anchor="middle">time [s]</text></svg>\n', (ml + W - mr) / 2, Hh - 4);
+    end
+
+    % ---- per-step table --------------------------------------------------------------
+    w('<h2>Time steps (whole assembly)</h2><table><tr><th>File</th><th>Time</th><th>SID</th><th>Grids</th><th>Outside hull</th><th>Far</th><th>Tmin [%s]</th><th>Tmax [%s]</th><th>Method</th></tr>\n', units, units);
+    for k = 1:ns
+        r = RM(k);
+        w('<tr><td>%s</td><td>%g</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td><td>%.2f</td><td style="text-align:left">%s</td></tr>\n', ...
+          esc(shortname(r.csv_file)), r.time, r.sid, numel(r.grid_ids), nnz(r.extrap), nnz(r.far), ...
+          from_kelvin(min(r.grid_T), units), from_kelvin(max(r.grid_T), units), esc(r.method));
+    end
+    w('</table>\n');
+    if np > 1
+        w('<details><summary>Per part</summary><table><tr><th>Part</th><th>File</th><th>Time</th><th>SID</th><th>Grids</th><th>Outside</th><th>Tmin</th><th>Tmax</th><th>Output</th></tr>\n');
+        for q = 1:height(S)
+            w('<tr><td>%s</td><td>%s</td><td>%g</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f</td><td>%.2f</td><td style="text-align:left">%s</td></tr>\n', ...
+              esc(S.Part{q}), esc(S.File{q}), S.Time(q), S.SID(q), S.Grids(q), S.Extrap(q), S.Tmin(q), S.Tmax(q), esc(S.OutFile{q}));
+        end
+        w('</table></details>\n');
+    end
+
+    % ---- pictures ---------------------------------------------------------------------
+    if C.SAVE_PNG
+        w('<h2>Check plots</h2>\n');
+        for k = 1:ns
+            [~, base] = fileparts(RM(k).csv_file);
+            w('<details%s><summary>%s &nbsp; t = %g s</summary><img src="%s_temp.png"></details>\n', ...
+              ternary(k == 1, ' open', ''), esc(shortname(RM(k).csv_file)), RM(k).time, esc(base));
+        end
+    end
+    w('</body></html>\n');
+    fprintf('  wrote %s\n', f);
 end
 
 
