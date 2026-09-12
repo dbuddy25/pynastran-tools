@@ -529,7 +529,7 @@ update_state();
                 'SUBTITLE',     subE.Value, ...
                 'CASE_EXTRA',   split_lines(extraE.Value), ...
                 'TREF',         tref_value(), ...
-                'REPORT',       reportCB.Value, ...
+                'REPORT',       reportCB.Value && all_of_them, ...   % a partial write must not overwrite the run report
                 'SAVE_PNG',     pngCB.Value, ...
                 'WRITE',        true);
         catch ME
@@ -541,7 +541,7 @@ update_state();
         if caseCB.Value
             extra = {fullfile(outE.Value, 'temp_subcases.dat'); fullfile(outE.Value, 'temp_includes.bdf')};
         end
-        if reportCB.Value
+        if reportCB.Value && all_of_them
             extra = [extra; {fullfile(outE.Value, 'temp_map_report.html')}];
         end
         status([{sprintf('Wrote %d file(s) to %s:', height(S) + numel(extra), outE.Value)}; extra; S.OutFile(:)]);

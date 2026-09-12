@@ -62,6 +62,9 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %   built once and each further step is a sparse matrix-vector product.
 %   PARALLEL = true maps those later steps in a parfor (Parallel Computing
 %   Toolbox) -- reading 500 CSVs is what takes the time once the map exists.
+%   In parallel every step is compared against the FIRST step's cloud (serial
+%   compares against the previous step), and Cancel takes effect between
+%   steps rather than inside one.
 %
 %   CSV FORMAT  (one file = one time step; header row optional)
 %   -----------------------------------------------------------
@@ -398,6 +401,11 @@ function r = assemble_result(q, C, Gi, file, k, cache)
     r.method    = q.method;
     r.coverage  = coverage_report(r);
     r.warnings  = coverage_warnings(r, C);
+    if any(r.far)
+        warning('temp_map_matlab:farGrids', ...
+            '%s%s: %d grid(s) are farther than %g from any cloud point (max %.4g).', ...
+            pfx(Gi.name), shortname(file), nnz(r.far), C.EXTRAP_WARN_DIST, max(r.nn_dist));
+    end
     if ~isempty(r.warnings)
         fprintf('\n  ********** COVERAGE WARNING: %s%s **********\n', pfx(Gi.name), shortname(file));
         fprintf('  ** %s\n', r.warnings{:});
@@ -429,10 +437,10 @@ function ok = parallel_ok()
 end
 
 
-function par_progress(C, cnt, i, k, ns, total, name, step)
+function par_progress(C, cnt, i, k, ns, total, name, step) %#ok<INUSL>
     cnt('done') = cnt('done') + 1;
     progress(C, 0.05 + 0.95 * (((i - 1) * ns + cnt('done') + 1) / total), ...
-             sprintf('[%d/%d] %s%s mapped in parallel  (%d of %d done)', k, ns, pfx(name), step, cnt('done'), ns - 1));
+             sprintf('%smapping steps in parallel  (%d of %d done, latest %s)', pfx(name), cnt('done'), ns - 1, step)); %#ok<NASGU>
 end
 
 
@@ -1627,6 +1635,11 @@ function S = summary_table(R, C)
         end
     end
     S = table(Part, File, Time, SID, CloudPts, Grids, Extrap, Tmin, Tmax, OutFile);
+end
+
+
+function out = ternary(cond, a, b)
+    if cond, out = a; else, out = b; end
 end
 
 
