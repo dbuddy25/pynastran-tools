@@ -39,9 +39,20 @@ root.Padding = [8 8 8 8];
 % =========================================================================
 %                              LEFT: STEPS
 % =========================================================================
-Lg = uigridlayout(root, [6 1]);
-Lg.RowHeight = {122, '1x', 96, 126, 150, 128};
+Lg = uigridlayout(root, [7 1]);
+Lg.RowHeight = {26, 122, '1x', 96, 126, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
+
+% --- setup file: everything below except the CSV list ----------------------------
+sb = uigridlayout(Lg, [1 4]);
+sb.ColumnWidth = {'1x', 90, 90, 90}; sb.Padding = [0 0 0 0]; sb.ColumnSpacing = 6;
+setupLbl = put(uilabel(sb, 'Text', 'Setup: (last session)', 'FontColor', [0.45 0.45 0.45]), 1, 1);
+put(uibutton(sb, 'Text', 'Load setup', 'Tooltip', 'Restore BDF, units, method, output and SID settings from a .json file', ...
+             'ButtonPushedFcn', @on_load_setup), 1, 2);
+put(uibutton(sb, 'Text', 'Save setup', 'Tooltip', 'Save the current settings (not the CSV list) to a .json file', ...
+             'ButtonPushedFcn', @on_save_setup), 1, 3);
+put(uibutton(sb, 'Text', 'Reset', 'Tooltip', 'Back to defaults', ...
+             'ButtonPushedFcn', @on_reset_setup), 1, 4);
 
 % --- 1  Model -----------------------------------------------------------------
 p1 = uipanel(Lg, 'Title', '1  Model', 'FontWeight', 'bold');
@@ -74,7 +85,7 @@ unitsDD = uidropdown(su, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
 uilabel(su, 'Text', '= TEMP card units', 'FontColor', [0.45 0.45 0.45]);
 
 % --- 2  Temperature clouds ---------------------------------------------------
-p2 = uipanel(Lg, 'Title', '2  Temperature clouds', 'FontWeight', 'bold');
+p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
 g2 = uigridlayout(p2, [4 4]);
 g2.ColumnWidth = {60, '1x', 64, 64}; g2.RowHeight = {24, '1x', 24, 22};
 g2.Padding = [8 4 8 4]; g2.RowSpacing = 5;
@@ -347,9 +358,9 @@ update_state();
         wselB.Enable = onoff(~isempty(R));
         wallB.Enable = onoff(~isempty(R));
         if isempty(csvLB.Items)
-            p2.Title = '2  Temperature clouds';
+            p2.Title = '2  Temp clouds';
         else
-            p2.Title = sprintf('2  Temperature clouds  --  %d files, %d selected', numel(csvLB.Items), nsel);
+            p2.Title = sprintf('2  Temp clouds  --  %d files, %d selected', numel(csvLB.Items), nsel);
         end
     end
 
@@ -604,6 +615,70 @@ update_state();
         statusTA.Value = cellstr(lines);
     end
 
+% --- setup files ---------------------------------------------------------------
+    function st = collect_setup()
+        st = struct('bdf', bdfE.Value, 'csvdir', csvE.Value, 'outdir', outE.Value, ...
+                    'bdf_len', bdfUnitsDD.Value, 'bdf_temp', unitsDD.Value, ...
+                    'csv_len', csvUnitsDD.Value, 'csv_temp', csvTempDD.Value, ...
+                    'method', methodDD.Value, 'field', fieldDD.Value, 'header', headerCB.Value, ...
+                    'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
+                    'style', styleDD.Value, 'colormap', cmapDD.Value);
+    end
+
+    function apply_setup(st)
+        f = @(name, dflt) getfield_or(st, name, dflt);
+        bdfE.Value       = f('bdf', '');
+        csvE.Value       = f('csvdir', '');
+        outE.Value       = f('outdir', 'temp_cards');
+        bdfUnitsDD.Value = f('bdf_len', 'in');
+        unitsDD.Value    = f('bdf_temp', 'K');
+        csvUnitsDD.Value = f('csv_len', 'in');
+        csvTempDD.Value  = f('csv_temp', 'K');
+        methodDD.Value   = f('method', 'linear');
+        fieldDD.Value    = f('field', 8);
+        headerCB.Value   = f('header', true);
+        sidE.Value       = f('sid_start', 1);
+        warnE.Value      = f('warn_dist', 0);
+        tempdCB.Value    = f('tempd', false);
+        styleDD.Value    = f('style', 'points');
+        cmapDD.Value     = f('colormap', 'jet');
+        invalidate_grids();
+        on_len_units();
+        if ~isempty(csvE.Value) && exist(csvE.Value, 'dir') == 7, refresh_list(); else, csvLB.Items = {}; end
+        update_state();
+    end
+
+    function on_save_setup(~, ~)
+        [f, p] = uiputfile({'*.json', 'TEMP Mapper setup'}, 'Save setup as', 'temp_map_setup.json');
+        figure(fig);
+        if isequal(f, 0), return; end
+        txt = jsonencode(collect_setup(), 'PrettyPrint', true);
+        fid = fopen(fullfile(p, f), 'w'); fwrite(fid, txt, 'char'); fclose(fid);
+        setupLbl.Text = ['Setup: ' f];
+        status(sprintf('Saved setup to %s', fullfile(p, f)));
+    end
+
+    function on_load_setup(~, ~)
+        [f, p] = uigetfile({'*.json', 'TEMP Mapper setup'}, 'Load setup');
+        figure(fig);
+        if isequal(f, 0), return; end
+        try
+            st = jsondecode(fileread(fullfile(p, f)));
+        catch ME
+            uialert(fig, ME.message, 'Could not read setup'); return
+        end
+        apply_setup(st);
+        save_prefs();
+        setupLbl.Text = ['Setup: ' f];
+        status(sprintf('Loaded setup %s -- pick the new cloud folder if it changed, then Load & Map.', f));
+    end
+
+    function on_reset_setup(~, ~)
+        apply_setup(struct());
+        save_prefs();
+        setupLbl.Text = 'Setup: defaults';
+    end
+
 % --- preferences -------------------------------------------------------------
     function load_prefs()
         bdfE.Value        = getpref(PREF, 'bdf',      '');
@@ -644,6 +719,13 @@ end
 function c = put(c, row, col)
 %PUT  Place a component in its parent grid and hand it back.
     c.Layout.Row = row; c.Layout.Column = col;
+end
+
+
+function v = getfield_or(st, name, dflt)
+    if isstruct(st) && isfield(st, name) && ~isempty(st.(name)), v = st.(name); else, v = dflt; end
+    if ischar(dflt) && isstring(v), v = char(v); end
+    if islogical(dflt), v = logical(v); end
 end
 
 
