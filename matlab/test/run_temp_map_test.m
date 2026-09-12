@@ -102,7 +102,10 @@ check(contains(txt, 'INCLUDE ''t000_temp.bdf''') && contains(txt, 'INCLUDE ''t10
       'temp_includes.bdf lists both TEMP files');
 temp_map_matlab('RESULTS', R, 'OUT_DIR', out, 'TREF', 20, 'OUT_UNITS', 'C', 'CASE_EXTRA', {'SPC = 1'});
 txt = fileread(fullfile(out, 'temp_subcases.dat'));
-check(contains(txt, 'TEMPERATURE(INITIAL) = 99999') && contains(txt, '  SPC = 1'), 'TREF + extra lines in subcases');
+i_glob = regexp(txt, 'TEMPERATURE\(INITIAL\) = 99999', 'once'); i_spc = regexp(txt, '^SPC = 1', 'once', 'lineanchors');
+i_sub = regexp(txt, 'SUBCASE 10', 'once');
+check(~isempty(i_glob) && ~isempty(i_spc) && i_glob < i_sub && i_spc < i_sub, ...
+      'TREF + global lines sit above the first SUBCASE');
 txt = fileread(fullfile(out, 'temp_includes.bdf'));
 check(~isempty(regexp(txt, 'TEMPD\s+99999\s+20\.', 'once')), 'TEMPD reference card written');
 
