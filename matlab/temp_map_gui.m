@@ -649,6 +649,9 @@ update_state();
              'MarkerSize', 4, 'DisplayName', 'min', 'HitTest', 'off');
         hold(tax, 'off');
         ylabel(tax, sprintf('T [deg %s]', u));
+        ytickformat(tax, '%.1f');
+        span = max(tmax) - min(tmin); if span <= 0, span = 1; end
+        ylim(tax, [min(tmin) - 0.05 * span, max(tmax) + 0.05 * span]);
         title(tax, sprintf('Min / max mapped temperature vs time, whole assembly  (%d steps; click to jump)', numel(RM)));
         legend(tax, 'Location', 'northwest', 'Orientation', 'horizontal');
         grid(tax, 'on'); box(tax, 'on');
