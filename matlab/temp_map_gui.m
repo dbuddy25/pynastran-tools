@@ -40,7 +40,7 @@ root.Padding = [8 8 8 8];
 %                              LEFT: STEPS
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
-Lg.RowHeight = {26, 122, '1x', 96, 126, 150, 128};
+Lg.RowHeight = {26, 122, '1x', 96, 182, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 
 % --- setup file: everything below except the CSV list ----------------------------
@@ -148,8 +148,8 @@ mapB = put(uibutton(g3, 'Text', 'Load & Map', 'FontWeight', 'bold', 'FontSize', 
 
 % --- 4  Write ----------------------------------------------------------------
 p4 = uipanel(Lg, 'Title', '4  Write TEMP cards', 'FontWeight', 'bold');
-g4 = uigridlayout(p4, [3 4]);
-g4.ColumnWidth = {60, '1x', 90, 64}; g4.RowHeight = {24, 24, 28};
+g4 = uigridlayout(p4, [5 4]);
+g4.ColumnWidth = {60, '1x', 90, 64}; g4.RowHeight = {24, 24, 24, 24, 28};
 g4.Padding = [8 4 8 4]; g4.RowSpacing = 5;
 
 put(uilabel(g4, 'Text', 'Output'), 1, 1);
@@ -166,7 +166,24 @@ fieldDD = put(uidropdown(g4, 'Items', {'small (8)', 'large (16)'}, 'ItemsData', 
               'Tooltip', 'Small field: 8-character columns. Large field (TEMP*): 16, for ids > 99,999,999 or more digits.', ...
               'ValueChangedFcn', @(~, ~) save_prefs()), 2, 4);
 
-wr = uigridlayout(g4, [1 3]); put(wr, 3, [1 4]);
+caseCB = put(uicheckbox(g4, 'Text', 'Case control', 'Value', true, ...
+             'Tooltip', sprintf(['Also write temp_subcases.dat (SUBCASE id = TEMP SID, with\n' ...
+                                 'TEMPERATURE(LOAD)) and temp_includes.bdf (one INCLUDE per TEMP file).']), ...
+             'ValueChangedFcn', @(~, ~) save_prefs()), 3, 1);
+subE = put(uieditfield(g4, 'text', 'Value', '{file}  t = {time} s', ...
+           'Tooltip', 'SUBTITLE template. Tokens: {file} {time} {sid} {index}. Empty = no SUBTITLE.', ...
+           'ValueChangedFcn', @(~, ~) save_prefs()), 3, [2 4]);
+put(uilabel(g4, 'Text', 'Extra lines'), 4, 1);
+extraE = put(uieditfield(g4, 'text', 'Value', '', 'Placeholder', 'SPC = 1 ; DISP(PLOT) = ALL', ...
+             'Tooltip', 'Case-control lines repeated in every SUBCASE, separated by ;', ...
+             'ValueChangedFcn', @(~, ~) save_prefs()), 4, 2);
+put(uilabel(g4, 'Text', 'T ref', 'HorizontalAlignment', 'right', ...
+            'Tooltip', 'Reference (stress-free) temperature in model units -> TEMPD + TEMPERATURE(INITIAL). Blank = none.'), 4, 3);
+trefE = put(uieditfield(g4, 'text', 'Value', '', 'Placeholder', 'none', ...
+            'Tooltip', 'Reference (stress-free) temperature in model units -> TEMPD card + TEMPERATURE(INITIAL) in every subcase. Blank = none.', ...
+            'ValueChangedFcn', @(~, ~) save_prefs()), 4, 4);
+
+wr = uigridlayout(g4, [1 3]); put(wr, 5, [1 4]);
 wr.ColumnWidth = {'1x', '1x', '1x'}; wr.Padding = [0 0 0 0]; wr.ColumnSpacing = 6;
 wselB = uibutton(wr, 'Text', 'Write selected', 'Enable', 'off', ...
                  'Tooltip', 'Write the CSVs highlighted in the list (they must have been mapped).', ...
@@ -444,13 +461,21 @@ update_state();
                 'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
                 'FIELD_SIZE',   fieldDD.Value, ...
                 'WRITE_TEMPD',  tempdCB.Value, ...
+                'WRITE_CASE',   caseCB.Value, ...
+                'SUBTITLE',     subE.Value, ...
+                'CASE_EXTRA',   split_lines(extraE.Value), ...
+                'TREF',         tref_value(), ...
                 'WRITE',        true);
         catch ME
             uialert(fig, ME.message, 'Write failed');
             return
         end
         p4.Title = sprintf('4  Write TEMP cards  --  %d written %s', height(S), datestr(now, 'HH:MM'));
-        status([{sprintf('Wrote %d file(s) to %s:', height(S), outE.Value)}; S.OutFile(:)]);
+        extra = {};
+        if caseCB.Value
+            extra = {fullfile(outE.Value, 'temp_subcases.dat'); fullfile(outE.Value, 'temp_includes.bdf')};
+        end
+        status([{sprintf('Wrote %d file(s) to %s:', height(S) + numel(extra), outE.Value)}; extra; S.OutFile(:)]);
     end
 
     function show_coverage()
@@ -606,6 +631,11 @@ update_state();
         colormap(ax, name);
     end
 
+    function v = tref_value()
+        v = str2double(strtrim(trefE.Value));
+        if isnan(v), v = []; end
+    end
+
     function d = warn_dist()
         d = warnE.Value;
         if d <= 0, d = []; end
@@ -622,6 +652,7 @@ update_state();
                     'csv_len', csvUnitsDD.Value, 'csv_temp', csvTempDD.Value, ...
                     'method', methodDD.Value, 'field', fieldDD.Value, 'header', headerCB.Value, ...
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
+                    'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
                     'style', styleDD.Value, 'colormap', cmapDD.Value);
     end
 
@@ -640,6 +671,10 @@ update_state();
         sidE.Value       = f('sid_start', 1);
         warnE.Value      = f('warn_dist', 0);
         tempdCB.Value    = f('tempd', false);
+        caseCB.Value     = f('case', true);
+        subE.Value       = f('subtitle', '{file}  t = {time} s');
+        extraE.Value     = f('extra', '');
+        trefE.Value      = f('tref', '');
         styleDD.Value    = f('style', 'points');
         cmapDD.Value     = f('colormap', 'jet');
         invalidate_grids();
@@ -695,13 +730,18 @@ update_state();
         methodDD.Value    = getpref(PREF, 'method',   'linear');
         fieldDD.Value     = getpref(PREF, 'field',    8);
         headerCB.Value    = getpref(PREF, 'header',   true);
+        caseCB.Value      = getpref(PREF, 'case',     true);
+        subE.Value        = getpref(PREF, 'subtitle', '{file}  t = {time} s');
+        extraE.Value      = getpref(PREF, 'extra',    '');
+        trefE.Value       = getpref(PREF, 'tref',     '');
     end
 
     function save_prefs()
         setpref(PREF, {'bdf', 'csvdir', 'outdir', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
-                       'method', 'field', 'header'}, ...
+                       'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref'}, ...
                       {bdfE.Value, csvE.Value, outE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
-                       csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value});
+                       csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value, ...
+                       caseCB.Value, subE.Value, extraE.Value, trefE.Value});
     end
 end
 
@@ -730,6 +770,13 @@ function v = getfield_or(st, name, dflt)
     if isstruct(st) && isfield(st, name) && ~isempty(st.(name)), v = st.(name); else, v = dflt; end
     if ischar(dflt) && isstring(v), v = char(v); end
     if islogical(dflt), v = logical(v); end
+end
+
+
+function c = split_lines(txt)
+%SPLIT_LINES  'SPC = 1 ; DISP = ALL' -> {'SPC = 1', 'DISP = ALL'}
+    c = strtrim(strsplit(char(txt), ';'));
+    c = c(~cellfun('isempty', c));
 end
 
 

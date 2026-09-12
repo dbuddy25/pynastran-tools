@@ -92,6 +92,20 @@ end
 check(isequal(got(:,1), want_ids), 'all grids written in order');
 check(max(abs(got(:,2) - R(1).grid_T)) < 5e-4, 'written temps match (8-char rounding)');
 
+% --- case control -----------------------------------------------------------
+txt = fileread(fullfile(out, 'temp_subcases.dat'));
+check(contains(txt, 'SUBCASE 10') && contains(txt, 'SUBCASE 11') && ...
+      contains(txt, 'TEMPERATURE(LOAD) = 10') && contains(txt, 'SUBTITLE = t100  t = 100 s'), ...
+      'temp_subcases.dat: SUBCASE ids match SIDs, subtitle tokens filled');
+txt = fileread(fullfile(out, 'temp_includes.bdf'));
+check(contains(txt, 'INCLUDE ''t000_temp.bdf''') && contains(txt, 'INCLUDE ''t100_temp.bdf'''), ...
+      'temp_includes.bdf lists both TEMP files');
+temp_map_matlab('RESULTS', R, 'OUT_DIR', out, 'TREF', 20, 'OUT_UNITS', 'C', 'CASE_EXTRA', {'SPC = 1'});
+txt = fileread(fullfile(out, 'temp_subcases.dat'));
+check(contains(txt, 'TEMPERATURE(INITIAL) = 99999') && contains(txt, '  SPC = 1'), 'TREF + extra lines in subcases');
+txt = fileread(fullfile(out, 'temp_includes.bdf'));
+check(~isempty(regexp(txt, 'TEMPD\s+99999\s+20\.', 'once')), 'TEMPD reference card written');
+
 % --- Celsius + large field + TEMPD ----------------------------------------
 temp_map_matlab('RESULTS', R(1), 'OUT_DIR', out, 'OUT_UNITS', 'C', ...
                 'FIELD_SIZE', 16, 'WRITE_TEMPD', true);
