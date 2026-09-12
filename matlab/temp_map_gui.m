@@ -12,6 +12,7 @@ function fig = temp_map_gui()
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_PLOT.
 
 R = [];          % results from the last Load & Map
+hNow = [];       % current-case marker line on the time strip
 G = [];          % cached grids from Read BDF (ids, xyz, bdf_file)
 H = [];          % plot handles from temp_map_plot
 VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
@@ -439,11 +440,12 @@ tax.ButtonDownFcn = @(~, ev) jump_to_time(ev.IntersectionPoint(1));
     end
 
     function mark_history()
-        delete(findobj(tax, 'Tag', 'now'));
+        if ~isempty(hNow) && isvalid(hNow), delete(hNow); end
+        hNow = [];
         if isempty(R) || isempty(viewDD.ItemsData), return; end
         tk = R(viewDD.Value).time;
-        xline(tax, tk, ':', 'Color', [0.3 0.3 0.3], 'LineWidth', 1.2, 'Tag', 'now', ...
-              'HandleVisibility', 'off', 'HitTest', 'off');
+        hNow = xline(tax, tk, '-', 'Color', [0.2 0.2 0.2], 'LineWidth', 1.5, ...
+                     'HandleVisibility', 'off', 'HitTest', 'off');
     end
 
     function jump_to_time(tclick)
