@@ -1,65 +1,92 @@
 function [R, S, RM] = temp_map_matlab(varargin)
 %TEMP_MAP_MATLAB  Map CSV temperature point clouds onto Nastran GRIDs, write TEMP cards.
 %
-%   TEMP_MAP_MATLAB with no arguments runs the CONFIG block below: it reads the
-%   GRID coordinates out of the BDF (INCLUDEs followed), then for every CSV
-%   point cloud interpolates the cloud temperature onto each grid and writes a
-%   bulk-data file of TEMP cards -- one file, one SID, per CSV.
+%   Headless engine. TEMP_MAP_GUI is a front end for it; anything the GUI does
+%   can be done from a script with this function.
 %
-%   [R, S, RM] = TEMP_MAP_MATLAB(...) also returns:
-%       R   - results struct array (parts x time steps), each carrying the grid
-%             ids, coordinates, mapped temperatures (Kelvin) and the cloud, so
-%             TEMP_MAP_PLOT can draw them without re-reading anything.
-%       S   - summary table, one row per part and time step.
-%       RM  - one merged, assembly-wide result per time step (== R for a
-%             single part) for plotting the whole model at once.
+%   QUICK START
+%   -----------
+%   Single part, every CSV in a folder, one TEMP file per time step:
+%       >> temp_map_matlab('BDF_FILE', 'wing.bdf', 'CSV_DIR', 'clouds', ...
+%                          'OUT_DIR', 'temp_cards', ...
+%                          'BDF_LENGTH_UNITS', 'in', 'CSV_LENGTH_UNITS', 'm', ...
+%                          'CSV_TEMP_UNITS', 'K',   'OUT_UNITS', 'F', ...
+%                          'METHOD', 'linear', 'SID_START', 100)
 %
-%   MULTI-PART ASSEMBLIES
-%   ---------------------
-%   Give PARTS one row per part: {name, bdf_file, cloud_folder}. Every part's
-%   folder must hold the same CSV file names (t000.csv, t001.csv, ...); step k
-%   of every part gets the same SID, files land in OUT_DIR/<name>/, and one
-%   temp_subcases.dat + temp_includes.bdf cover the whole assembly:
+%   Multi-part assembly (one BDF + one cloud folder per part, same CSV names
+%   in every folder; step k of every part gets the same SID):
 %       >> temp_map_matlab('PARTS', {'wing', 'wing.bdf', 'clouds\wing'; ...
-%                                    'fuse', 'fuse.bdf', 'clouds\fuse'}, ...)
+%                                    'fuse', 'fuse.bdf', 'clouds\fuse'}, ...
+%                          'OUT_DIR', 'temp_cards', 'OUT_UNITS', 'F')
 %
-%   Any CONFIG field can be overridden per call without editing the file:
-%       >> temp_map_matlab('BDF_FILE', 'wing.bdf', 'CSV_DIR', 'clouds', 'OUT_UNITS', 'C')
+%   Or edit the CONFIG block below and run TEMP_MAP_MATLAB with no arguments.
+%   Every name/value pair overrides the CONFIG field of the same name; unknown
+%   names error out, so typos cannot silently do nothing.
 %
-%   Parse a big BDF once and reuse the grids across several runs:
+%   OUTPUT FILES  (all under OUT_DIR)
+%   -----------------------------------
+%       <csv>_temp.bdf            TEMP cards for one time step, one SID; only a
+%                                 $ header + cards, meant to be INCLUDEd.
+%                                 Multi-part: <part>/<csv>_temp.bdf
+%       temp_subcases.dat         case control: global lines (CASE_EXTRA,
+%                                 TEMPERATURE(INITIAL) if TREF) then one SUBCASE
+%                                 per step with TEMPERATURE(LOAD) = SID.
+%                                 Paste above BEGIN BULK.        (WRITE_CASE)
+%       temp_includes.bdf         one INCLUDE per TEMP file (+ TEMPD for TREF).
+%                                 Paste below BEGIN BULK.         (WRITE_CASE)
+%       <csv>_temp.png            ISO check plot per step          (SAVE_PNG)
+%
+%   OUTPUTS
+%   -------
+%   [R, S, RM] = TEMP_MAP_MATLAB(...)
+%       R   - results, one struct per (part, time step): grid ids / xyz / mapped
+%             T (Kelvin), the cloud, hull / distance flags, coverage text.
+%             Feed one to TEMP_MAP_PLOT.
+%       S   - summary table, one row per part and step.
+%       RM  - one merged, assembly-wide result per step (== R for one part).
+%
+%   REUSING WORK
+%   ------------
+%   Parse the BDF(s) once, map many folders:
 %       >> G = temp_map_matlab('BDF_FILE', 'wing.bdf', 'READ_ONLY', true);
-%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_run1');
-%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_run2', 'METHOD', 'idw');
+%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_hot');
+%       >> temp_map_matlab('GRIDS', G, 'CSV_DIR', 'clouds_cold', 'METHOD', 'idw');
+%   Re-write earlier results with different output options, no re-mapping:
+%       >> [R, S] = temp_map_matlab(..., 'WRITE', false);
+%       >> temp_map_matlab('RESULTS', R, 'OUT_UNITS', 'C', 'FIELD_SIZE', 16);
+%   Consecutive CSVs with identical point locations (same thermal mesh, new
+%   temperatures) reuse the previous mapping automatically: the geometry is
+%   built once and each further step is a sparse matrix-vector product.
 %
-%   CSV FORMAT (one file = one time step)
-%   -------------------------------------
-%       time_s, x, y, z, T               (header row optional, see CSV_HAS_HEADER)
-%   x/y/z in CSV_LENGTH_UNITS (converted to BDF_LENGTH_UNITS before mapping),
-%   basic frame; T in CSV_TEMP_UNITS (converted to Kelvin internally).
+%   CSV FORMAT  (one file = one time step; header row optional)
+%   -----------------------------------------------------------
+%       time_s, x, y, z, T
+%   x/y/z in CSV_LENGTH_UNITS, basic frame; T in CSV_TEMP_UNITS. Columns
+%   after the 5th are ignored; rows with a blank or non-numeric value are dropped.
 %
-%   MAPPING  (C.METHOD)
-%   -------------------
-%   'linear'  - linear interpolation on a Delaunay triangulation of the cloud
-%               (what scatteredInterpolant does), nearest point outside the
-%               cloud's convex hull.  Planar / collinear clouds are projected
-%               first.  Grids outside the hull are flagged in R(k).extrap.
-%               Exact for smooth fields, but the 3D triangulation costs ~1 min
-%               and several GB at 1M cloud points.
-%   'scattered' - MATLAB's scatteredInterpolant(P, T, 'linear', 'nearest'),
-%               verbatim: same maths as 'linear' but without the bridging-cell
-%               guard, for one-to-one comparison with other scripts.
-%   'nearest' - each grid takes the temperature of its closest cloud point.
-%   'idw'     - inverse-distance-weighted mean of the IDW_K closest points.
-%   'nearest' and 'idw' use a kd-tree (knnsearch, Statistics Toolbox) and take
-%   seconds at 1M x 1M; without that toolbox they fall back to the
-%   triangulation.
-%   Consecutive CSVs with IDENTICAL point locations (same thermal mesh, new
-%   temperatures) reuse the previous mapping: the expensive geometry is done
-%   once and each further time step is a sparse matrix-vector product.  R(k).nn_dist always holds each grid's distance to its
-%   nearest cloud point; EXTRAP_WARN_DIST turns that into R(k).far.
+%   MAPPING METHODS  (METHOD)
+%   -------------------------
+%   'linear'    Delaunay interpolation, nearest point outside the cloud's hull,
+%               with a guard (SLIVER_FACTOR) that falls back to nearest inside
+%               long "bridging" cells across concavities. Exact for volume
+%               clouds. ~1 min and several GB at 1M points, built once.
+%   'scattered' MATLAB's scatteredInterpolant(P, T, 'linear', 'nearest')
+%               verbatim -- no guard -- for comparison with other scripts.
+%   'nearest'   closest cloud point (kd-tree, seconds at 1M x 1M).
+%   'idw'       inverse-distance mean of the IDW_K closest points (kd-tree).
+%   'nearest' / 'idw' need knnsearch (Statistics Toolbox); without it they fall
+%   back to the triangulation.
 %
-%   Pure MATLAB -- no Python, no pyNastran.  GRIDs are assumed to be in the
-%   basic coordinate system (CP = 0 or blank); a warning is issued otherwise.
+%   CHECKS
+%   ------
+%   Each step prints a coverage report (cloud vs mesh extents, grids outside
+%   the hull, distance to the nearest cloud point, temperature ranges) and a
+%   loud banner when the mesh overhangs the cloud (OVERHANG_WARN) -- the usual
+%   sign of a length-units mismatch. R(k).extrap flags grids outside the hull,
+%   R(k).far those beyond EXTRAP_WARN_DIST. GRIDs are assumed to be in the
+%   basic coordinate system (CP = 0); a warning is issued otherwise.
+%
+%   Pure MATLAB -- no Python, no pyNastran.
 %
 %   See also TEMP_MAP_PLOT, TEMP_MAP_GUI.
 
