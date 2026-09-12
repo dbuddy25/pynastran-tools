@@ -652,7 +652,11 @@ update_state();
         [f, p] = uiputfile({'*.json', 'TEMP Mapper setup'}, 'Save setup as', 'temp_map_setup.json');
         figure(fig);
         if isequal(f, 0), return; end
-        txt = jsonencode(collect_setup(), 'PrettyPrint', true);
+        try
+            txt = jsonencode(collect_setup(), 'PrettyPrint', true);   % R2021a+
+        catch
+            txt = jsonencode(collect_setup());
+        end
         fid = fopen(fullfile(p, f), 'w'); fwrite(fid, txt, 'char'); fclose(fid);
         setupLbl.Text = ['Setup: ' f];
         status(sprintf('Saved setup to %s', fullfile(p, f)));
