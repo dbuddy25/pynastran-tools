@@ -227,10 +227,15 @@ statusTA = uitextarea(Lg, 'Editable', 'off', 'FontName', 'Courier New', 'FontSiz
 %                              RIGHT: VIEW
 % =========================================================================
 Rg = uigridlayout(root, [4 1]);
-Rg.RowHeight = {30, 26, 34, '1x'};
+Rg.RowHeight = {34, 30, 26, '1x'};     % banner / case + views / display / axes
 Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 6;
 
-% --- row 1: case navigation + view presets -------------------------------------
+% --- row 1: coverage banner (top of the column, clear of the plot) ----------------
+banner = uilabel(Rg, 'Text', 'Coverage check appears here after Load & Map', ...
+                 'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'WordWrap', 'on', ...
+                 'BackgroundColor', [0.94 0.94 0.94], 'FontColor', [0.35 0.35 0.35]);
+
+% --- row 2: case navigation + view presets -------------------------------------
 bar = uigridlayout(Rg, [1 15]);
 bar.ColumnWidth = [{44, 30, '1x', 30, 36, 130}, repmat({44}, 1, 7), {8, 50}];
 bar.Padding = [0 0 0 0]; bar.ColumnSpacing = 4;
@@ -252,7 +257,7 @@ end
 put(uibutton(bar, 'Text', 'Fit', 'Tooltip', 'Re-frame the model without changing the view direction  (Home)', ...
              'ButtonPushedFcn', @(~, ~) snap('FIT')), 1, 15);
 
-% --- row 2: display options ----------------------------------------------------
+% --- row 3: display options ----------------------------------------------------
 db = uigridlayout(Rg, [1 8]);
 db.ColumnWidth = {200, 90, 100, 110, 110, 70, 90, '1x'};
 db.Padding = [0 0 0 0]; db.ColumnSpacing = 6;
@@ -274,11 +279,6 @@ mmCB = put(uicheckbox(db, 'Text', 'Min / max', 'Value', true, ...
 put(uilabel(db, 'Text', 'Colormap', 'HorizontalAlignment', 'right'), 1, 6);
 cmapDD = put(uidropdown(db, 'Items', {'jet', 'turbo', 'parula', 'hot', 'cool'}, 'Value', 'jet', ...
              'ValueChangedFcn', @(src, ~) colormap_now(src.Value)), 1, 7);
-
-% --- row 3: coverage banner -----------------------------------------------------
-banner = uilabel(Rg, 'Text', 'Coverage check appears here after Load & Map', ...
-                 'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'WordWrap', 'on', ...
-                 'BackgroundColor', [0.94 0.94 0.94], 'FontColor', [0.35 0.35 0.35]);
 
 % --- row 4: 3D axes -----------------------------------------------------------------
 ax = uiaxes(Rg);
