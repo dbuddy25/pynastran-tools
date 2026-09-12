@@ -26,7 +26,8 @@ function h = temp_map_plot(r, varargin)
 %                     grid with its ID and temperature
 %       'MaxPoints'   draw at most this many grids / cloud points (default 2e5);
 %                     larger sets are randomly thinned for a responsive view
-%       'View'        '+X' '-X' '+Y' '-Y' '+Z' '-Z' 'ISO'   (default 'ISO')
+%       'View'        '+X' '-X' '+Y' '-Y' '+Z' '-Z' 'ISO'   (default 'ISO');
+%                     H.set_view('FIT') re-frames without changing direction
 %       'Visible'     'on' | 'off'  (figure visibility, standalone only)
 %
 %   H is a struct of handles: .fig .ax .grids .cloud .extrap .cbar, plus
@@ -153,8 +154,8 @@ h.cbar.Label.String = sprintf('T [deg %s]      min %.1f  /  max %.1f', units, li
 % --- dressing --------------------------------------------------------------
 axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');
 xlabel(ax, 'X'); ylabel(ax, 'Y'); zlabel(ax, 'Z');
-title(ax, sprintf('%s    t = %g s    SID %d    T = %.1f .. %.1f %s%s', ...
-      shortname(r.csv_file), r.time, r.sid, min(Tg), max(Tg), units, note), ...
+title(ax, {sprintf('%s    t = %g s', shortname(r.csv_file), r.time), ...
+           sprintf('SID %d    T = %.1f .. %.1f %s    %s%s', r.sid, min(Tg), max(Tg), units, r.method, note)}, ...
       'Interpreter', 'none');
 legend(ax, 'Location', 'northeast');
 hold(ax, 'off');
@@ -198,6 +199,9 @@ function set_view(ax, name)
 %SET_VIEW  Snap to a named view.  '+X' = looking at the model FROM +X.
 %   Camera is placed explicitly (direction + up vector) so every axis view is
 %   upright and un-mirrored, then the model is re-framed to fill the axes.
+%   'FIT' keeps the current direction and only re-frames (undoes zoom / pan).
+    cur_dir = campos(ax) - camtarget(ax);
+    cur_up  = camup(ax);
     camva(ax, 'auto'); camtarget(ax, 'auto'); campos(ax, 'auto'); camup(ax, 'auto');
     axis(ax, 'auto'); axis(ax, 'equal'); axis(ax, 'tight');
     set(ax, 'Projection', 'orthographic');
@@ -209,6 +213,7 @@ function set_view(ax, name)
         case '+Z',  dirn = [ 0  0  1]; up = [0 1 0];
         case '-Z',  dirn = [ 0  0 -1]; up = [0 1 0];
         case 'ISO', dirn = [-1 -1  1] / sqrt(3); up = [0 0 1];   % MATLAB's classic view(3) feel
+        case 'FIT', dirn = cur_dir / max(norm(cur_dir), eps); up = cur_up;
         otherwise
             error('temp_map_plot:badView', 'Unknown view "%s".', name);
     end
