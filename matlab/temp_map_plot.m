@@ -94,15 +94,18 @@ if contour
                    'DisplayName', 'mesh (interpolated T)');
 end
 
+% one translucent skin per part (a merged multi-part result carries a cell)
+srfs = {};
 if isfield(r, 'surface') && ~isempty(r.surface)
-    h.surface = patch('Parent', ax, 'Faces', r.surface.F, 'Vertices', r.surface.V, ...
-                      'FaceColor', [0.6 0.6 0.6], 'FaceAlpha', 0.18, 'EdgeColor', 'none', ...
-                      'DisplayName', 'cloud surface (alpha shape)');
-    h.surface.Visible = onoff(o.ShowSurface);
-else
-    h.surface = patch('Parent', ax, 'Faces', [], 'Vertices', zeros(0, 3), ...
-                      'DisplayName', 'cloud surface (n/a)', 'Visible', 'off');
+    if iscell(r.surface), srfs = r.surface; else, srfs = {r.surface}; end
 end
+srfs = srfs(~cellfun('isempty', srfs));
+h.surface = hggroup('Parent', ax, 'DisplayName', 'cloud surface (alpha shape)');
+for q = 1:numel(srfs)
+    patch('Parent', h.surface, 'Faces', srfs{q}.F, 'Vertices', srfs{q}.V, ...
+          'FaceColor', [0.6 0.6 0.6], 'FaceAlpha', 0.18, 'EdgeColor', 'none');
+end
+h.surface.Visible = onoff(o.ShowSurface && ~isempty(srfs));
 
 h.cloud = scatter3(ax, cxyz(:,1), cxyz(:,2), cxyz(:,3), ...
                    o.CloudSize, [0.55 0.55 0.55], '.', 'DisplayName', 'cloud points');
@@ -154,7 +157,13 @@ h.cbar.Label.String = sprintf('T [deg %s]      min %.1f  /  max %.1f', units, li
 % --- dressing --------------------------------------------------------------
 axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');
 xlabel(ax, 'X'); ylabel(ax, 'Y'); zlabel(ax, 'Z');
-title(ax, {sprintf('%s    t = %g s', shortname(r.csv_file), r.time), ...
+head = sprintf('%s    t = %g s', shortname(r.csv_file), r.time);
+if isfield(r, 'part_names') && numel(r.part_names) > 1
+    head = sprintf('%s    (%d parts: %s)', head, numel(r.part_names), strjoin(r.part_names, ', '));
+elseif isfield(r, 'part') && ~isempty(r.part) && ~strcmp(r.part, 'ALL')
+    head = sprintf('%s    [%s]', head, r.part);
+end
+title(ax, {head, ...
            sprintf('SID %d    T = %.1f .. %.1f %s    %s%s', r.sid, min(Tg), max(Tg), units, r.method, note)}, ...
       'Interpreter', 'none');
 legend(ax, 'Location', 'northeast');

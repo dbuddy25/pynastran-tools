@@ -129,6 +129,37 @@ check(size(R(1).faces, 1) == 12 && size(R(1).faces, 2) == 4, ...
 check(nnz(isnan(R(1).faces(:, 4))) == 1 + 4, 'tri faces NaN-padded (1 tri + 4 tet faces)');
 check(all(R(1).faces(~isnan(R(1).faces)) >= 1 & R(1).faces(~isnan(R(1).faces)) <= 12), 'faces index grid rows');
 
+% --- multi-part assembly ----------------------------------------------------
+outM = fullfile(tempdir, 'temp_map_test_multi');
+if exist(outM, 'dir'), rmdir(outM, 's'); end
+PARTS = {'A', bdf, fullfile(here, 'partA'); 'B', fullfile(here, 'test_temp_map_B.bdf'), fullfile(here, 'partB')};
+[R2, S2, RM] = temp_map_matlab('PARTS', PARTS, 'OUT_DIR', outM, 'SID_START', 50, 'EXTRAP_WARN_DIST', 5);
+check(isequal(size(R2), [2 2]) && numel(RM) == 2 && height(S2) == 4, 'parts x steps result shapes');
+check(numel(RM(1).grid_ids) == 24 && max(RM(1).faces(:), [], 'omitnan') == 24, 'merged view: 24 grids, faces re-indexed');
+check(R2(1, 2).sid == R2(2, 2).sid && R2(1, 2).sid == 51, 'same SID across parts for a step');
+Bexp = 300 + 10 * (R2(2, 1).grid_xyz(:, 1) - 10) + 5 * R2(2, 1).grid_xyz(:, 2) - 2 * R2(2, 1).grid_xyz(:, 3);
+inB = R2(2, 1).grid_ids ~= 1999;
+check(max(abs(R2(2, 1).grid_T(inB) - Bexp(inB))) < 1e-6, 'part B mapped against its own cloud');
+check(exist(fullfile(outM, 'A', 't000_temp.bdf'), 'file') == 2 && exist(fullfile(outM, 'B', 't100_temp.bdf'), 'file') == 2, ...
+      'per-part output folders');
+txt = fileread(fullfile(outM, 'temp_includes.bdf'));
+check(numel(regexp(txt, 'INCLUDE ''[AB]/t\d+_temp\.bdf''')) == 4, 'includes list every part x step');
+txt = fileread(fullfile(outM, 'temp_subcases.dat'));
+check(numel(regexp(txt, 'SUBCASE \d+')) == 2, 'one SUBCASE per step for the whole assembly');
+check(iscell(RM(1).surface) && numel(RM(1).surface) == 2 && any(contains(RM(1).warnings, 'B:')), ...
+      'merged surfaces per part, warnings prefixed by part');
+G2 = temp_map_matlab('PARTS', PARTS, 'READ_ONLY', true);
+check(numel(G2) == 2 && strcmp(G2(2).name, 'B'), 'READ_ONLY returns one grids struct per part');
+try
+    temp_map_matlab('PARTS', PARTS, 'CSV_FILES', {'t000.csv', 'nope.csv'}, 'WRITE', false);
+    check(false, 'missing step should error');
+catch ME
+    check(contains(ME.message, 'nope.csv') || contains(ME.message, 'not found'), 'missing step errors clearly');
+end
+h = temp_map_plot(RM(1), 'Visible', 'off', 'Style', 'contour');
+check(~isempty(h.mesh), 'merged assembly contour plot');
+close(h.fig);
+
 % --- plot smoke test --------------------------------------------------------
 h = temp_map_plot(R(1), 'Visible', 'off', 'Units', 'C');
 h.set_view('+Z'); h.set_view('ISO');

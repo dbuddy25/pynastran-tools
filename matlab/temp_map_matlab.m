@@ -1,4 +1,4 @@
-function [R, S] = temp_map_matlab(varargin)
+function [R, S, RM] = temp_map_matlab(varargin)
 %TEMP_MAP_MATLAB  Map CSV temperature point clouds onto Nastran GRIDs, write TEMP cards.
 %
 %   TEMP_MAP_MATLAB with no arguments runs the CONFIG block below: it reads the
@@ -6,11 +6,22 @@ function [R, S] = temp_map_matlab(varargin)
 %   point cloud interpolates the cloud temperature onto each grid and writes a
 %   bulk-data file of TEMP cards -- one file, one SID, per CSV.
 %
-%   [R, S] = TEMP_MAP_MATLAB(...) also returns:
-%       R   - results struct array, one element per CSV, carrying the grid ids,
-%             coordinates, mapped temperatures (Kelvin) and the cloud itself,
-%             so TEMP_MAP_PLOT can draw them without re-reading anything.
-%       S   - summary table, one row per CSV (file, time, SID, counts, T range).
+%   [R, S, RM] = TEMP_MAP_MATLAB(...) also returns:
+%       R   - results struct array (parts x time steps), each carrying the grid
+%             ids, coordinates, mapped temperatures (Kelvin) and the cloud, so
+%             TEMP_MAP_PLOT can draw them without re-reading anything.
+%       S   - summary table, one row per part and time step.
+%       RM  - one merged, assembly-wide result per time step (== R for a
+%             single part) for plotting the whole model at once.
+%
+%   MULTI-PART ASSEMBLIES
+%   ---------------------
+%   Give PARTS one row per part: {name, bdf_file, cloud_folder}. Every part's
+%   folder must hold the same CSV file names (t000.csv, t001.csv, ...); step k
+%   of every part gets the same SID, files land in OUT_DIR/<name>/, and one
+%   temp_subcases.dat + temp_includes.bdf cover the whole assembly:
+%       >> temp_map_matlab('PARTS', {'wing', 'wing.bdf', 'clouds\wing'; ...
+%                                    'fuse', 'fuse.bdf', 'clouds\fuse'}, ...)
 %
 %   Any CONFIG field can be overridden per call without editing the file:
 %       >> temp_map_matlab('BDF_FILE', 'wing.bdf', 'CSV_DIR', 'clouds', 'OUT_UNITS', 'C')
@@ -61,8 +72,11 @@ C = struct();
 % --- input ---------------------------------------------------------------
 C.BDF_FILE       = 'model.bdf';
 C.CSV_DIR        = '.';         % folder holding the temperature clouds
-C.CSV_FILES      = {};          % {} = every *.csv in CSV_DIR (natural-sorted),
-                                % or an explicit cell list of file names
+C.PARTS          = {};          % multi-part: N x 3 cell {name, bdf_file, cloud_folder};
+                                % when given, BDF_FILE and CSV_DIR are ignored
+C.CSV_FILES      = {};          % {} = every *.csv in the folder (natural-sorted),
+                                % or an explicit cell list of file names (base
+                                % names for multi-part: the same in every folder)
 C.CSV_HAS_HEADER = true;        % first CSV row is a header
 
 % --- units ---------------------------------------------------------------
@@ -133,104 +147,159 @@ C.READ_ONLY      = false;       % true = parse the BDF and return the grids stru
 C = apply_overrides(C, varargin);
 validate_config(C);
 
+parts = C.PARTS;
+if isempty(parts), parts = {'', C.BDF_FILE, C.CSV_DIR}; end   % single part = today's flow
+np = size(parts, 1);
+
 if isempty(C.RESULTS)
+    % ---- grids per part ----------------------------------------------------------
     if ~isempty(C.GRIDS) && ~C.READ_ONLY
-        gid = C.GRIDS.ids; gxyz = C.GRIDS.xyz; gfaces = C.GRIDS.faces;
-        fprintf('Using %d cached grids from %s\n', numel(gid), C.GRIDS.bdf_file);
+        G = C.GRIDS(:)';
+        if numel(G) ~= np
+            error('temp_map_matlab:badGrids', 'C.GRIDS has %d part(s) but PARTS has %d.', numel(G), np);
+        end
+        for i = 1:np
+            G(i).csv_dir = parts{i, 3};      % folders may change between runs; grids do not
+            fprintf('Using %d cached grids from %s\n', numel(G(i).ids), G(i).bdf_file);
+        end
     else
-        tic;
-        gstage = @(f, m) progress(C, 0.00 + 0.45 * f, sprintf('GRIDs: %s', m));
-        [gid, gxyz] = read_grids(C.BDF_FILE, gstage);
-        fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), C.BDF_FILE, toc);
-        tic;
-        estage = @(f, m) progress(C, 0.45 + 0.50 * f, sprintf('Elements: %s', m));
-        gfaces = read_faces(C.BDF_FILE, gid, estage);
-        fprintf('Read %d drawable element faces  (%.1f s)\n', size(gfaces, 1), toc);
+        G = repmat(struct('name', '', 'ids', [], 'xyz', [], 'faces', [], 'bdf_file', '', 'csv_dir', ''), 1, np);
+        for i = 1:np
+            lo = (i - 1) / np; w = 1 / np;
+            tic;
+            gstage = @(f, m) progress(C, lo + w * 0.45 * f, sprintf('%sGRIDs: %s', pfx(parts{i, 1}), m));
+            [gid, gxyz] = read_grids(parts{i, 2}, gstage);
+            fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), parts{i, 2}, toc);
+            tic;
+            estage = @(f, m) progress(C, lo + w * (0.45 + 0.50 * f), sprintf('%sElements: %s', pfx(parts{i, 1}), m));
+            gfaces = read_faces(parts{i, 2}, gid, estage);
+            fprintf('Read %d drawable element faces  (%.1f s)\n', size(gfaces, 1), toc);
+            G(i) = struct('name', parts{i, 1}, 'ids', gid, 'xyz', gxyz, 'faces', gfaces, ...
+                          'bdf_file', parts{i, 2}, 'csv_dir', parts{i, 3});
+        end
     end
     if C.READ_ONLY
-        R = struct('ids', gid, 'xyz', gxyz, 'faces', gfaces, 'bdf_file', C.BDF_FILE);
-        S = [];
+        R = G; S = []; RM = [];
         progress(C, 1, 'Done.');
         return
     end
+    if np > 1
+        allids = vertcat(G.ids);
+        ndup = numel(allids) - numel(unique(allids));
+        if ndup > 0
+            warning('temp_map_matlab:dupGrids', ...
+                '%d grid id(s) appear in more than one part -- Nastran will reject the merged deck.', ndup);
+        end
+    end
 
-    files = resolve_csv_files(C);
-    nf = numel(files);
-    R = repmat(empty_result(), nf, 1);
-    cache = struct('xyz', [], 'M', [], 'surface', []);   % reused while the cloud
-    for k = 1:nf                                          % locations stay the same
-        tic;
-        f0 = 0.05 + 0.95 * (k - 1) / nf;          % this file's share of the bar
-        fw = 0.95 / nf;
-        stage = @(frac, msg) progress(C, f0 + fw * frac, ...
-                    sprintf('[%d/%d] %s: %s', k, nf, shortname(files{k}), msg));
-        stage(0, 'reading CSV ...');
-        [t, cxyz, cT] = read_cloud(files{k}, C.CSV_HAS_HEADER);
-        cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
-        cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
-        if same_cloud(cache.xyz, cxyz)
-            stage(0.5, 'same cloud locations as the previous case: reusing the mapping ...');
-            M = cache.M; srf = cache.surface; reused = true;
-        else
-            M = build_map(cxyz, gxyz, C, stage);
-            stage(0.95, 'cloud surface (alpha shape) ...');
-            srf = cloud_surface(cxyz, C.SURFACE_POINTS);
-            cache.xyz = cxyz; cache.M = M; cache.surface = srf; reused = false;
+    % ---- time steps: part 1 defines the list, every part must have the same names --
+    C1 = C; C1.CSV_DIR = G(1).csv_dir;
+    files = cell(1, np);
+    files{1} = resolve_csv_files(C1);
+    steps = cellfun(@shortname, files{1}, 'UniformOutput', false);
+    ns = numel(steps);
+    for i = 2:np
+        files{i} = fullfile(G(i).csv_dir, steps);
+        miss = steps(cellfun(@(f) exist(f, 'file') ~= 2, files{i}));
+        if ~isempty(miss)
+            error('temp_map_matlab:missingStep', ...
+                'Part "%s" (%s) is missing %d of the %d time steps, e.g. %s', ...
+                G(i).name, G(i).csv_dir, numel(miss), ns, strjoin(miss(1:min(3, end)), ', '));
         end
-        gT = apply_map(M, cT);
-        extrap = M.extrap; nndist = M.nndist; method = M.method;
-        if reused, method = [method ' (reused)']; end
-        r = empty_result();
-        r.csv_file  = files{k};
-        r.bdf_file  = C.BDF_FILE;
-        if ~isempty(C.GRIDS), r.bdf_file = C.GRIDS.bdf_file; end
-        r.time      = t;
-        r.sid       = assign_sid(C, k, t);
-        r.grid_ids  = gid;
-        r.grid_xyz  = gxyz;
-        r.faces     = gfaces;
-        r.grid_T    = gT;         % Kelvin, always
-        r.cloud_xyz = cxyz;
-        r.cloud_T   = cT;         % Kelvin, always
-        r.extrap    = extrap;
-        r.nn_dist   = nndist;
-        r.far       = false(size(nndist));
-        r.method    = method;
-        r.surface   = srf;
-        if ~isempty(C.EXTRAP_WARN_DIST)
-            r.far = nndist > C.EXTRAP_WARN_DIST;
-            if any(r.far)
-                warning('temp_map_matlab:farGrids', ...
-                    '%s: %d grid(s) are farther than %g from any cloud point (max %.4g).', ...
-                    files{k}, nnz(r.far), C.EXTRAP_WARN_DIST, max(nndist));
+    end
+
+    % ---- map every part at every step ------------------------------------------------
+    R = repmat(empty_result(), np, ns);
+    cache = repmat(struct('xyz', [], 'M', [], 'surface', []), 1, np);   % per part: reused
+    total = np * ns;                                                     % while the cloud
+    for k = 1:ns                                                         % points stay put
+        for i = 1:np
+            tic;
+            idx = (k - 1) * np + i;
+            f0 = 0.05 + 0.95 * (idx - 1) / total;
+            fw = 0.95 / total;
+            stage = @(frac, msg) progress(C, f0 + fw * frac, ...
+                        sprintf('[%d/%d] %s%s: %s', k, ns, pfx(G(i).name), steps{k}, msg));
+            stage(0, 'reading CSV ...');
+            [t, cxyz, cT] = read_cloud(files{i}{k}, C.CSV_HAS_HEADER);
+            cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
+            cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
+            if same_cloud(cache(i).xyz, cxyz)
+                stage(0.5, 'same cloud locations as the previous case: reusing the mapping ...');
+                M = cache(i).M; srf = cache(i).surface; reused = true;
+            else
+                M = build_map(cxyz, G(i).xyz, C, stage);
+                stage(0.95, 'cloud surface (alpha shape) ...');
+                srf = cloud_surface(cxyz, C.SURFACE_POINTS);
+                cache(i).xyz = cxyz; cache(i).M = M; cache(i).surface = srf; reused = false;
             end
-        end
-        r.coverage  = coverage_report(r);
-        r.warnings  = coverage_warnings(r, C);
-        R(k) = r;
-        fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
-            shortname(files{k}), t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
-        fprintf('      %s\n', r.coverage{:});
-        if ~isempty(r.warnings)
-            fprintf('\n  ********** COVERAGE WARNING: %s **********\n', shortname(files{k}));
-            fprintf('  ** %s\n', r.warnings{:});
-            fprintf('  ***********************************************************\n\n');
+            gT = apply_map(M, cT);
+            extrap = M.extrap; nndist = M.nndist; method = M.method;
+            if reused, method = [method ' (reused)']; end
+            r = empty_result();
+            r.part      = G(i).name;
+            r.csv_file  = files{i}{k};
+            r.bdf_file  = G(i).bdf_file;
+            r.time      = t;
+            r.sid       = assign_sid(C, k, t);
+            r.grid_ids  = G(i).ids;
+            r.grid_xyz  = G(i).xyz;
+            r.faces     = G(i).faces;
+            r.grid_T    = gT;         % Kelvin, always
+            r.cloud_xyz = cxyz;
+            r.cloud_T   = cT;         % Kelvin, always
+            r.extrap    = extrap;
+            r.nn_dist   = nndist;
+            r.far       = false(size(nndist));
+            r.method    = method;
+            r.surface   = srf;
+            if ~isempty(C.EXTRAP_WARN_DIST)
+                r.far = nndist > C.EXTRAP_WARN_DIST;
+                if any(r.far)
+                    warning('temp_map_matlab:farGrids', ...
+                        '%s%s: %d grid(s) are farther than %g from any cloud point (max %.4g).', ...
+                        pfx(G(i).name), steps{k}, nnz(r.far), C.EXTRAP_WARN_DIST, max(nndist));
+                end
+            end
+            r.coverage  = coverage_report(r);
+            r.warnings  = coverage_warnings(r, C);
+            R(i, k) = r;
+            fprintf('  %-32s t=%-9.4g cloud=%-8d outside=%-6d far=%-6d T=[%.2f %.2f] K  %s  (%.1f s)\n', ...
+                [pfx(G(i).name) steps{k}], t, numel(cT), nnz(extrap), nnz(r.far), min(gT), max(gT), method, toc);
+            fprintf('      %s\n', r.coverage{:});
+            if ~isempty(r.warnings)
+                fprintf('\n  ********** COVERAGE WARNING: %s%s **********\n', pfx(G(i).name), steps{k});
+                fprintf('  ** %s\n', r.warnings{:});
+                fprintf('  ***********************************************************\n\n');
+            end
         end
     end
 else
-    R = C.RESULTS(:);       % SIDs were assigned when these were mapped
+    R = C.RESULTS;                       % SIDs were assigned when these were mapped
+    if isvector(R), R = R(:)'; end       % 1 x nSteps for a single part
 end
+RM = merge_parts(R);
 
 if C.WRITE
     if exist(C.OUT_DIR, 'dir') ~= 7, mkdir(C.OUT_DIR); end
-    for k = 1:numel(R)
-        tic;
-        [~, base] = fileparts(R(k).csv_file);
-        R(k).out_file = fullfile(C.OUT_DIR, [base '_temp.bdf']);
-        write_temp_cards(R(k), C);
-        fprintf('  wrote %s  (%.1f s)\n', R(k).out_file, toc);
-        if C.SAVE_PNG
-            h = temp_map_plot(R(k), 'Visible', 'off', 'Units', C.OUT_UNITS);
+    for i = 1:size(R, 1)
+        pdir = C.OUT_DIR;
+        if ~isempty(R(i, 1).part)
+            pdir = fullfile(C.OUT_DIR, R(i, 1).part);
+            if exist(pdir, 'dir') ~= 7, mkdir(pdir); end
+        end
+        for k = 1:size(R, 2)
+            tic;
+            [~, base] = fileparts(R(i, k).csv_file);
+            R(i, k).out_file = fullfile(pdir, [base '_temp.bdf']);
+            write_temp_cards(R(i, k), C);
+            fprintf('  wrote %s  (%.1f s)\n', R(i, k).out_file, toc);
+        end
+    end
+    if C.SAVE_PNG
+        for k = 1:size(R, 2)
+            [~, base] = fileparts(R(1, k).csv_file);
+            h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS);
             saveas(h.fig, fullfile(C.OUT_DIR, [base '_temp.png']));
             close(h.fig);
         end
@@ -245,8 +314,64 @@ end
 S = summary_table(R, C);
 if nargout == 0
     disp(S);
-    clear R S
+    clear R S RM
 end
+end
+
+
+% =========================================================================
+function s = pfx(name)
+%PFX  'part / ' prefix for messages, or '' for the single-part case.
+    if isempty(name), s = ''; else, s = [char(name) ' / ']; end
+end
+
+
+% =========================================================================
+function RM = merge_parts(R)
+%MERGE_PARTS  One assembly-wide result per time step from the (parts x steps)
+%   array: grids, faces (row offsets applied), clouds and coverage concatenated.
+%   A single part comes back unchanged.
+    [np, ns] = size(R);
+    if np == 1, RM = R; return; end
+    RM = repmat(empty_result(), 1, ns);
+    for k = 1:ns
+        rs = R(:, k);
+        counts = arrayfun(@(r) numel(r.grid_ids), rs);
+        offs = cumsum([0; counts(:)]);
+        m = empty_result();
+        m.part       = 'ALL';
+        m.part_names = {rs.part};
+        m.csv_file   = rs(1).csv_file;
+        m.bdf_file   = strjoin({rs.bdf_file}, ' + ');
+        m.time       = rs(1).time;
+        m.sid        = rs(1).sid;
+        m.grid_ids   = vertcat(rs.grid_ids);
+        m.grid_xyz   = vertcat(rs.grid_xyz);
+        m.grid_T     = vertcat(rs.grid_T);
+        m.extrap     = vertcat(rs.extrap);
+        m.nn_dist    = vertcat(rs.nn_dist);
+        m.far        = vertcat(rs.far);
+        m.grid_part  = repelem((1:np)', counts(:));
+        F = zeros(0, 4);
+        for i = 1:np
+            if ~isempty(rs(i).faces), F = [F; rs(i).faces + offs(i)]; end   %#ok<AGROW>  NaN stays NaN
+        end
+        m.faces      = F;
+        m.cloud_xyz  = vertcat(rs.cloud_xyz);
+        m.cloud_T    = vertcat(rs.cloud_T);
+        m.surface    = {rs.surface};
+        m.method     = strjoin(unique({rs.method}, 'stable'), ' | ');
+        cov = {}; wrn = {};
+        for i = 1:np
+            cov = [cov; {sprintf('--- %s ---', rs(i).part)}; rs(i).coverage(:)];        %#ok<AGROW>
+            if ~isempty(rs(i).warnings)
+                wrn = [wrn; strcat([rs(i).part ': '], rs(i).warnings(:))];             %#ok<AGROW>
+            end
+        end
+        m.coverage   = cov;
+        m.warnings   = wrn;
+        RM(k) = m;
+    end
 end
 
 
@@ -277,15 +402,27 @@ end
 function validate_config(C)
 %VALIDATE_CONFIG  Fail early and readably.
     if isempty(C.RESULTS)
-        if isempty(C.GRIDS) && exist(C.BDF_FILE, 'file') ~= 2
-            error('temp_map_matlab:noFile', 'BDF file not found: %s', C.BDF_FILE);
+        parts = C.PARTS;
+        if isempty(parts), parts = {'', C.BDF_FILE, C.CSV_DIR}; end
+        if ~iscell(parts) || size(parts, 2) ~= 3
+            error('temp_map_matlab:badParts', 'C.PARTS must be an N x 3 cell: {name, bdf_file, cloud_folder}.');
         end
         if ~isempty(C.GRIDS) && ~all(isfield(C.GRIDS, {'ids', 'xyz', 'faces', 'bdf_file'}))
             error('temp_map_matlab:badGrids', 'C.GRIDS must come from a READ_ONLY call.');
         end
+        for i = 1:size(parts, 1)
+            if isempty(C.GRIDS) && exist(parts{i, 2}, 'file') ~= 2
+                error('temp_map_matlab:noFile', '%sBDF file not found: %s', pfx(parts{i, 1}), parts{i, 2});
+            end
+            if size(parts, 1) > 1 && isempty(parts{i, 1})
+                error('temp_map_matlab:badParts', 'Every part needs a name (row %d).', i);
+            end
+        end
         if C.READ_ONLY, return; end
-        if isempty(C.CSV_FILES) && exist(C.CSV_DIR, 'dir') ~= 7
-            error('temp_map_matlab:noDir', 'CSV folder not found: %s', C.CSV_DIR);
+        for i = 1:size(parts, 1)
+            if (i > 1 || isempty(C.CSV_FILES)) && exist(parts{i, 3}, 'dir') ~= 7
+                error('temp_map_matlab:noDir', '%sCSV folder not found: %s', pfx(parts{i, 1}), parts{i, 3});
+            end
         end
     end
     length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);   % errors on a bad name
@@ -316,7 +453,8 @@ end
 
 % =========================================================================
 function r = empty_result()
-    r = struct('csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
+    r = struct('part', '', 'part_names', {{}}, 'grid_part', [], ...
+               'csv_file', '', 'bdf_file', '', 'time', NaN, 'sid', NaN, ...
                'grid_ids', [], 'grid_xyz', [], 'grid_T', [], ...
                'cloud_xyz', [], 'cloud_T', [], 'extrap', [], 'nn_dist', [], ...
                'far', [], 'method', '', 'surface', [], 'coverage', {{}}, 'warnings', {{}}, ...
@@ -1164,11 +1302,11 @@ end
 
 % =========================================================================
 function write_case_control(R, C)
-%WRITE_CASE_CONTROL  temp_subcases.dat (one SUBCASE per result, ids matching
-%   the TEMP SIDs) and temp_includes.bdf (INCLUDE lines for every TEMP file,
-%   plus the optional reference-temperature TEMPD), both in OUT_DIR.
+%WRITE_CASE_CONTROL  temp_subcases.dat (one SUBCASE per time step, ids matching
+%   the TEMP SIDs) and temp_includes.bdf (INCLUDE lines for every TEMP file of
+%   every part, plus the optional reference-temperature TEMPD), both in OUT_DIR.
     units = upper(char(C.OUT_UNITS));
-    n = numel(R);
+    [np, ns] = size(R);
 
     % ---- case control -----------------------------------------------------------
     cf = fullfile(C.OUT_DIR, 'temp_subcases.dat');
@@ -1176,7 +1314,8 @@ function write_case_control(R, C)
     if fid < 0, error('temp_map_matlab:cantWrite', 'Cannot open %s for writing.', cf); end
     cl = onCleanup(@() fclose(fid));
     fprintf(fid, '$ Case control generated by temp_map_matlab  (%s)\n', datestr(now, 'yyyy-mm-dd HH:MM'));
-    fprintf(fid, '$ %d subcases, SUBCASE = TEMP SID + %d.  Paste above BEGIN BULK.\n', n, C.SUBCASE_OFFSET);
+    fprintf(fid, '$ %d subcases (%d part(s)), SUBCASE = TEMP SID + %d.  Paste above BEGIN BULK.\n', ...
+            ns, np, C.SUBCASE_OFFSET);
     % global section: applies to every subcase below
     for e = 1:numel(C.CASE_EXTRA)
         fprintf(fid, '%s\n', strtrim(char(C.CASE_EXTRA{e})));
@@ -1185,8 +1324,8 @@ function write_case_control(R, C)
         fprintf(fid, '$ reference temperature %.3f %s (TEMPD SID %d in temp_includes.bdf)\n', C.TREF, units, C.TREF_SID);
         fprintf(fid, 'TEMPERATURE(INITIAL) = %d\n', C.TREF_SID);
     end
-    for k = 1:n
-        r = R(k);
+    for k = 1:ns
+        r = R(1, k);
         [~, base] = fileparts(r.csv_file);
         tok = @(s) fill_tokens(s, base, r.time, r.sid, k);
         fprintf(fid, 'SUBCASE %d\n', r.sid + C.SUBCASE_OFFSET);
@@ -1195,7 +1334,7 @@ function write_case_control(R, C)
         fprintf(fid, '  TEMPERATURE(LOAD) = %d\n', r.sid);
     end
     clear cl
-    fprintf('  wrote %s  (%d subcases)\n', cf, n);
+    fprintf('  wrote %s  (%d subcases)\n', cf, ns);
 
     % ---- bulk includes -----------------------------------------------------------
     inf_ = fullfile(C.OUT_DIR, 'temp_includes.bdf');
@@ -1210,11 +1349,15 @@ function write_case_control(R, C)
             fprintf(fid, 'TEMPD*  %16d%s\n', C.TREF_SID, fmt_real(C.TREF, 16));
         end
     end
-    for k = 1:n
-        [~, b, e] = fileparts(R(k).out_file);
-        fprintf(fid, 'INCLUDE ''%s''\n', [b e]);      % relative: sits next to this file
+    for k = 1:ns
+        for i = 1:np
+            [~, b, e] = fileparts(R(i, k).out_file);
+            rel = [b e];                                  % relative: sits next to this file
+            if ~isempty(R(i, k).part), rel = [R(i, k).part '/' rel]; end
+            fprintf(fid, 'INCLUDE ''%s''\n', rel);
+        end
     end
-    fprintf('  wrote %s  (%d includes)\n', inf_, n);
+    fprintf('  wrote %s  (%d includes)\n', inf_, ns * np);
 end
 
 
@@ -1229,27 +1372,30 @@ end
 
 % =========================================================================
 function S = summary_table(R, C)
-    n = numel(R);
-    File = cell(n, 1); Time = zeros(n, 1); SID = zeros(n, 1);
+%SUMMARY_TABLE  One row per part and time step (step-major order).
+    [np, ns] = size(R);
+    n = np * ns;
+    Part = cell(n, 1); File = cell(n, 1); Time = zeros(n, 1); SID = zeros(n, 1);
     CloudPts = zeros(n, 1); Grids = zeros(n, 1); Extrap = zeros(n, 1);
     Tmin = zeros(n, 1); Tmax = zeros(n, 1); OutFile = cell(n, 1);
-    for k = 1:n
-        File{k}     = shortname(R(k).csv_file);
-        Time(k)     = R(k).time;
-        SID(k)      = R(k).sid;
-        CloudPts(k) = numel(R(k).cloud_T);
-        Grids(k)    = numel(R(k).grid_ids);
-        Extrap(k)   = nnz(R(k).extrap);
-        Tmin(k)     = from_kelvin(min(R(k).grid_T), C.OUT_UNITS);
-        Tmax(k)     = from_kelvin(max(R(k).grid_T), C.OUT_UNITS);
-        OutFile{k}  = R(k).out_file;
+    q = 0;
+    for k = 1:ns
+        for i = 1:np
+            q = q + 1;
+            r = R(i, k);
+            Part{q}     = r.part;
+            File{q}     = shortname(r.csv_file);
+            Time(q)     = r.time;
+            SID(q)      = r.sid;
+            CloudPts(q) = numel(r.cloud_T);
+            Grids(q)    = numel(r.grid_ids);
+            Extrap(q)   = nnz(r.extrap);
+            Tmin(q)     = from_kelvin(min(r.grid_T), C.OUT_UNITS);
+            Tmax(q)     = from_kelvin(max(r.grid_T), C.OUT_UNITS);
+            OutFile{q}  = r.out_file;
+        end
     end
-    S = table(File, Time, SID, CloudPts, Grids, Extrap, Tmin, Tmax, OutFile);
-end
-
-
-function out = ternary(cond, a, b)
-    if cond, out = a; else, out = b; end
+    S = table(Part, File, Time, SID, CloudPts, Grids, Extrap, Tmin, Tmax, OutFile);
 end
 
 

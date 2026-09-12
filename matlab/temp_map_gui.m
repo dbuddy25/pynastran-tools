@@ -2,8 +2,9 @@ function fig = temp_map_gui()
 %TEMP_MAP_GUI  Point-and-click front end for TEMP_MAP_MATLAB.
 %
 %   TEMP_MAP_GUI opens a window laid out as the four steps of the job:
-%       1  Model    - pick the BDF, read it once (grids + element faces cached)
-%       2  Clouds   - pick the folder of CSV temperature clouds, tick the ones to map
+%       1  Parts    - one row per part: its BDF and its folder of CSV clouds;
+%                     Read BDFs parses them once (grids + element faces cached)
+%       2  Clouds   - the time steps (CSV names, taken from part 1); tick the ones to map
 %       3  Map      - choose the method, Load & Map -> 3D preview + coverage check
 %       4  Write    - emit one bulk-data file of TEMP cards per CSV
 %   Paths, units and method are remembered between sessions (setpref).
@@ -14,8 +15,9 @@ function fig = temp_map_gui()
 %
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_PLOT.
 
-R = [];          % results from the last Load & Map
-G = [];          % cached grids from Read BDF (ids, xyz, faces, bdf_file)
+R = [];          % results from the last Load & Map  (parts x steps)
+RM = [];         % merged assembly view per step
+G = [];          % cached grids from Read BDFs, one struct per part
 H = [];          % plot handles from temp_map_plot
 hNow = [];       % current-case marker line on the time strip
 VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
@@ -40,7 +42,7 @@ root.Padding = [8 8 8 8];
 %                              LEFT: STEPS
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
-Lg.RowHeight = {26, 122, '1x', 96, 182, 150, 128};
+Lg.RowHeight = {26, 196, '1x', 96, 182, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 
 % --- setup file: everything below except the CSV list ----------------------------
@@ -54,29 +56,32 @@ put(uibutton(sb, 'Text', 'Save setup', 'Tooltip', 'Save the current settings (no
 put(uibutton(sb, 'Text', 'Reset', 'Tooltip', 'Back to defaults', ...
              'ButtonPushedFcn', @on_reset_setup), 1, 4);
 
-% --- 1  Model -----------------------------------------------------------------
-p1 = uipanel(Lg, 'Title', '1  Model', 'FontWeight', 'bold');
+% --- 1  Parts ----------------------------------------------------------------
+p1 = uipanel(Lg, 'Title', '1  Parts  (BDF + its cloud folder)', 'FontWeight', 'bold');
 g1 = uigridlayout(p1, [3 4]);
-g1.ColumnWidth = {60, '1x', 64, 64}; g1.RowHeight = {24, 26, 24};
+g1.ColumnWidth = {'1x', 84, 84, 96}; g1.RowHeight = {'1x', 26, 24};
 g1.Padding = [8 4 8 4]; g1.RowSpacing = 5;
 
-put(uilabel(g1, 'Text', 'BDF'), 1, 1);
-bdfE = put(uieditfield(g1, 'text', 'Placeholder', 'model.bdf', ...
-           'Tooltip', 'Nastran bulk data deck. INCLUDEs are followed.', ...
-           'ValueChangedFcn', @(~, ~) on_bdf_edit()), 1, [2 3]);
-put(uibutton(g1, 'Text', 'Browse', 'ButtonPushedFcn', @on_browse_bdf), 1, 4);
+partsT = put(uitable(g1, 'ColumnName', {'Part', 'BDF', 'Cloud folder'}, ...
+             'ColumnWidth', {90, '1x', '1x'}, 'ColumnEditable', [true false false], ...
+             'RowName', [], 'Data', cell(0, 3), ...
+             'Tooltip', 'One row per part. Double-click the Part cell to rename it (used for the output subfolder).', ...
+             'CellEditCallback', @(~, ~) on_parts_edited()), 1, [1 4]);
+modelLbl = put(uilabel(g1, 'Text', 'no parts yet', 'FontColor', [0.45 0.45 0.45]), 2, 1);
+put(uibutton(g1, 'Text', 'Add part', 'Tooltip', 'Pick a BDF, then the folder holding its temperature clouds', ...
+             'ButtonPushedFcn', @on_add_part), 2, 2);
+put(uibutton(g1, 'Text', 'Remove', 'Tooltip', 'Remove the highlighted part', ...
+             'ButtonPushedFcn', @on_remove_part), 2, 3);
+readB = put(uibutton(g1, 'Text', 'Read BDFs', 'Enable', 'off', ...
+            'Tooltip', 'Parse GRIDs and element faces of every part once; cached until a part changes.', ...
+            'ButtonPushedFcn', @on_read_bdf), 2, 4);
 
-readB = put(uibutton(g1, 'Text', 'Read BDF', 'Enable', 'off', ...
-            'Tooltip', 'Parse GRIDs and element faces once; cached until the path changes.', ...
-            'ButtonPushedFcn', @on_read_bdf), 2, [1 2]);
-modelLbl = put(uilabel(g1, 'Text', 'not read yet', 'FontColor', [0.45 0.45 0.45]), 2, [3 4]);
-
-put(uilabel(g1, 'Text', 'Units'), 3, 1);
+put(uilabel(g1, 'Text', 'Structural units'), 3, 1);
 su = uigridlayout(g1, [1 5]); put(su, 3, [2 4]);
 su.ColumnWidth = {44, 60, 38, 60, '1x'}; su.Padding = [0 0 0 0]; su.ColumnSpacing = 4;
 uilabel(su, 'Text', 'length');
 bdfUnitsDD = uidropdown(su, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
-                        'Tooltip', 'Length units of the structural model (BDF)', ...
+                        'Tooltip', 'Length units of the structural models (all parts)', ...
                         'ValueChangedFcn', @(~, ~) on_len_units());
 uilabel(su, 'Text', 'temp');
 unitsDD = uidropdown(su, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
@@ -87,14 +92,11 @@ uilabel(su, 'Text', '= TEMP card units', 'FontColor', [0.45 0.45 0.45]);
 % --- 2  Temperature clouds ---------------------------------------------------
 p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
 g2 = uigridlayout(p2, [4 4]);
-g2.ColumnWidth = {60, '1x', 64, 64}; g2.RowHeight = {24, '1x', 24, 22};
+g2.ColumnWidth = {60, '1x', 64, 64}; g2.RowHeight = {20, '1x', 24, 22};
 g2.Padding = [8 4 8 4]; g2.RowSpacing = 5;
 
-put(uilabel(g2, 'Text', 'Folder'), 1, 1);
-csvE = put(uieditfield(g2, 'text', 'Placeholder', 'folder of *.csv clouds', ...
-           'Tooltip', 'Every *.csv here is listed, natural-sorted (t2 before t10).', ...
-           'ValueChangedFcn', @(~, ~) refresh_list()), 1, [2 3]);
-put(uibutton(g2, 'Text', 'Browse', 'ButtonPushedFcn', @on_browse_csv), 1, 4);
+stepsLbl = put(uilabel(g2, 'Text', 'Time steps (CSV files) -- add a part first', ...
+               'FontColor', [0.45 0.45 0.45]), 1, [1 4]);
 
 csvLB = put(uilistbox(g2, 'Items', {}, 'Multiselect', 'on', ...
             'Tooltip', 'Ctrl / Shift-click to choose which time steps to map.', ...
@@ -210,8 +212,8 @@ Rg.RowHeight = {30, 26, 24, '1x'};
 Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 4;
 
 % --- row 1: case navigation + view presets -------------------------------------
-bar = uigridlayout(Rg, [1 13]);
-bar.ColumnWidth = [{44, 30, '1x', 30}, repmat({44}, 1, 7), {8, 50}];
+bar = uigridlayout(Rg, [1 15]);
+bar.ColumnWidth = [{44, 30, '1x', 30, 36, 130}, repmat({44}, 1, 7), {8, 50}];
 bar.Padding = [0 0 0 0]; bar.ColumnSpacing = 4;
 put(uilabel(bar, 'Text', 'Case'), 1, 1);
 put(uibutton(bar, 'Text', '<', 'Tooltip', 'Previous case  (Left arrow)', ...
@@ -220,12 +222,16 @@ viewDD = put(uidropdown(bar, 'Items', {'(nothing mapped yet)'}, ...
              'ValueChangedFcn', @(~, ~) on_view_change()), 1, 3);
 put(uibutton(bar, 'Text', '>', 'Tooltip', 'Next case  (Right arrow)', ...
              'ButtonPushedFcn', @(~, ~) step_case(+1)), 1, 4);
+put(uilabel(bar, 'Text', 'Part', 'HorizontalAlignment', 'right'), 1, 5);
+partDD = put(uidropdown(bar, 'Items', {'All parts'}, 'ItemsData', 0, 'Value', 0, ...
+             'Tooltip', 'Show the whole assembly or a single part', ...
+             'ValueChangedFcn', @(~, ~) on_view_change()), 1, 6);
 for k = 1:numel(VIEWS)
     put(uibutton(bar, 'Text', VIEWS{k}, 'Tooltip', ['Look at the model from ' VIEWS{k} ' and re-frame'], ...
-                 'ButtonPushedFcn', @(src, ~) snap(src.Text)), 1, 4 + k);
+                 'ButtonPushedFcn', @(src, ~) snap(src.Text)), 1, 6 + k);
 end
 put(uibutton(bar, 'Text', 'Fit', 'Tooltip', 'Re-frame the model without changing the view direction  (Home)', ...
-             'ButtonPushedFcn', @(~, ~) snap('FIT')), 1, 13);
+             'ButtonPushedFcn', @(~, ~) snap('FIT')), 1, 15);
 
 % --- row 2: display options ----------------------------------------------------
 db = uigridlayout(Rg, [1 8]);
@@ -269,42 +275,75 @@ tax.ButtonDownFcn = @(~, ev) jump_to_time(ev.IntersectionPoint(1));
 fig.KeyPressFcn = @(~, ev) on_key(ev);
 load_prefs();
 on_len_units();
-if ~isempty(csvE.Value) && exist(csvE.Value, 'dir') == 7, refresh_list(); end
+refresh_list();
 update_state();
 
 % =========================================================================
 %                                CALLBACKS
 % =========================================================================
-    function on_bdf_edit()
+    function P = parts()
+        P = partsT.Data;                       % {name, bdf, folder}
+        if isempty(P), P = cell(0, 3); end
+    end
+
+    function set_parts(P)
+        partsT.Data = P;
+        invalidate_grids();
+        save_prefs();
+        refresh_list();
+        update_state();
+    end
+
+    function on_add_part(~, ~)
+        P = parts();
+        start = pwd;
+        if ~isempty(P), start = fileparts(P{end, 2}); end
+        [f, p] = uigetfile({'*.bdf;*.dat;*.nas;*.blk;*.inc', 'Nastran decks'; '*.*', 'All files'}, ...
+                           'Pick the part''s BDF', start);
+        figure(fig);
+        if isequal(f, 0), return; end
+        [~, name] = fileparts(f);
+        d = uigetdir(p, sprintf('Folder holding the temperature clouds for "%s"', name));
+        figure(fig);
+        if isequal(d, 0), return; end
+        set_parts([P; {name, fullfile(p, f), d}]);
+    end
+
+    function on_remove_part(~, ~)
+        P = parts();
+        sel = partsT.Selection;
+        if isempty(P) || isempty(sel), return; end
+        P(unique(sel(:, 1)), :) = [];
+        set_parts(P);
+    end
+
+    function on_parts_edited()
         invalidate_grids();
         save_prefs();
         update_state();
     end
 
-    function on_browse_bdf(~, ~)
-        start = bdfE.Value; if isempty(start) || exist(start, 'file') ~= 2, start = pwd; end
-        [f, p] = uigetfile({'*.bdf;*.dat;*.nas;*.blk;*.inc', 'Nastran decks'; '*.*', 'All files'}, ...
-                           'Pick the BDF', start);
-        figure(fig);
-        if isequal(f, 0), return; end
-        bdfE.Value = fullfile(p, f);
-        on_bdf_edit();
-    end
-
     function invalidate_grids()
         G = [];
-        modelLbl.Text = 'not read yet';
+        P = parts();
+        if isempty(P)
+            modelLbl.Text = 'no parts yet';
+        else
+            modelLbl.Text = sprintf('%d part(s), not read yet', size(P, 1));
+        end
         modelLbl.FontColor = [0.45 0.45 0.45];
-        p1.Title = '1  Model';
+        p1.Title = '1  Parts  (BDF + its cloud folder)';
     end
 
     function ok = on_read_bdf(~, ~)
         ok = false;
-        dlg = uiprogressdlg(fig, 'Title', 'Reading BDF', 'Value', 0, 'Cancelable', 'on', ...
+        P = parts();
+        if isempty(P), return; end
+        dlg = uiprogressdlg(fig, 'Title', 'Reading BDFs', 'Value', 0, 'Cancelable', 'on', ...
                             'Message', 'Starting ...');
         t0 = tic;
         try
-            G = temp_map_matlab('BDF_FILE', bdfE.Value, 'READ_ONLY', true, ...
+            G = temp_map_matlab('PARTS', P, 'READ_ONLY', true, ...
                                 'PROGRESS', @(frac, msg) set_progress(dlg, frac, msg, t0));
         catch ME
             close(dlg);
@@ -316,22 +355,19 @@ update_state();
             return
         end
         close(dlg);
-        modelLbl.Text = sprintf('%s grids, %s faces', fmtn(numel(G.ids)), fmtn(size(G.faces, 1)));
+        ng = sum(arrayfun(@(g) numel(g.ids), G));
+        nf = sum(arrayfun(@(g) size(g.faces, 1), G));
+        modelLbl.Text = sprintf('%s grids, %s faces', fmtn(ng), fmtn(nf));
         modelLbl.FontColor = [0.1 0.5 0.2];
-        p1.Title = sprintf('1  Model  --  %s grids', fmtn(numel(G.ids)));
-        status(sprintf('Read %s grids, %s faces from %s in %.1f s', fmtn(numel(G.ids)), ...
-                       fmtn(size(G.faces, 1)), shortname(G.bdf_file), toc(t0)));
+        p1.Title = sprintf('1  Parts  --  %d part(s), %s grids', numel(G), fmtn(ng));
+        lines = cell(numel(G), 1);
+        for i = 1:numel(G)
+            lines{i} = sprintf('%-14s %s grids  %s faces   %s', G(i).name, fmtn(numel(G(i).ids)), ...
+                               fmtn(size(G(i).faces, 1)), shortname(G(i).bdf_file));
+        end
+        status([{sprintf('Read %d part(s) in %.1f s', numel(G), toc(t0))}; lines]);
         update_state();
         ok = true;
-    end
-
-    function on_browse_csv(~, ~)
-        start = csvE.Value; if isempty(start) || exist(start, 'dir') ~= 7, start = pwd; end
-        p = uigetdir(start, 'Folder holding the temperature CSVs');
-        figure(fig);
-        if isequal(p, 0), return; end
-        csvE.Value = p;
-        refresh_list();
     end
 
     function on_browse_out(~, ~)
@@ -344,7 +380,15 @@ update_state();
     end
 
     function refresh_list()
-        d = dir(fullfile(csvE.Value, '*.csv'));
+        P = parts();
+        if isempty(P) || exist(P{1, 3}, 'dir') ~= 7
+            csvLB.Items = {}; csvLB.Value = {};
+            stepsLbl.Text = 'Time steps (CSV files) -- add a part first';
+            update_state();
+            return
+        end
+        stepsLbl.Text = sprintf('Time steps in %s -- every part folder must hold the same names', P{1, 3});
+        d = dir(fullfile(P{1, 3}, '*.csv'));
         names = {d.name};
         keys = regexprep(names, '(\d+)', '${sprintf(''%012d'', str2double($1))}');
         [~, order] = sort(lower(keys));
@@ -368,7 +412,8 @@ update_state();
     end
 
     function update_state()
-        have_bdf = exist(bdfE.Value, 'file') == 2;
+        P = parts();
+        have_bdf = ~isempty(P) && all(cellfun(@(f) exist(f, 'file') == 2, P(:, 2)));
         nsel = numel(cellstr(csvLB.Value));
         readB.Enable = onoff(have_bdf);
         mapB.Enable  = onoff(have_bdf && nsel > 0);
@@ -392,10 +437,10 @@ update_state();
         t0 = tic;
         prog = @(frac, msg) set_progress(dlg, frac, msg, t0);
         try
-            [R, S] = temp_map_matlab( ...
+            [R, S, RM] = temp_map_matlab( ...
+                'PARTS',             parts(), ...
                 'GRIDS',             G, ...
-                'CSV_DIR',           csvE.Value, ...
-                'CSV_FILES',         fullfile(csvE.Value, sel), ...
+                'CSV_FILES',         sel, ...
                 'CSV_HAS_HEADER',    headerCB.Value, ...
                 'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
                 'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
@@ -408,7 +453,7 @@ update_state();
                 'WRITE',             false);
         catch ME
             close(dlg);
-            R = [];
+            R = []; RM = [];
             update_state();
             if strcmp(ME.identifier, 'temp_map_gui:cancelled')
                 status('Cancelled.');
@@ -418,21 +463,28 @@ update_state();
             return
         end
         close(dlg);
-        viewDD.Items = cellfun(@shortname, {R.csv_file}, 'UniformOutput', false);
-        viewDD.ItemsData = 1:numel(R);
+        viewDD.Items = cellfun(@shortname, {RM.csv_file}, 'UniformOutput', false);
+        viewDD.ItemsData = 1:numel(RM);
         viewDD.Value = 1;
+        if size(R, 1) > 1
+            partDD.Items = [{'All parts'}, {R(:, 1).part}];
+            partDD.ItemsData = 0:size(R, 1);
+        else
+            partDD.Items = {'All parts'}; partDD.ItemsData = 0;
+        end
+        partDD.Value = 0;
         mname = methodDD.Items{strcmp(methodDD.ItemsData, methodDD.Value)};
-        p3.Title = sprintf('3  Map  --  %d cases, %s, %s', numel(R), mname, datestr(now, 'HH:MM'));
+        p3.Title = sprintf('3  Map  --  %d steps x %d part(s), %s, %s', size(R, 2), size(R, 1), mname, datestr(now, 'HH:MM'));
         fill_summary(S);
         update_state();
         on_view_change();
         plot_history();
-        bad = find(arrayfun(@(r) ~isempty(r.warnings), R));
+        bad = find(arrayfun(@(r) ~isempty(r.warnings), RM));
         if ~isempty(bad)
             msg = {};
             for k = bad(:)'
-                msg{end+1} = sprintf('%s:', shortname(R(k).csv_file));         %#ok<AGROW>
-                msg = [msg, strcat({'    - '}, R(k).warnings(:)')];           %#ok<AGROW>
+                msg{end+1} = sprintf('%s:', shortname(RM(k).csv_file));        %#ok<AGROW>
+                msg = [msg, strcat({'    - '}, RM(k).warnings(:)')];          %#ok<AGROW>
             end
             uialert(fig, strjoin(msg, newline), 'COVERAGE WARNING -- check units and extents', ...
                     'Icon', 'warning');
@@ -444,9 +496,9 @@ update_state();
         if all_of_them
             sub = R;
         else
-            want = cellfun(@shortname, cellstr(csvLB.Value), 'UniformOutput', false);
-            have = cellfun(@shortname, {R.csv_file}, 'UniformOutput', false);
-            sub = R(ismember(have, want));
+            want = cellstr(csvLB.Value);
+            have = cellfun(@shortname, {RM.csv_file}, 'UniformOutput', false);
+            sub = R(:, ismember(have, want));
             if isempty(sub)
                 uialert(fig, 'None of the highlighted CSVs have been mapped yet.', 'Nothing to write');
                 return
@@ -470,7 +522,7 @@ update_state();
             uialert(fig, ME.message, 'Write failed');
             return
         end
-        p4.Title = sprintf('4  Write TEMP cards  --  %d written %s', height(S), datestr(now, 'HH:MM'));
+        p4.Title = sprintf('4  Write TEMP cards  --  %d file(s) written %s', height(S), datestr(now, 'HH:MM'));
         extra = {};
         if caseCB.Value
             extra = {fullfile(outE.Value, 'temp_subcases.dat'); fullfile(outE.Value, 'temp_includes.bdf')};
@@ -478,30 +530,39 @@ update_state();
         status([{sprintf('Wrote %d file(s) to %s:', height(S) + numel(extra), outE.Value)}; extra; S.OutFile(:)]);
     end
 
-    function show_coverage()
+    function r = current()
+        % the result being viewed: merged assembly or one part, at the chosen step
         k = viewDD.Value;
-        lines = [{sprintf('Coverage: %s', shortname(R(k).csv_file))}; R(k).coverage(:)];
-        if ~isempty(R(k).warnings)
-            lines = [lines; {''; '!!!!! WARNING !!!!!'}; strcat({'!! '}, R(k).warnings(:))];
-            banner.Text = ['WARNING  ' strjoin(R(k).warnings, '   |   ')];
+        if partDD.Value == 0, r = RM(k); else, r = R(partDD.Value, k); end
+    end
+
+    function show_coverage()
+        r = current();
+        lines = [{sprintf('Coverage: %s   [%s]', shortname(r.csv_file), partDD.Items{partDD.Value + 1})}; r.coverage(:)];
+        if ~isempty(r.warnings)
+            lines = [lines; {''; '!!!!! WARNING !!!!!'}; strcat({'!! '}, r.warnings(:))];
+            banner.Text = ['WARNING  ' strjoin(r.warnings, '   |   ')];
             banner.BackgroundColor = [0.98 0.85 0.85];
             banner.FontColor = [0.65 0.05 0.05];
         else
             banner.Text = sprintf('Coverage OK  --  %.1f%% of grids outside the cloud hull, max distance to a cloud point %.3g', ...
-                100 * nnz(R(k).extrap) / numel(R(k).grid_ids), max(R(k).nn_dist));
+                100 * nnz(r.extrap) / numel(r.grid_ids), max(r.nn_dist));
             banner.BackgroundColor = [0.86 0.95 0.86];
             banner.FontColor = [0.05 0.40 0.10];
         end
         status(lines);
     end
 
-    function fill_summary(S)
-        n = height(S);
-        far = zeros(n, 1);
-        for k = 1:n, far(k) = nnz(R(k).far); end
-        sumT.Data = [S.File, num2cell(S.Time), num2cell(S.SID), ...
-                     num2cell(S.Grids), num2cell(S.Extrap), num2cell(far), ...
-                     num2cell(round(S.Tmin, 2)), num2cell(round(S.Tmax, 2))];
+    function fill_summary(~)
+        % one row per time step, whole assembly (per-part numbers live in the coverage box)
+        n = numel(RM);
+        D = cell(n, 8);
+        for k = 1:n
+            r = RM(k);
+            D(k, :) = {shortname(r.csv_file), r.time, r.sid, numel(r.grid_ids), nnz(r.extrap), nnz(r.far), ...
+                       round(conv_out(min(r.grid_T), unitsDD.Value), 2), round(conv_out(max(r.grid_T), unitsDD.Value), 2)};
+        end
+        sumT.Data = D;
         highlight_row();
     end
 
@@ -519,7 +580,7 @@ update_state();
     function on_table_click(ev)
         if isempty(R) || isempty(ev.Indices), return; end
         k = ev.Indices(1);
-        if k < 1 || k > numel(R) || k == viewDD.Value, return; end
+        if k < 1 || k > numel(RM) || k == viewDD.Value, return; end
         viewDD.Value = k;
         on_view_change();
     end
@@ -527,13 +588,12 @@ update_state();
     function on_units_change()
         save_prefs();
         replot();
-        if ~isempty(R), plot_history(); end
+        if ~isempty(R), plot_history(); fill_summary([]); end
     end
 
     function replot()
         if isempty(R) || isempty(viewDD.ItemsData), return; end
-        k = viewDD.Value;
-        H = temp_map_plot(R(k), 'Parent', ax, 'Style', styleDD.Value, ...
+        H = temp_map_plot(current(), 'Parent', ax, 'Style', styleDD.Value, ...
                           'Units',      unitsDD.Value, ...
                           'ShowCloud',  cloudCB.Value, ...
                           'ShowSurface', surfCB.Value, ...
@@ -550,12 +610,12 @@ update_state();
     end
 
     function plot_history()
-        if isempty(R), return; end
-        t = [R.time];
+        if isempty(RM), return; end
+        t = [RM.time];
         [t, order] = sort(t);
         u = unitsDD.Value;
-        tmin = arrayfun(@(r) conv_out(min(r.grid_T), u), R(order));
-        tmax = arrayfun(@(r) conv_out(max(r.grid_T), u), R(order));
+        tmin = arrayfun(@(r) conv_out(min(r.grid_T), u), RM(order));
+        tmax = arrayfun(@(r) conv_out(max(r.grid_T), u), RM(order));
         cla(tax);
         hold(tax, 'on');
         plot(tax, t, tmax, '-o', 'Color', [0.85 0.1 0.1], 'LineWidth', 1.6, 'MarkerFaceColor', [0.85 0.1 0.1], ...
@@ -564,7 +624,7 @@ update_state();
              'MarkerSize', 4, 'DisplayName', 'min', 'HitTest', 'off');
         hold(tax, 'off');
         ylabel(tax, sprintf('T [deg %s]', u));
-        title(tax, sprintf('Min / max mapped temperature vs time  (%d cases; click to jump)', numel(R)));
+        title(tax, sprintf('Min / max mapped temperature vs time, whole assembly  (%d steps; click to jump)', numel(RM)));
         legend(tax, 'Location', 'northwest', 'Orientation', 'horizontal');
         grid(tax, 'on'); box(tax, 'on');
         if numel(t) > 1
@@ -579,15 +639,15 @@ update_state();
     function mark_history()
         if ~isempty(hNow) && isvalid(hNow), delete(hNow); end
         hNow = [];
-        if isempty(R) || isempty(viewDD.ItemsData), return; end
-        tk = R(viewDD.Value).time;
+        if isempty(RM) || isempty(viewDD.ItemsData), return; end
+        tk = RM(viewDD.Value).time;
         hNow = xline(tax, tk, '-', 'Color', [0.2 0.2 0.2], 'LineWidth', 1.5, ...
                      'HandleVisibility', 'off', 'HitTest', 'off');
     end
 
     function jump_to_time(tclick)
-        if isempty(R), return; end
-        [~, k] = min(abs([R.time] - tclick));
+        if isempty(RM), return; end
+        [~, k] = min(abs([RM.time] - tclick));
         viewDD.Value = k;
         on_view_change();
     end
@@ -602,7 +662,7 @@ update_state();
     function step_case(delta)
         if isempty(R) || isempty(viewDD.ItemsData), return; end
         k = viewDD.Value + delta;
-        if k < 1 || k > numel(R), return; end
+        if k < 1 || k > numel(RM), return; end
         viewDD.Value = k;
         on_view_change();
     end
@@ -622,7 +682,7 @@ update_state();
 
     function toggle(what, on)
         if isempty(H), return; end
-        if strcmp(what, 'extrap'), on = on && any(R(viewDD.Value).extrap | R(viewDD.Value).far); end
+        if strcmp(what, 'extrap'), r = current(); on = on && any(r.extrap | r.far); end
         H.(what).Visible = onoff(on);
     end
 
@@ -647,7 +707,9 @@ update_state();
 
 % --- setup files ---------------------------------------------------------------
     function st = collect_setup()
-        st = struct('bdf', bdfE.Value, 'csvdir', csvE.Value, 'outdir', outE.Value, ...
+        P = parts();
+        st = struct('parts', struct('name', P(:, 1), 'bdf', P(:, 2), 'csv_dir', P(:, 3)), ...
+                    'outdir', outE.Value, ...
                     'bdf_len', bdfUnitsDD.Value, 'bdf_temp', unitsDD.Value, ...
                     'csv_len', csvUnitsDD.Value, 'csv_temp', csvTempDD.Value, ...
                     'method', methodDD.Value, 'field', fieldDD.Value, 'header', headerCB.Value, ...
@@ -658,8 +720,7 @@ update_state();
 
     function apply_setup(st)
         f = @(name, dflt) getfield_or(st, name, dflt);
-        bdfE.Value       = f('bdf', '');
-        csvE.Value       = f('csvdir', '');
+        P = parts_from_setup(st);
         outE.Value       = f('outdir', 'temp_cards');
         bdfUnitsDD.Value = f('bdf_len', 'in');
         unitsDD.Value    = f('bdf_temp', 'K');
@@ -677,10 +738,24 @@ update_state();
         trefE.Value      = f('tref', '');
         styleDD.Value    = f('style', 'points');
         cmapDD.Value     = f('colormap', 'jet');
+        partsT.Data      = P;
         invalidate_grids();
         on_len_units();
-        if ~isempty(csvE.Value) && exist(csvE.Value, 'dir') == 7, refresh_list(); else, csvLB.Items = {}; end
+        refresh_list();
         update_state();
+    end
+
+    function P = parts_from_setup(st)
+        P = cell(0, 3);
+        if isstruct(st) && isfield(st, 'parts') && ~isempty(st.parts)
+            ps = st.parts;
+            for i = 1:numel(ps)
+                P(end+1, :) = {char(ps(i).name), char(ps(i).bdf), char(ps(i).csv_dir)}; %#ok<AGROW>
+            end
+        elseif isstruct(st) && isfield(st, 'bdf') && ~isempty(st.bdf)     % old single-part setup
+            [~, nm] = fileparts(char(st.bdf));
+            P = {nm, char(st.bdf), char(getfield_or(st, 'csvdir', ''))};
+        end
     end
 
     function on_save_setup(~, ~)
@@ -709,7 +784,7 @@ update_state();
         apply_setup(st);
         save_prefs();
         setupLbl.Text = ['Setup: ' f];
-        status(sprintf('Loaded setup %s -- pick the new cloud folder if it changed, then Load & Map.', f));
+        status(sprintf('Loaded setup %s -- %d part(s). Read BDFs, then Load & Map.', f, size(parts(), 1)));
     end
 
     function on_reset_setup(~, ~)
@@ -720,8 +795,11 @@ update_state();
 
 % --- preferences -------------------------------------------------------------
     function load_prefs()
-        bdfE.Value        = getpref(PREF, 'bdf',      '');
-        csvE.Value        = getpref(PREF, 'csvdir',   '');
+        try
+            partsT.Data   = parts_from_setup(jsondecode(getpref(PREF, 'parts_json', '{}')));
+        catch
+            partsT.Data   = cell(0, 3);
+        end
         outE.Value        = getpref(PREF, 'outdir',   'temp_cards');
         bdfUnitsDD.Value  = getpref(PREF, 'bdf_len',  'in');
         unitsDD.Value     = getpref(PREF, 'bdf_temp', 'K');
@@ -737,9 +815,11 @@ update_state();
     end
 
     function save_prefs()
-        setpref(PREF, {'bdf', 'csvdir', 'outdir', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
+        P = parts();
+        pj = jsonencode(struct('parts', struct('name', P(:, 1), 'bdf', P(:, 2), 'csv_dir', P(:, 3))));
+        setpref(PREF, {'parts_json', 'outdir', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
                        'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref'}, ...
-                      {bdfE.Value, csvE.Value, outE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
+                      {pj, outE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
                        csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value, ...
                        caseCB.Value, subE.Value, extraE.Value, trefE.Value});
     end
