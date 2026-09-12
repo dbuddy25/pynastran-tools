@@ -227,8 +227,8 @@ statusTA = uitextarea(Lg, 'Editable', 'off', 'FontName', 'Courier New', 'FontSiz
 %                              RIGHT: VIEW
 % =========================================================================
 Rg = uigridlayout(root, [4 1]);
-Rg.RowHeight = {30, 26, 24, '1x'};
-Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 4;
+Rg.RowHeight = {30, 26, 34, '1x'};
+Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 6;
 
 % --- row 1: case navigation + view presets -------------------------------------
 bar = uigridlayout(Rg, [1 15]);
@@ -277,7 +277,7 @@ cmapDD = put(uidropdown(db, 'Items', {'jet', 'turbo', 'parula', 'hot', 'cool'}, 
 
 % --- row 3: coverage banner -----------------------------------------------------
 banner = uilabel(Rg, 'Text', 'Coverage check appears here after Load & Map', ...
-                 'FontWeight', 'bold', 'HorizontalAlignment', 'center', ...
+                 'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'WordWrap', 'on', ...
                  'BackgroundColor', [0.94 0.94 0.94], 'FontColor', [0.35 0.35 0.35]);
 
 % --- row 4: 3D axes -----------------------------------------------------------------

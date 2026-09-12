@@ -163,9 +163,15 @@ if isfield(r, 'part_names') && numel(r.part_names) > 1
 elseif isfield(r, 'part') && ~isempty(r.part) && ~strcmp(r.part, 'ALL')
     head = sprintf('%s    [%s]', head, r.part);
 end
+if ~standalone
+    % embedded in a GUI (a uiaxes in a grid): a one-line title stays inside the cell
+    title(ax, sprintf('%s    SID %d    T = %.1f .. %.1f %s%s', head, r.sid, min(Tg), max(Tg), units, note), ...
+          'Interpreter', 'none');
+else
 title(ax, {head, ...
            sprintf('SID %d    T = %.1f .. %.1f %s    %s%s', r.sid, min(Tg), max(Tg), units, r.method, note)}, ...
       'Interpreter', 'none');
+end
 legend(ax, 'Location', 'northeast');
 hold(ax, 'off');
 h.set_view = @(name) set_view(ax, name);
