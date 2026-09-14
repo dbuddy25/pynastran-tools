@@ -278,8 +278,8 @@ put(uibutton(bar, 'Text', 'Fit', 'Tooltip', 'Re-frame the model without changing
              'ButtonPushedFcn', @(~, ~) snap('FIT')), 1, 15);
 
 % --- row 3: display options ----------------------------------------------------
-db = uigridlayout(Rg, [1 8]);
-db.ColumnWidth = {200, 90, 100, 110, 110, 70, 90, '1x'};
+db = uigridlayout(Rg, [1 6]);
+db.ColumnWidth = {200, 90, 100, 110, 110, '1x'};
 db.Padding = [0 0 0 0]; db.ColumnSpacing = 6;
 styleDD = put(uidropdown(db, 'Items', {'Points (grids)', 'Smooth contour (element faces)'}, ...
               'ItemsData', {'points', 'contour'}, 'Value', 'points', ...
@@ -296,9 +296,6 @@ extrapCB = put(uicheckbox(db, 'Text', 'Ring outside', 'Value', true, ...
 mmCB = put(uicheckbox(db, 'Text', 'Min / max', 'Value', true, ...
            'Tooltip', 'Star + label on the hottest and coldest grid.', ...
            'ValueChangedFcn', @(src, ~) toggle('minmax', src.Value)), 1, 5);
-put(uilabel(db, 'Text', 'Colormap', 'HorizontalAlignment', 'right'), 1, 6);
-cmapDD = put(uidropdown(db, 'Items', {'jet', 'turbo', 'parula', 'hot', 'cool'}, 'Value', 'jet', ...
-             'ValueChangedFcn', @(src, ~) colormap_now(src.Value)), 1, 7);
 
 % --- row 4: plot title as a label: a 3D uiaxes title drifts above the axes box
 %     with the camera framing and gets hidden under the toolbar ------------------------
@@ -573,19 +570,28 @@ update_state();
             if isequal(src, 0), return; end
             what = src;
         end
+        a = inputdlg(sprintf(['Several plates in this cloud?  Gap between them in model units (%s):\n' ...
+                              'points farther apart than this are separate bodies, each checked alone.\n' ...
+                              'Leave blank for one body.'], bdfUnitsDD.Value), 'Cloud check', 1, {''});
+        figure(fig);
+        if isempty(a), return; end
+        gap = str2double(strtrim(a{1}));
+        if isnan(gap) || gap <= 0, gap = []; end
         status(sprintf('Cloud check on %s running ... (details in the command window)', what)); drawnow
         try
             S = temp_cloud_check(src, 'CSV_LENGTH_UNITS', csvUnitsDD.Value, 'OUT_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                  'CSV_TEMP_UNITS', csvTempDD.Value, 'OUT_UNITS', unitsDD.Value, ...
-                                 'CSV_HAS_HEADER', headerCB.Value);
+                                 'CSV_HAS_HEADER', headerCB.Value, 'SPLIT', gap);
         catch ME
             uialert(fig, ME.message, 'Cloud check failed'); status('Cloud check failed.'); return
         end
         lu = bdfUnitsDD.Value;
-        lines = {sprintf('Cloud check: %s', what); S.Properties.Description; ''; ...
-                 sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
+        lines = [{sprintf('Cloud check: %s', what)}; strsplit(S.Properties.Description, newline)'; {''; ...
+                 sprintf('%-4s %-22s %7s %8s %9s %8s %9s %5s', 'body', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')}];
+        hasBody = ismember('Body', S.Properties.VariableNames);
         for k = 1:height(S)
-            lines{end+1} = sprintf('%-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', S.File{k}, S.dT_total(k), ...
+            if hasBody, b = S.Body(k); else, b = 1; end
+            lines{end+1} = sprintf('%-4d %-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', b, S.File{k}, S.dT_total(k), ...
                                    S.dT_tt_max(k), S.grad_tt(k), S.dT_ip(k), S.grad_ip(k), S.R2(k)); %#ok<AGROW>
         end
         lines{end+1} = sprintf('(thickness %.4g %s; tt = through-thickness delta T, ip = in-plane delta T, deg %s)', ...
@@ -806,8 +812,7 @@ update_state();
                           'ShowCloud',  cloudCB.Value, ...
                           'ShowSurface', surfCB.Value, ...
                           'ShowMinMax', mmCB.Value, ...
-                          'ShowExtrap', extrapCB.Value, ...
-                          'Colormap',   cmapDD.Value);
+                          'ShowExtrap', extrapCB.Value);
         plotTitle.Text = char(ax.Title.String);
         title(ax, '');
     end
@@ -899,10 +904,6 @@ update_state();
         H.(what).Visible = onoff(on);
     end
 
-    function colormap_now(name)
-        if isempty(H), return; end
-        colormap(ax, name);
-    end
 
     function v = tref_value()
         v = str2double(strtrim(trefE.Value));
@@ -929,7 +930,7 @@ update_state();
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
                     'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
                     'parallel', parCB.Value, 'report', reportCB.Value, 'png', pngCB.Value, ...
-                    'style', styleDD.Value, 'colormap', cmapDD.Value);
+                    'style', styleDD.Value);
     end
 
     function apply_setup(st)
@@ -954,7 +955,6 @@ update_state();
         reportCB.Value   = f('report', true);
         pngCB.Value      = f('png', false);
         styleDD.Value    = f('style', 'points');
-        cmapDD.Value     = f('colormap', 'jet');
         partsT.Data      = P;
         invalidate_grids();
         on_len_units();

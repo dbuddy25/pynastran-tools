@@ -266,6 +266,16 @@ check(abs(Sc.gfit_ip(1)^2 + Sc.gfit_tt(1)^2 - 129) < 1e-6, 'cloud check: fit gra
 check(abs(Sc.dT_total(1) - (max(R(1).cloud_T) - min(R(1).cloud_T))) < 1e-9 && numel(Dc) == 2 && ishandle(hc), ...
       'cloud check: total delta T, detail struct, figure');
 close(hc);
+% two bodies in one cloud: the fixture cube plus a copy 10 in away and 100 K hotter
+two = fullfile(tempdir, 'temp_cloud_two.csv');
+Mc = readmatrix(fullfile(here, 't000.csv'));
+Mc2 = Mc; Mc2(:, 2) = Mc2(:, 2) + 10; Mc2(:, 5) = Mc2(:, 5) + 100;
+writematrix([Mc; Mc2], two);
+S2b = temp_cloud_check({two}, 'SPLIT', 1, 'PLOT', false, 'OUT_UNITS', 'K', 'CSV_HAS_HEADER', false);
+check(height(S2b) == 2 && isequal(S2b.Body, [1; 2]) && all(abs(S2b.R2 - 1) < 1e-9) && ...
+      all(abs(S2b.dT_total - Sc.dT_total(1)) < 1e-9), 'cloud check: SPLIT finds two bodies, each checked alone');
+S1b = temp_cloud_check({two}, 'PLOT', false, 'OUT_UNITS', 'K', 'CSV_HAS_HEADER', false);
+check(height(S1b) == 1 && S1b.dT_total > 100, 'cloud check: without SPLIT the two plates blur into one');
 Sa = temp_cloud_check({fullfile(here, 't000.csv')}, 'AXIS', [0 0 1], 'PLOT', false, 'OUT_UNITS', 'K');
 check(abs(Sa.gfit_tt - 2) < 1e-6 && abs(Sa.gfit_ip - sqrt(125)) < 1e-6 && abs(Sa.Thick - 3) < 1e-9, ...
       'cloud check: AXIS [0 0 1] -> through-thickness gradient 2, in-plane sqrt(125), thickness 3');
