@@ -570,28 +570,19 @@ update_state();
             if isequal(src, 0), return; end
             what = src;
         end
-        a = inputdlg(sprintf(['Several plates in this cloud?  Gap between them in model units (%s):\n' ...
-                              'points farther apart than this are separate bodies, each checked alone.\n' ...
-                              'Leave blank for one body.'], bdfUnitsDD.Value), 'Cloud check', 1, {''});
-        figure(fig);
-        if isempty(a), return; end
-        gap = str2double(strtrim(a{1}));
-        if isnan(gap) || gap <= 0, gap = []; end
         status(sprintf('Cloud check on %s running ... (details in the command window)', what)); drawnow
         try
             S = temp_cloud_check(src, 'CSV_LENGTH_UNITS', csvUnitsDD.Value, 'OUT_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                  'CSV_TEMP_UNITS', csvTempDD.Value, 'OUT_UNITS', unitsDD.Value, ...
-                                 'CSV_HAS_HEADER', headerCB.Value, 'SPLIT', gap);
+                                 'CSV_HAS_HEADER', headerCB.Value);
         catch ME
             uialert(fig, ME.message, 'Cloud check failed'); status('Cloud check failed.'); return
         end
         lu = bdfUnitsDD.Value;
-        lines = [{sprintf('Cloud check: %s', what)}; strsplit(S.Properties.Description, newline)'; {''; ...
-                 sprintf('%-4s %-22s %7s %8s %9s %8s %9s %5s', 'body', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')}];
-        hasBody = ismember('Body', S.Properties.VariableNames);
+        lines = {sprintf('Cloud check: %s', what); S.Properties.Description; ''; ...
+                 sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
         for k = 1:height(S)
-            if hasBody, b = S.Body(k); else, b = 1; end
-            lines{end+1} = sprintf('%-4d %-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', b, S.File{k}, S.dT_total(k), ...
+            lines{end+1} = sprintf('%-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', S.File{k}, S.dT_total(k), ...
                                    S.dT_tt_max(k), S.grad_tt(k), S.dT_ip(k), S.grad_ip(k), S.R2(k)); %#ok<AGROW>
         end
         lines{end+1} = sprintf('(thickness %.4g %s; tt = through-thickness delta T, ip = in-plane delta T, deg %s)', ...
