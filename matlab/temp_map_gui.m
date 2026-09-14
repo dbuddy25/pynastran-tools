@@ -239,8 +239,8 @@ statusTA = uitextarea(Lg, 'Editable', 'off', 'FontName', 'Courier New', 'FontSiz
 % =========================================================================
 %                              RIGHT: VIEW
 % =========================================================================
-Rg = uigridlayout(root, [4 1]);
-Rg.RowHeight = {34, 30, 26, '1x'};     % banner / case + views / display / axes
+Rg = uigridlayout(root, [5 1]);
+Rg.RowHeight = {34, 30, 26, 20, '1x'};     % banner / case + views / display / plot title / axes
 Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 6;
 
 % --- row 1: coverage banner (top of the column, clear of the plot) ----------------
@@ -293,9 +293,13 @@ put(uilabel(db, 'Text', 'Colormap', 'HorizontalAlignment', 'right'), 1, 6);
 cmapDD = put(uidropdown(db, 'Items', {'jet', 'turbo', 'parula', 'hot', 'cool'}, 'Value', 'jet', ...
              'ValueChangedFcn', @(src, ~) colormap_now(src.Value)), 1, 7);
 
-% --- row 4: 3D axes -----------------------------------------------------------------
+% --- row 4: plot title as a label: a 3D uiaxes title drifts above the axes box
+%     with the camera framing and gets hidden under the toolbar ------------------------
+plotTitle = uilabel(Rg, 'Text', 'Load & Map to see the grids coloured by temperature', ...
+                    'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'Interpreter', 'none');
+
+% --- row 5: 3D axes -----------------------------------------------------------------
 ax = uiaxes(Rg);
-title(ax, 'Load & Map to see the grids coloured by temperature');
 
 % --- bottom strip: min / max temperature vs time across all cases ------------
 tax = uiaxes(root);
@@ -718,6 +722,8 @@ update_state();
                           'ShowMinMax', mmCB.Value, ...
                           'ShowExtrap', extrapCB.Value, ...
                           'Colormap',   cmapDD.Value);
+        plotTitle.Text = char(ax.Title.String);
+        title(ax, '');
     end
 
     function on_view_change()
