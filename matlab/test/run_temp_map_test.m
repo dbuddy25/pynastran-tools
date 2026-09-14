@@ -150,6 +150,29 @@ txt = fileread(fullfile(outM, 'temp_subcases.dat'));
 check(numel(regexp(txt, 'SUBCASE \d+')) == 2, 'one SUBCASE per step for the whole assembly');
 check(iscell(RM(1).surface) && numel(RM(1).surface) == 2 && any(contains(RM(1).warnings, 'B:')), ...
       'merged surfaces per part, warnings prefixed by part');
+% steps pair across parts by the trailing number, not the file name
+outR = fullfile(tempdir, 'temp_map_test_renamed'); if exist(outR, 'dir'), rmdir(outR, 's'); end
+mkdir(outR);
+copyfile(fullfile(here, 'partB', 't000.csv'), fullfile(outR, 'fuse_case_0.csv'));
+copyfile(fullfile(here, 'partB', 't100.csv'), fullfile(outR, 'fuse_case_0100.csv'));
+[Rr, Sr] = temp_map_matlab('PARTS', {'A', bdf, fullfile(here, 'partA'); 'B', fullfile(here, 'test_temp_map_B.bdf'), outR}, ...
+                           'WRITE', false);
+check(max(abs(Rr(2, 2).grid_T - R2(2, 2).grid_T)) < 1e-12 && contains(Rr(2, 2).csv_file, 'fuse_case_0100.csv') && ...
+      strcmp(Sr.File{1}, 't000.csv'), 'differently named CSVs paired by trailing number (leading zeros ignored)');
+copyfile(fullfile(here, 'partB', 't100.csv'), fullfile(outR, 'fuse_other_100.csv'));
+try
+    temp_map_matlab('PARTS', {'A', bdf, fullfile(here, 'partA'); 'B', fullfile(here, 'test_temp_map_B.bdf'), outR}, 'WRITE', false);
+    check(false, 'two CSVs with the same number should error');
+catch ME
+    check(strcmp(ME.identifier, 'temp_map_matlab:ambiguousStep'), 'ambiguous step number errors clearly');
+end
+delete(fullfile(outR, 'fuse_other_100.csv')); delete(fullfile(outR, 'fuse_case_0.csv'));
+try
+    temp_map_matlab('PARTS', {'A', bdf, fullfile(here, 'partA'); 'B', fullfile(here, 'test_temp_map_B.bdf'), outR}, 'WRITE', false);
+    check(false, 'missing step number should error');
+catch ME
+    check(strcmp(ME.identifier, 'temp_map_matlab:missingStep') && contains(ME.message, 't000.csv'), 'missing step number errors clearly');
+end
 G2 = temp_map_matlab('PARTS', PARTS, 'READ_ONLY', true);
 check(numel(G2) == 2 && strcmp(G2(2).name, 'B'), 'READ_ONLY returns one grids struct per part');
 try

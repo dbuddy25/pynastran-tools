@@ -13,8 +13,9 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %                          'CSV_TEMP_UNITS', 'K',   'OUT_UNITS', 'F', ...
 %                          'METHOD', 'linear', 'SID_START', 100)
 %
-%   Multi-part assembly (one BDF + one cloud folder per part, same CSV names
-%   in every folder; step k of every part gets the same SID):
+%   Multi-part assembly (one BDF + one cloud folder per part; steps pair across
+%   folders by the number before .csv -- wing_20.csv <-> fuse_20.csv -- or by
+%   the whole file name when there is none; step k of every part gets the same SID):
 %       >> temp_map_matlab('PARTS', {'wing', 'wing.bdf', 'clouds\wing'; ...
 %                                    'fuse', 'fuse.bdf', 'clouds\fuse'}, ...
 %                          'OUT_DIR', 'temp_cards', 'OUT_UNITS', 'F')
@@ -264,14 +265,29 @@ if isempty(C.RESULTS)
         files{ic(1)} = resolve_csv_files(C1);
         steps = cellfun(@shortname, files{ic(1)}, 'UniformOutput', false);
         ns = numel(steps);
+        keys1 = step_keys(steps);
         for i = ic(2:end)
-            files{i} = fullfile(srcs{i}, steps);
-            miss = steps(cellfun(@(f) exist(f, 'file') ~= 2, files{i}));
-            if ~isempty(miss)
+            d = dir(fullfile(srcs{i}, '*.csv'));
+            names = {d.name};
+            keysi = step_keys(names);
+            [tf, loc] = ismember(keys1, keysi);
+            if ~all(tf)
+                miss = steps(~tf);
                 error('temp_map_matlab:missingStep', ...
-                    'Part "%s" (%s) is missing %d of the %d time steps, e.g. %s', ...
+                    ['Part "%s" (%s) has no CSV matching %d of the %d time steps, e.g. %s\n' ...
+                     '(steps pair across parts by the number before .csv, e.g. wing_20.csv <-> fuse_20.csv, ' ...
+                     'or by the whole name when there is no trailing number).'], ...
                     G(i).name, srcs{i}, numel(miss), ns, strjoin(miss(1:min(3, end)), ', '));
             end
+            [~, first] = unique(keysi, 'stable');
+            amb = keys1(ismember(keys1, keysi(setdiff(1:numel(keysi), first))));
+            if ~isempty(amb)
+                error('temp_map_matlab:ambiguousStep', ...
+                    'Part "%s" (%s) has more than one CSV ending in the same number, e.g. _%s.csv', ...
+                    G(i).name, srcs{i}, amb{1});
+            end
+            files{i} = fullfile(srcs{i}, names(loc));
+            files{i} = files{i}(:);
         end
     else
         times = uniform_times(C, kinds, srcs);
@@ -759,6 +775,23 @@ function r = uniform_result(Gi, kind, src, t, step, k, C)
     r.method    = how;
     r.coverage  = {sprintf('%s: all %d grids, no cloud', how, n)};
     fprintf('  %s%s: %s  (%d grids)\n', pfx(Gi.name), step, how, n);
+end
+
+
+function keys = step_keys(names)
+%STEP_KEYS  What pairs a time step across parts: the number just before .csv
+%   (leading zeros ignored: wing_020.csv and fuse_20.csv are the same step),
+%   or the whole lower-case name when there is no trailing number.
+    names = cellstr(names);
+    keys = cell(size(names));
+    for k = 1:numel(names)
+        tok = regexp(names{k}, '(\d+)\.csv$', 'tokens', 'once', 'ignorecase');
+        if isempty(tok)
+            keys{k} = lower(names{k});
+        else
+            keys{k} = sprintf('%d', str2double(tok{1}));
+        end
+    end
 end
 
 
