@@ -261,21 +261,30 @@ function crop = pick_range(xyz, T, o, lunits, tunits)
     a1 = subplot(3, 1, [1 2], 'Parent', f);
     scatter(a1, w(sel), v(sel), 5, T(sel), 'filled'); axis(a1, 'equal'); grid(a1, 'on'); colorbar(a1);
     xlabel(a1, sprintf('position along %s [%s]', label, lunits)); ylabel(a1, sprintf('perpendicular [%s]', lunits));
-    title(a1, sprintf('Side view, T [%s].  CLICK TWICE on either panel: the range between the clicks is kept.', tunits));
+    prompt = @(k) title(a1, sprintf('Side view, T [%s].   Click %d of 2 on either panel: the range between the two clicks is kept.   (Esc / Enter = cancel)', tunits, k));
+    prompt(1);
     a2 = subplot(3, 1, 3, 'Parent', f);
     histogram(a2, w, 200); grid(a2, 'on');
     xlabel(a2, sprintf('position along %s [%s]', label, lunits)); ylabel(a2, 'points');
     linkaxes([a1 a2], 'x');
-    [px, ~] = ginput(2);
-    if numel(px) < 2
-        close(f); error('temp_cloud_check:noPick', 'Range not picked (need two clicks).');
+    px = [];
+    while numel(px) < 2
+        figure(f);
+        [x, ~, button] = ginput(1);
+        if isempty(x) || ~ishandle(f) || (button ~= 1 && button ~= 2 && button ~= 3)
+            if ishandle(f), close(f); end
+            error('temp_cloud_check:noPick', 'Range not picked (need two mouse clicks).');
+        end
+        px(end+1) = x; %#ok<AGROW>
+        for a = [a1 a2]
+            hold(a, 'on'); yl = ylim(a);
+            plot(a, [x x], yl, 'k--', 'LineWidth', 1.5);
+            hold(a, 'off');
+        end
+        prompt(numel(px) + 1);
+        drawnow
     end
     rng_ = sort(px(:))';
-    for a = [a1 a2]
-        hold(a, 'on'); yl = ylim(a);
-        plot(a, [rng_(1) rng_(1)], yl, 'k--', [rng_(2) rng_(2)], yl, 'k--', 'LineWidth', 1.5);
-        hold(a, 'off');
-    end
     title(a1, sprintf('Keeping %.4g .. %.4g %s along %s  (reuse: ''PICK'', ''%s'', ''RANGE'', [%.6g %.6g])', ...
                       rng_, lunits, label, ax, rng_));
     drawnow
