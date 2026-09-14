@@ -194,9 +194,9 @@ if o.PLOT
     ax1 = nexttile(tl);
     sel = thin(numel(d.T), o.MAX_POINTS);
     scatter3(ax1, d.xyz(sel, 1), d.xyz(sel, 2), d.xyz(sel, 3), 4, d.T(sel), 'filled');
-    axis(ax1, 'equal'); grid(ax1, 'on'); box(ax1, 'on'); view(ax1, 3);
+    axis(ax1, 'equal'); axis(ax1, 'vis3d'); grid(ax1, 'on'); box(ax1, 'on'); view(ax1, 3);
     xlabel(ax1, 'X'); ylabel(ax1, 'Y'); zlabel(ax1, 'Z');
-    cb = colorbar(ax1, 'southoutside'); cb.Label.String = sprintf('T [%s]', tunits);
+    cb = colorbar(ax1, 'eastoutside'); cb.Label.String = sprintf('T [%s]', tunits);
     hold(ax1, 'on');
     c0 = mean(d.xyz, 1); L = 0.5 * max(max(d.xyz) - min(d.xyz));
     quiver3(ax1, c0(1), c0(2), c0(3), L * E(1, 3), L * E(2, 3), L * E(3, 3), 0, 'k', 'LineWidth', 2, 'MaxHeadSize', 0.5);
