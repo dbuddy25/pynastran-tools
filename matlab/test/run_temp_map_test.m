@@ -63,7 +63,7 @@ check(abs(str2double(L(25:32)) - ((R(1).grid_T(1) - 273.15) * 9/5 + 32)) < 5e-3,
 
 % --- nearest / idw methods against brute force ------------------------------
 Rn = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
-                     'METHOD', 'nearest', 'WRITE', false);
+                     'METHOD', 'nearest', 'WRITE', false, 'SHELL_AVERAGE', false);
 D = pdist2_plain(Rn.grid_xyz, Rn.cloud_xyz);
 [dmin, nn] = min(D, [], 2);
 check(max(abs(Rn.grid_T - Rn.cloud_T(nn))) < 1e-9, 'nearest: matches brute-force nearest point');
@@ -72,7 +72,7 @@ Rs = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')},
                      'METHOD', 'scattered', 'WRITE', false);
 check(max(abs(Rs.grid_T - R(1).grid_T)) < 1e-6, 'scattered: matches linear on the fixture');
 Ri = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, ...
-                     'METHOD', 'idw', 'WRITE', false);
+                     'METHOD', 'idw', 'WRITE', false, 'SHELL_AVERAGE', false);
 check(all(Ri.grid_T >= min(Ri.cloud_T) - 1e-9 & Ri.grid_T <= max(Ri.cloud_T) + 1e-9), ...
       'idw: within cloud temperature range');
 
@@ -130,6 +130,35 @@ check(size(R(1).faces, 1) == 12 && size(R(1).faces, 2) == 4, ...
       'quad + tri + hexa(6) + tetra(4) -> 12 free faces');
 check(nnz(isnan(R(1).faces(:, 4))) == 1 + 4, 'tri faces NaN-padded (1 tri + 4 tet faces)');
 check(all(R(1).faces(~isnan(R(1).faces)) >= 1 & R(1).faces(~isnan(R(1).faces)) <= 12), 'faces index grid rows');
+
+% --- shells: through-thickness average -------------------------------------------------
+check(contains(R(1).method, 'shell grids') && nnz(~isnan(G.shell_t)) == 7 && all(abs(G.shell_t(~isnan(G.shell_t)) - 0.2) < 1e-12), ...
+      'fixture: 7 grids on the quad + tri get t = 0.2 from the PSHELL in the INCLUDE; linear field unchanged by averaging');
+shdir = fullfile(tempdir, 'temp_map_test_shell');
+if exist(shdir, 'dir'), rmdir(shdir, 's'); end
+mkdir(shdir);
+[gx, gy, gz] = ndgrid(-2:2, -2:2, -1:0.5:1);
+M = [zeros(numel(gx), 1) gx(:) gy(:) gz(:) 300 + 100 * gz(:).^2];      % T = 300 + 100 z^2: mid-plane 300
+shcsv = fullfile(shdir, 'quad_0.csv');
+fid = fopen(shcsv, 'w'); fprintf(fid, 'time,x,y,z,T\n'); fprintf(fid, '%g,%g,%g,%g,%g\n', M'); fclose(fid);
+shbdf = fullfile(shdir, 'quad.bdf');
+fid = fopen(shbdf, 'w');
+fprintf(fid, 'BEGIN BULK\nGRID,1,,-1.,-1.,0.\nGRID,2,,1.,-1.,0.\nGRID,3,,1.,1.,0.\nGRID,4,,-1.,1.,0.\n');
+fprintf(fid, 'CQUAD4,1,1,1,2,3,4\nPSHELL,1,1,2.0\nENDDATA\n'); fclose(fid);
+Rsh = temp_map_matlab('BDF_FILE', shbdf, 'CSV_FILES', {shcsv}, 'WRITE', false, 'SHELL_LAYERS', 5);
+check(all(abs(Rsh.grid_T - 350) < 1e-6), 'shell grids: mean of 5 levels across t = 2 along the normal (z^2 field -> 350, mid-plane 300)');
+Roff = temp_map_matlab('BDF_FILE', shbdf, 'CSV_FILES', {shcsv}, 'WRITE', false, 'SHELL_AVERAGE', false);
+check(all(abs(Roff.grid_T - 300) < 1e-6) && ~contains(Roff.method, 'shell'), 'SHELL_AVERAGE off: mid-plane value');
+fid = fopen(shbdf, 'w');
+fprintf(fid, 'BEGIN BULK\nGRID,1,,-1.,-1.,0.\nGRID,2,,1.,-1.,0.\nGRID,3,,1.,1.,0.\nGRID,4,,-1.,1.,0.\n');
+fprintf(fid, 'CQUAD4,1,1,1,2,3,4\nPCOMP,1,,,,,,,,\n,1,0.5,0.,YES,1,0.5,0.,YES\nENDDATA\n'); fclose(fid);
+Rpc = temp_map_matlab('BDF_FILE', shbdf, 'CSV_FILES', {shcsv}, 'WRITE', false, 'SHELL_LAYERS', 5);
+check(all(abs(Rpc.grid_T - 315) < 1e-6), 'PCOMP total thickness 1.0: levels at 0, +-0.25, +-0.5 -> 315');
+fid = fopen(shbdf, 'w');
+fprintf(fid, 'BEGIN BULK\nGRID,1,,-1.,-1.,0.\nGRID,2,,1.,-1.,0.\nGRID,3,,1.,1.,0.\nGRID,4,,-1.,1.,0.\n');
+fprintf(fid, 'CQUAD4,1,7,1,2,3,4\nENDDATA\n'); fclose(fid);
+Rnp = temp_map_matlab('BDF_FILE', shbdf, 'CSV_FILES', {shcsv}, 'WRITE', false);
+check(all(abs(Rnp.grid_T - 300) < 1e-6), 'shell without a property card: falls back to the mid-plane value');
 
 % --- multi-part assembly ----------------------------------------------------
 outM = fullfile(tempdir, 'temp_map_test_multi');

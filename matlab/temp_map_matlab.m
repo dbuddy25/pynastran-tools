@@ -176,6 +176,10 @@ C.TIME_SCALE     = 1;
 C.METHOD         = 'linear';    % 'linear' | 'scattered' | 'nearest' | 'idw'   (see help)
 C.IDW_K          = 8;           % neighbours used by 'idw'
 C.IDW_POWER      = 2;           % 1/d^p weighting for 'idw'
+C.SHELL_AVERAGE  = true;        % grids on shell elements (CQUAD4/CTRIA3/...): average the cloud
+                                % through the plate thickness (PSHELL T / PCOMP total) along the
+                                % grid normal instead of taking the mid-plane value
+C.SHELL_LAYERS   = 5;           % sample levels across the thickness for that average
 C.SLIVER_FACTOR  = 3;           % linear only: a grid whose Delaunay cell has an edge
                                 % longer than this x the cloud's median spacing is in a
                                 % "bridging" cell across a concavity -> nearest point is
@@ -221,10 +225,14 @@ if isempty(C.RESULTS)
         end
         for i = 1:np
             G(i).csv_dir = parts{i, 3};      % folders may change between runs; grids do not
+            if ~isfield(G, 'shell_t') || isempty(G(i).shell_t)          % cache from an older version
+                G(i).shell_n = nan(numel(G(i).ids), 3); G(i).shell_t = nan(numel(G(i).ids), 1);
+            end
             fprintf('Using %d cached grids from %s\n', numel(G(i).ids), G(i).bdf_file);
         end
     else
-        G = repmat(struct('name', '', 'ids', [], 'xyz', [], 'faces', [], 'bdf_file', '', 'csv_dir', ''), 1, np);
+        G = repmat(struct('name', '', 'ids', [], 'xyz', [], 'faces', [], 'shell_n', [], 'shell_t', [], ...
+                          'bdf_file', '', 'csv_dir', ''), 1, np);
         for i = 1:np
             lo = (i - 1) / np; w = 1 / np;
             tic;
@@ -233,10 +241,15 @@ if isempty(C.RESULTS)
             fprintf('Read %d grids from %s  (%.1f s)\n', numel(gid), parts{i, 2}, toc);
             tic;
             estage = @(f, m) progress(C, lo + w * (0.45 + 0.50 * f), sprintf('%sElements: %s', pfx(parts{i, 1}), m));
-            gfaces = read_faces(parts{i, 2}, gid, estage);
+            [gfaces, sh] = read_faces(parts{i, 2}, gid, gxyz, estage);
             fprintf('Read %d drawable element faces  (%.1f s)\n', size(gfaces, 1), toc);
+            nsh = nnz(~isnan(sh.t)); nno = nnz(any(~isnan(sh.n), 2) & isnan(sh.t));
+            if nsh + nno > 0
+                fprintf('  %d grids on shell elements: thickness from PSHELL / PCOMP%s\n', nsh + nno, ...
+                        ternary(nno > 0, sprintf(' -- %d WITHOUT a thickness (no property card): mid-plane value used', nno), ''));
+            end
             G(i) = struct('name', parts{i, 1}, 'ids', gid, 'xyz', gxyz, 'faces', gfaces, ...
-                          'bdf_file', parts{i, 2}, 'csv_dir', parts{i, 3});
+                          'shell_n', sh.n, 'shell_t', sh.t, 'bdf_file', parts{i, 2}, 'csv_dir', parts{i, 3});
         end
     end
     if C.READ_ONLY
@@ -423,13 +436,19 @@ function [q, cache] = map_step(file, C, Gi, cache, stage)
         M = cache.M;
         q.reused = true;
     else
-        M = build_map(cxyz, Gi.xyz, C, stage);
+        [Q, sidx, L] = shell_samples(Gi, C);
+        M = build_map(cxyz, Q, C, stage);
+        n = size(Gi.xyz, 1);
+        M.extrap = M.extrap(1:n); M.nndist = M.nndist(1:n);      % flags belong to the grid itself
+        if ~isempty(sidx)
+            M.method = sprintf('%s + through-thickness average on %d shell grids (%d layers)', M.method, numel(sidx), L);
+        end
         stage(0.95, 'cloud surface (alpha shape) ...');
         srf = cloud_surface(cxyz, C.SURFACE_POINTS);
         cache = struct('xyz', cxyz, 'M', M, 'surface', srf);
         q.cxyz = cxyz; q.srf = srf;
     end
-    q.gT     = apply_map(M, cT);
+    q.gT     = collapse_layers(apply_map(M, cT), Gi, C);
     q.extrap = M.extrap;
     q.nndist = M.nndist;
     q.method = M.method;
@@ -631,6 +650,9 @@ function validate_config(C)
     end
     if ~ismember(lower(char(C.METHOD)), {'linear', 'scattered', 'nearest', 'idw'})
         error('temp_map_matlab:badMethod', 'C.METHOD must be ''linear'', ''scattered'', ''nearest'' or ''idw''.');
+    end
+    if ~isnumeric(C.SHELL_LAYERS) || ~isscalar(C.SHELL_LAYERS) || C.SHELL_LAYERS < 2
+        error('temp_map_matlab:badLayers', 'C.SHELL_LAYERS must be an integer >= 2.');
     end
     if C.SID_FROM_TIME && C.TIME_SCALE <= 0
         error('temp_map_matlab:badScale', 'C.TIME_SCALE must be positive.');
@@ -984,11 +1006,15 @@ end
 
 
 % =========================================================================
-function F = read_faces(bdf_file, grid_ids, stage)
+function [F, SH] = read_faces(bdf_file, grid_ids, grid_xyz, stage)
 %READ_FACES  Drawable faces (rows into grid_ids, NaN-padded to 4 columns)
 %   from the shell and solid elements in the BDF: shells as-is, solids as
 %   their free (outer) faces.  [] if the deck has no supported elements.
-    if nargin < 3, stage = @(~, ~) []; end
+%   SH.n / SH.t: per-grid shell normal (unit, sign arbitrary) and thickness
+%   (PSHELL T or PCOMP total), NaN where the grid is not on a shell / no property.
+    if nargin < 4, stage = @(~, ~) []; end
+    ng = numel(grid_ids);
+    SH = struct('n', nan(ng, 3), 't', nan(ng, 1));
     try
         E = read_elements_file(bdf_file, true, stage, [0 0.8]);
     catch ME
@@ -996,6 +1022,7 @@ function F = read_faces(bdf_file, grid_ids, stage)
         F = []; return
     end
     if isempty(E), F = []; return; end
+    SH = shell_normals(E, grid_ids, grid_xyz);
     stage(0.85, 'building free faces of solids ...');
     faces = zeros(0, 4);
     % --- shells: one face each ---------------------------------------------
@@ -1042,6 +1069,149 @@ function F = read_faces(bdf_file, grid_ids, stage)
 end
 
 
+function SH = shell_normals(E, grid_ids, gxyz)
+%SHELL_NORMALS  Per-grid shell normal (dominant axis of the adjacent element
+%   normals, so element orientation does not matter) and mean thickness.
+    ng = numel(grid_ids);
+    SH = struct('n', nan(ng, 3), 't', nan(ng, 1));
+    props = [E.PSHELL; E.PCOMP];                       % [PID T]
+    nodes = zeros(0, 4); enrm = zeros(0, 3); epid = zeros(0, 1);
+    for t = {'CQUAD4', 'CQUADR', 'CQUAD8'}
+        g = E.(t{1}); if isempty(g), continue; end
+        [tf, loc] = ismember(g(:, 1:4), grid_ids); ok = all(tf, 2);
+        loc = loc(ok, :);
+        nrm = cross(gxyz(loc(:, 3), :) - gxyz(loc(:, 1), :), gxyz(loc(:, 4), :) - gxyz(loc(:, 2), :), 2);
+        nodes = [nodes; loc]; enrm = [enrm; nrm]; epid = [epid; E.(['PID_' t{1}])(ok)];   %#ok<AGROW>
+    end
+    for t = {'CTRIA3', 'CTRIAR', 'CTRIA6'}
+        g = E.(t{1}); if isempty(g), continue; end
+        [tf, loc] = ismember(g(:, 1:3), grid_ids); ok = all(tf, 2);
+        loc = loc(ok, :);
+        nrm = cross(gxyz(loc(:, 2), :) - gxyz(loc(:, 1), :), gxyz(loc(:, 3), :) - gxyz(loc(:, 1), :), 2);
+        nodes = [nodes; loc nan(size(loc, 1), 1)]; enrm = [enrm; nrm]; epid = [epid; E.(['PID_' t{1}])(ok)];   %#ok<AGROW>
+    end
+    if isempty(nodes), return; end
+    enrm = enrm ./ max(vecnorm(enrm, 2, 2), eps);
+    et = nan(size(epid));
+    if ~isempty(props)
+        [tf, loc] = ismember(epid, props(:, 1));
+        et(tf) = props(loc(tf), 2);
+    end
+    % accumulate the orientation tensor n*n' per grid (sign-free), thickness mean
+    Sxx = zeros(ng, 1); Syy = Sxx; Szz = Sxx; Sxy = Sxx; Sxz = Sxx; Syz = Sxx;
+    cnt = Sxx; tsum = Sxx; tbad = Sxx; v0 = zeros(ng, 3);
+    ref = [0.31 0.52 0.79];
+    sgn = sign(enrm * ref'); sgn(sgn == 0) = 1;
+    for k = 1:4
+        idx = nodes(:, k); use = ~isnan(idx); idx = idx(use);
+        n = enrm(use, :); tk = et(use);
+        Sxx = Sxx + accumarray(idx, n(:, 1).^2, [ng 1]);
+        Syy = Syy + accumarray(idx, n(:, 2).^2, [ng 1]);
+        Szz = Szz + accumarray(idx, n(:, 3).^2, [ng 1]);
+        Sxy = Sxy + accumarray(idx, n(:, 1) .* n(:, 2), [ng 1]);
+        Sxz = Sxz + accumarray(idx, n(:, 1) .* n(:, 3), [ng 1]);
+        Syz = Syz + accumarray(idx, n(:, 2) .* n(:, 3), [ng 1]);
+        v0  = v0 + [accumarray(idx, n(:, 1) .* sgn(use), [ng 1]), accumarray(idx, n(:, 2) .* sgn(use), [ng 1]), ...
+                    accumarray(idx, n(:, 3) .* sgn(use), [ng 1])];
+        cnt = cnt + accumarray(idx, 1, [ng 1]);
+        tsum = tsum + accumarray(idx, fillmissing_zero(tk), [ng 1]);
+        tbad = tbad + accumarray(idx, double(isnan(tk)), [ng 1]);
+    end
+    on = cnt > 0;
+    v = v0; small = vecnorm(v, 2, 2) < 1e-6; v(small, :) = repmat(ref, nnz(small), 1);
+    for it = 1:8                                        % power iteration -> dominant axis
+        v = [Sxx .* v(:, 1) + Sxy .* v(:, 2) + Sxz .* v(:, 3), ...
+             Sxy .* v(:, 1) + Syy .* v(:, 2) + Syz .* v(:, 3), ...
+             Sxz .* v(:, 1) + Syz .* v(:, 2) + Szz .* v(:, 3)];
+        v = v ./ max(vecnorm(v, 2, 2), eps);
+    end
+    SH.n(on, :) = v(on, :);
+    t = tsum ./ max(cnt, 1); t(tbad > 0 | ~on) = NaN;
+    SH.t = t;
+end
+
+
+function x = fillmissing_zero(x)
+    x(isnan(x)) = 0;
+end
+
+
+function [f, j] = card_fields(lines, i, n)
+%CARD_FIELDS  Fields of the bulk-data card starting at line i (small, large or
+%   free field, continuations included).  f{1} is the card name; j = next line.
+    L = char(lines(i));
+    f = {};
+    if contains(L, ',')
+        parts = strtrim(strsplit(L, ',', 'CollapseDelimiters', false));
+        f = parts(1:min(9, end)); j = i + 1;                % field 10 is the continuation marker
+        while j <= n
+            nxt = char(lines(j));
+            if isempty(strtrim(nxt)) || nxt(1) == '$' || ~contains(nxt, ','), break; end
+            p2 = strtrim(strsplit(nxt, ',', 'CollapseDelimiters', false));
+            if ~(isempty(p2{1}) || p2{1}(1) == '+' || p2{1}(1) == '*'), break; end
+            p2 = p2(2:min(9, end));
+            p2(end+1:8) = {''};
+            f = [f p2]; j = j + 1;                            %#ok<AGROW>
+        end
+        f{1} = regexprep(f{1}, '\*$', '');
+        return
+    end
+    large = numel(L) >= 8 && any(L(1:min(8, end)) == '*');
+    w = 8; if large, w = 16; end
+    L = pad_cols(L, 72); f = {strtrim(L(1:8))};
+    body = L(9:72);
+    f = [f cellstr(reshape(body, w, [])')'];
+    j = i + 1;
+    while j <= n
+        nxt = char(lines(j));
+        if isempty(strtrim(nxt)) || nxt(1) == '$' || contains(nxt, ','), break; end
+        head = strtrim(nxt(1:min(8, end)));
+        if ~(isempty(head) || head(1) == '+' || head(1) == '*'), break; end
+        nxt = pad_cols(nxt, 72);
+        f = [f cellstr(reshape(nxt(9:72), w, [])')']; j = j + 1;   %#ok<AGROW>
+    end
+    f{1} = regexprep(f{1}, '\*$', '');
+end
+
+
+function v = field_real(f, k)
+    if k > numel(f) || isempty(strtrim(f{k})), v = 0; return; end
+    v = nas_real(f(k));
+end
+
+
+function P = read_shell_props(lines, up, n)
+%READ_SHELL_PROPS  [PID T] from PSHELL (T) and PCOMP (sum of ply T, doubled for SYM).
+    P = zeros(0, 2);
+    for i = find(startsWith(up, "PSHELL") | startsWith(up, "PCOMP"))'
+        try
+            f = card_fields(lines, i, n);
+        catch
+            continue
+        end
+        name = upper(regexprep(f{1}, '[^A-Z0-9]', ''));
+        pid = str2double(f{2});
+        if isnan(pid), continue; end
+        switch name
+            case 'PSHELL'
+                P(end+1, :) = [pid field_real(f, 4)];                 %#ok<AGROW>
+            case 'PCOMP'
+                % plies from field 10 as (MID, T, THETA, SOUT); a blank T repeats the previous ply's
+                t = 0; last = 0; k = 10;
+                while k + 1 <= numel(f)
+                    mid = strtrim(f{k}); tk = strtrim(f{k + 1});
+                    if isempty(mid) && isempty(tk), break; end
+                    if ~isempty(tk), last = nas_real(f(k + 1)); end
+                    t = t + last; k = k + 4;
+                end
+                lam = ''; if numel(f) >= 9, lam = upper(strtrim(f{9})); end
+                if startsWith(lam, 'SYM'), t = 2 * t; end
+                P(end+1, :) = [pid t];                                %#ok<AGROW>
+        end
+    end
+end
+
+
 function E = read_elements_file(fname, is_top, stage, span)
 %READ_ELEMENTS_FILE  Corner-node ids per supported element type, following
 %   INCLUDEs.  Same vectorised slicing as read_grids_file; continuation lines
@@ -1051,7 +1221,8 @@ function E = read_elements_file(fname, is_top, stage, span)
     types = {'CQUAD4', 4; 'CQUADR', 4; 'CQUAD8', 4; 'CTRIA3', 3; 'CTRIAR', 3; 'CTRIA6', 3; ...
              'CTETRA', 4; 'CPENTA', 6; 'CHEXA', 8};
     E = struct();
-    for t = 1:size(types, 1), E.(types{t, 1}) = zeros(0, types{t, 2}); end
+    for t = 1:size(types, 1), E.(types{t, 1}) = zeros(0, types{t, 2}); E.(['PID_' types{t, 1}]) = zeros(0, 1); end
+    E.PSHELL = zeros(0, 2); E.PCOMP = zeros(0, 2);
 
     txt = fileread(fname);
     txt = strrep(txt, sprintf('\t'), ' ');
@@ -1125,7 +1296,10 @@ function E = read_elements_file(fname, is_top, stage, span)
         end
         rows = rows(all(~isnan(rows(:, 3:end)), 2), :);
         E.(name) = [E.(name); rows(:, 3:end)];
+        E.(['PID_' name]) = [E.(['PID_' name]); rows(:, 2)];
     end
+    P = read_shell_props(lines, up, n);
+    E.PSHELL = [E.PSHELL; P];
 
     % ---- INCLUDEs ------------------------------------------------------------
     incs = find(startsWith(up, "INCLUDE"))';
@@ -1143,7 +1317,9 @@ function E = read_elements_file(fname, is_top, stage, span)
         E2 = read_elements_file(resolve_include(inc, base_dir), false, stage, [lo hi]);
         for t = 1:size(types, 1)
             E.(types{t, 1}) = [E.(types{t, 1}); E2.(types{t, 1})];
+            E.(['PID_' types{t, 1}]) = [E.(['PID_' types{t, 1}]); E2.(['PID_' types{t, 1}])];
         end
+        E.PSHELL = [E.PSHELL; E2.PSHELL];
     end
 end
 
@@ -1252,6 +1428,42 @@ end
 
 
 % =========================================================================
+function [sidx, L] = shell_index(Gi, C)
+%SHELL_INDEX  Rows of the grids that get a through-thickness average, and the layer count.
+    sidx = []; L = 0;
+    if ~C.SHELL_AVERAGE || ~isfield(Gi, 'shell_t') || isempty(Gi.shell_t), return; end
+    sidx = find(~isnan(Gi.shell_t) & Gi.shell_t > 0 & all(~isnan(Gi.shell_n), 2));
+    if ~isempty(sidx), L = max(2, round(C.SHELL_LAYERS)); end
+end
+
+
+function [Q, sidx, L] = shell_samples(Gi, C)
+%SHELL_SAMPLES  Points to map: every grid, then L levels across +-t/2 along the
+%   normal for each shell grid (appended, layer-major).
+    Q = Gi.xyz;
+    [sidx, L] = shell_index(Gi, C);
+    if isempty(sidx), return; end
+    z = linspace(-0.5, 0.5, L);
+    m = numel(sidx);
+    extra = zeros(m * L, 3);
+    for j = 1:L
+        extra((j - 1) * m + (1:m), :) = Gi.xyz(sidx, :) + Gi.shell_n(sidx, :) .* (z(j) * Gi.shell_t(sidx));
+    end
+    Q = [Q; extra];
+end
+
+
+function gT = collapse_layers(Tall, Gi, C)
+%COLLAPSE_LAYERS  Grid temperatures from the mapped sample points: shell grids
+%   take the mean of their layers, everything else its own value.
+    n = size(Gi.xyz, 1);
+    gT = Tall(1:n);
+    [sidx, L] = shell_index(Gi, C);
+    if isempty(sidx), return; end
+    gT(sidx) = mean(reshape(Tall(n + 1:end), numel(sidx), L), 2);
+end
+
+
 function M = build_map(P, Q, C, stage)
 %BUILD_MAP  Everything about mapping cloud POINTS P onto grids Q that does not
 %   depend on the temperatures: returned as a mapping object M so that every
