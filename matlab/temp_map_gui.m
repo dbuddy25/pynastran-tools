@@ -48,15 +48,19 @@ Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 Lg.Scrollable = 'on';                  % small screens: scroll the step column instead of squashing it
 
 % --- setup file: everything below except the CSV list ----------------------------
-sb = uigridlayout(Lg, [1 4]);
-sb.ColumnWidth = {'1x', 90, 90, 90}; sb.Padding = [0 0 0 0]; sb.ColumnSpacing = 6;
+sb = uigridlayout(Lg, [1 5]);
+sb.ColumnWidth = {'1x', 84, 84, 98, 64}; sb.Padding = [0 0 0 0]; sb.ColumnSpacing = 6;
 setupLbl = put(uilabel(sb, 'Text', 'Setup: (last session)', 'FontColor', [0.45 0.45 0.45]), 1, 1);
 put(uibutton(sb, 'Text', 'Load setup', 'Tooltip', 'Restore BDF, units, method, output and SID settings from a .json file', ...
              'ButtonPushedFcn', @on_load_setup), 1, 2);
 put(uibutton(sb, 'Text', 'Save setup', 'Tooltip', 'Save the current settings (not the CSV list) to a .json file', ...
              'ButtonPushedFcn', @on_save_setup), 1, 3);
+put(uibutton(sb, 'Text', 'Export script', ...
+             'Tooltip', sprintf(['Write a .m file that runs the engine headless with exactly these settings\n' ...
+                                 '(parts, ticked steps, units, method, output options) -- no GUI needed.']), ...
+             'ButtonPushedFcn', @on_export_script), 1, 4);
 put(uibutton(sb, 'Text', 'Reset', 'Tooltip', 'Back to defaults', ...
-             'ButtonPushedFcn', @on_reset_setup), 1, 4);
+             'ButtonPushedFcn', @on_reset_setup), 1, 5);
 
 % --- 1  Parts ----------------------------------------------------------------
 p1 = uipanel(Lg, 'Title', '1  Parts  (BDF + cloud folder, or a temperature)', 'FontWeight', 'bold');
@@ -910,6 +914,70 @@ update_state();
         status(sprintf('Loaded setup %s -- %d part(s). Read BDFs, then Load & Map.', f, size(parts(), 1)));
     end
 
+    function on_export_script(~, ~)
+        % a runnable .m file: the same name/value call Load & Map + Write would make
+        P = parts();
+        if isempty(P)
+            uialert(fig, 'Add at least one part first.', 'Nothing to export'); return
+        end
+        [f, p] = uiputfile({'*.m', 'MATLAB script'}, 'Export headless run as', 'run_temp_map.m');
+        figure(fig);
+        if isequal(f, 0), return; end
+        sel = cellstr(csvLB.Value);
+        ic = source_rows();
+        stepPair = {};
+        if ic > 0 && ~isempty(sel) && numel(sel) < numel(csvLB.Items)
+            stepPair = {'CSV_FILES', sel};
+        elseif ic == 0 && ~isempty(stepTimes) && numel(sel) < numel(csvLB.Items)
+            stepPair = {'TIMES', stepTimes(ismember(csvLB.Items, sel))};
+        end
+        args = [stepPair, { ...
+            'CSV_HAS_HEADER',   headerCB.Value, ...
+            'BDF_LENGTH_UNITS', bdfUnitsDD.Value, ...
+            'CSV_LENGTH_UNITS', csvUnitsDD.Value, ...
+            'CSV_TEMP_UNITS',   csvTempDD.Value, ...
+            'OUT_UNITS',        unitsDD.Value, ...
+            'METHOD',           methodDD.Value, ...
+            'EXTRAP_WARN_DIST', warn_dist(), ...
+            'SID_START',        sidE.Value, ...
+            'PARALLEL',         parCB.Value, ...
+            'OUT_DIR',          outE.Value, ...
+            'FIELD_SIZE',       fieldDD.Value, ...
+            'WRITE_TEMPD',      tempdCB.Value, ...
+            'WRITE_CASE',       caseCB.Value, ...
+            'SUBTITLE',         subE.Value, ...
+            'CASE_EXTRA',       split_lines(extraE.Value), ...
+            'TREF',             tref_value(), ...
+            'REPORT',           reportCB.Value, ...
+            'SAVE_PNG',         pngCB.Value, ...
+            'WRITE',            true}];
+        L = {};
+        L{end+1} = sprintf('%% %s -- headless TEMP mapping run exported from temp_map_gui  (%s)', f, datestr(now, 'yyyy-mm-dd HH:MM'));
+        L{end+1} = '%   Run it as a script; edit any name/value pair freely (see "help temp_map_matlab").';
+        L{end+1} = '%   Column 3 of PARTS: cloud folder | constant temperature (model units) | time,T csv.';
+        L{end+1} = sprintf('addpath(%s);   %% where temp_map_matlab.m lives', mlit(fileparts(mfilename('fullpath'))));
+        L{end+1} = '';
+        L{end+1} = 'PARTS = { ...';
+        for i = 1:size(P, 1)
+            L{end+1} = sprintf('    %s, %s, %s; ...', mlit(P{i, 1}), mlit(P{i, 2}), mlit(P{i, 3})); %#ok<AGROW>
+        end
+        L{end+1} = '    };';
+        L{end+1} = '';
+        L{end+1} = '[R, S, RM] = temp_map_matlab( ...';
+        L{end+1} = '    ''PARTS'',            PARTS, ...';
+        for q = 1:2:numel(args)
+            L{end+1} = sprintf('    %-19s %s, ...', ['''' args{q} ''','], mlit(args{q + 1})); %#ok<AGROW>
+        end
+        L{end} = regexprep(L{end}, ', \.\.\.$', ');');
+        L{end+1} = 'disp(S);';
+        L{end+1} = '% temp_map_plot(RM(1));      % 3D check of the first step';
+        fid = fopen(fullfile(p, f), 'w');
+        if fid < 0, uialert(fig, sprintf('Cannot write %s', fullfile(p, f)), 'Export failed'); return; end
+        fprintf(fid, '%s\n', L{:});
+        fclose(fid);
+        status([{sprintf('Exported headless run to %s', fullfile(p, f))}; L(:)]);
+    end
+
     function on_reset_setup(~, ~)
         apply_setup(struct());
         save_prefs();
@@ -980,6 +1048,26 @@ function v = getfield_or(st, name, dflt)
     if islogical(dflt), v = logical(v); end
 end
 
+
+function s = mlit(v)
+%MLIT  MATLAB source literal for a value the GUI hands the engine.
+    if ischar(v) || isstring(v)
+        s = ['''' strrep(char(v), '''', '''''') ''''];
+    elseif islogical(v) && isscalar(v)
+        if v, s = 'true'; else, s = 'false'; end
+    elseif isnumeric(v) && isempty(v)
+        s = '[]';
+    elseif isnumeric(v) && isscalar(v)
+        s = sprintf('%.15g', v);
+    elseif isnumeric(v)
+        s = ['[' strjoin(arrayfun(@(x) sprintf('%.15g', x), v(:)', 'UniformOutput', false), ' ') ']'];
+    elseif iscell(v)
+        if isempty(v), s = '{}'; return; end
+        s = ['{' strjoin(cellfun(@mlit, v(:)', 'UniformOutput', false), ', ') '}'];
+    else
+        error('temp_map_gui:literal', 'Cannot write a %s as a script literal.', class(v));
+    end
+end
 
 function c = split_lines(txt)
 %SPLIT_LINES  'SPC = 1 ; DISP = ALL' -> {'SPC = 1', 'DISP = ALL'}
