@@ -32,14 +32,16 @@ function [S, D, h] = temp_cloud_check(src, varargin)
 %     RANGE             []        [lo hi] along the PICK axis (OUT_LENGTH_UNITS): same crop, no
 %                                 clicking -- the picked range is printed so you can reuse it
 %     AXIS              []        thickness direction [x y z]; [] = PCA
-%     CELL              []        in-plane bin size in OUT_LENGTH_UNITS; [] = auto (~8 pts / cell)
+%     CELL              []        in-plane bin size in OUT_LENGTH_UNITS; [] = auto (~60 pts / cell)
 %     ISO_TOL           1         total delta T below this (OUT_UNITS) = "isothermal" in the verdict
 %     PLOT              true      figure for the worst step (largest through-thickness delta)
 %     MAX_POINTS        2e5       cloud points drawn
 %
 %   OUTPUTS
-%     S   table, one row per step: File, Time, N, Thick, dT_total, dT_tt_max, dT_tt_med,
-%         grad_tt, dT_ip, grad_ip, gfit_tt, gfit_ip, R2
+%     S   table, one row per step: File, Time, N, Thick, dT_total, dT_tt_95, dT_tt_max,
+%         dT_tt_med, grad_tt, dT_ip, grad_ip, gfit_tt, gfit_ip, R2
+%         (dT_tt_95 = 95th percentile of the per-cell through-thickness spread: the number
+%         the verdict uses -- the max is usually a few edge cells; grad_tt = dT_tt_95 / Thick)
 %     D   per-step detail (maps, axes, projected points) for your own plots
 %     h   figure handle (PLOT)
 
@@ -80,7 +82,7 @@ ns = numel(files);
 D = repmat(struct('file', '', 'time', NaN, 'xyz', [], 'T', [], 'axes', [], 'thick', NaN, ...
                   'cell', NaN, 'u', [], 'v', [], 'Tmean', [], 'dTtt', [], 'count', []), ns, 1);
 File = cell(ns, 1); Time = zeros(ns, 1); N = zeros(ns, 1); Thick = zeros(ns, 1);
-dT_total = zeros(ns, 1); dT_tt_max = zeros(ns, 1); dT_tt_med = zeros(ns, 1); grad_tt = zeros(ns, 1);
+dT_total = zeros(ns, 1); dT_tt_95 = zeros(ns, 1); dT_tt_max = zeros(ns, 1); dT_tt_med = zeros(ns, 1); grad_tt = zeros(ns, 1);
 dT_ip = zeros(ns, 1); grad_ip = zeros(ns, 1); gfit_tt = zeros(ns, 1); gfit_ip = zeros(ns, 1); R2 = zeros(ns, 1);
 E = [];                                   % [e1 e2 e3] columns, fixed from the first step
 crop = [];                                % {axis vector, [lo hi], centre} from PICK / RANGE
@@ -110,8 +112,8 @@ for k = 1:ns
     % in-plane bins
     ru = max(P(:, 1)) - min(P(:, 1)); rv = max(P(:, 2)) - min(P(:, 2));
     if isempty(o.CELL)
-        cs = sqrt(8 * max(ru * rv, eps) / n);
-        cs = max(cs, max(ru, rv) / 400);
+        cs = sqrt(60 * max(ru * rv, eps) / n);       % ~60 points per cell: a map, not speckle
+        cs = max(cs, max(ru, rv) / 150);
     else
         cs = o.CELL;
     end
@@ -124,13 +126,15 @@ for k = 1:ns
     Tmean = Tsum ./ cnt; Tmean(cnt == 0) = NaN;
     dTtt = Tmax - Tmin; dTtt(cnt < 2) = NaN;
 
-    % through-thickness: spread inside a cell
-    good = cnt >= 3;
-    if any(good(:))
-        ttmax = max(dTtt(good)); ttmed = median(dTtt(good));
+    % through-thickness: spread inside a cell (cells with a real sample only)
+    good = cnt >= 8;
+    if nnz(good) < 4, good = cnt >= 2; end
+    tts = sort(dTtt(good));
+    if isempty(tts)
+        ttmax = 0; tt95 = 0; ttmed = 0;
     else
-        ttmax = max(dTtt(cnt >= 2)); ttmed = ttmax;
-        if isempty(ttmax), ttmax = 0; ttmed = 0; end
+        ttmax = tts(end); ttmed = median(tts);
+        tt95 = tts(max(1, ceil(0.95 * numel(tts))));
     end
     % in-plane: cell means, and the steepest step between neighbouring cells
     ipd = max(Tmean(:), [], 'omitnan') - min(Tmean(:), [], 'omitnan');
@@ -144,31 +148,34 @@ for k = 1:ns
 
     File{k} = shortname(files{k}); Time(k) = t; N(k) = n; Thick(k) = thick;
     dT_total(k) = max(T) - min(T);
-    dT_tt_max(k) = ttmax; dT_tt_med(k) = ttmed; grad_tt(k) = ttmax / max(thick, eps);
+    dT_tt_95(k) = tt95; dT_tt_max(k) = ttmax; dT_tt_med(k) = ttmed; grad_tt(k) = tt95 / max(thick, eps);
     dT_ip(k) = ipd; grad_ip(k) = gip;
     gfit_tt(k) = abs(c(4)); gfit_ip(k) = norm(c(2:3)); R2(k) = r2;
     D(k) = struct('file', files{k}, 'time', t, 'xyz', xyz, 'T', T, 'axes', E, 'thick', thick, ...
                   'cell', cs, 'u', min(P(:, 1)) + (0.5:nu) * cs, 'v', min(P(:, 2)) + (0.5:nv) * cs, ...
                   'Tmean', Tmean, 'dTtt', dTtt, 'count', cnt);
-    fprintf('  %-28s t=%-8g n=%-8d thick=%-8.4g dT=%-7.2f tt: max %-6.2f med %-6.2f (%.3g/%s)   ip: %-7.2f (%.3g/%s)  fit tt %.3g ip %.3g R2 %.2f\n', ...
-        File{k}, t, n, thick, dT_total(k), ttmax, ttmed, grad_tt(k), lunits, ipd, gip, lunits, gfit_tt(k), gfit_ip(k), r2);
+    fprintf('  %-28s t=%-8g n=%-8d thick=%-8.4g dT=%-7.2f tt: 95%% %-6.2f max %-6.2f med %-6.2f (%.3g/%s)   ip: %-7.2f (%.3g/%s)  fit tt %.3g ip %.3g R2 %.2f\n', ...
+        File{k}, t, n, thick, dT_total(k), tt95, ttmax, ttmed, grad_tt(k), lunits, ipd, gip, lunits, gfit_tt(k), gfit_ip(k), r2);
 end
-S = table(File, Time, N, Thick, dT_total, dT_tt_max, dT_tt_med, grad_tt, dT_ip, grad_ip, gfit_tt, gfit_ip, R2);
+S = table(File, Time, N, Thick, dT_total, dT_tt_95, dT_tt_max, dT_tt_med, grad_tt, dT_ip, grad_ip, gfit_tt, gfit_ip, R2);
 
 % --- verdict ------------------------------------------------------------------------
-[~, kw] = max(dT_tt_max); [~, ki] = max(dT_ip); [~, kt] = max(dT_total);
+[~, kw] = max(dT_tt_95); [~, ki] = max(dT_ip); [~, kt] = max(dT_total);
 fprintf('\nThickness axis [%.3f %.3f %.3f], thickness %.4g %s, in-plane cell %.4g %s\n', E(:, 3), Thick(1), lunits, D(1).cell, lunits);
 fprintf('Worst total delta T      : %.2f %s  (%s)\n', dT_total(kt), tunits, File{kt});
-fprintf('Worst through-thickness  : %.2f %s = %.3g %s/%s  (%s)\n', dT_tt_max(kw), tunits, grad_tt(kw), tunits, lunits, File{kw});
+fprintf('Worst through-thickness  : %.2f %s (95%% of cells; max %.2f, median %.2f) = %.3g %s/%s  (%s)\n', ...
+        dT_tt_95(kw), tunits, dT_tt_max(kw), dT_tt_med(kw), grad_tt(kw), tunits, lunits, File{kw});
 fprintf('Worst in-plane           : %.2f %s, steepest %.3g %s/%s  (%s)\n', dT_ip(ki), tunits, grad_ip(ki), tunits, lunits, File{ki});
 if max(dT_total) < o.ISO_TOL
     verdict = sprintf('ISOTHERMAL: total delta T never exceeds %.2g %s -> one temperature per step.', o.ISO_TOL, tunits);
-elseif max(dT_tt_max) < o.ISO_TOL
-    verdict = sprintf('IN-PLANE ONLY: through-thickness delta < %.2g %s everywhere -> shells + TEMP (one T per grid) are enough.', o.ISO_TOL, tunits);
-elseif max(dT_tt_max) < 0.25 * max(dT_ip)
-    verdict = 'IN-PLANE DOMINATES: through-thickness delta is < 1/4 of the in-plane delta -> shells + TEMP, or TEMPP1 if you want the small through-thickness part.';
+elseif max(dT_tt_95) < o.ISO_TOL
+    verdict = sprintf('IN-PLANE ONLY: through-thickness delta < %.2g %s in 95%% of cells -> shells + TEMP (one T per grid).', o.ISO_TOL, tunits);
+elseif max(dT_tt_95) < 0.25 * max(dT_ip)
+    verdict = sprintf('IN-PLANE DOMINATES: through-thickness delta %.2f %s is < 1/4 of the in-plane %.2f %s -> shells + TEMP.', ...
+                      max(dT_tt_95), tunits, max(dT_ip), tunits);
 else
-    verdict = 'THROUGH-THICKNESS MATTERS: comparable to or larger than the in-plane delta -> solids (or shells with TEMPP1 gradients).';
+    verdict = sprintf('THROUGH-THICKNESS MATTERS: %.2f %s through the thickness vs %.2f %s in-plane -> solids.', ...
+                      max(dT_tt_95), tunits, max(dT_ip), tunits);
 end
 fprintf('%s\n', verdict);
 S.Properties.Description = verdict;
@@ -178,34 +185,41 @@ h = [];
 if o.PLOT
     d = D(kw);
     h = figure('Name', sprintf('Cloud check: %s', File{kw}), 'NumberTitle', 'off', 'Color', 'w', ...
-               'Position', [80 80 1380 480]);
+               'Position', [60 60 1500 560]);
     colormap(h, 'jet');
-    ax1 = subplot(1, 3, 1, 'Parent', h);
+    tl = tiledlayout(h, 1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+    title(tl, {sprintf('%s    t = %g s    thickness %.4g %s    cell %.3g %s', File{kw}, d.time, d.thick, lunits, d.cell, lunits), ...
+               verdict}, 'Interpreter', 'none', 'FontWeight', 'bold');
+
+    ax1 = nexttile(tl);
     sel = thin(numel(d.T), o.MAX_POINTS);
-    scatter3(ax1, d.xyz(sel, 1), d.xyz(sel, 2), d.xyz(sel, 3), 6, d.T(sel), 'filled');
-    axis(ax1, 'equal'); axis(ax1, 'vis3d'); grid(ax1, 'on'); box(ax1, 'on'); view(ax1, 3);
-    xlabel(ax1, 'X'); ylabel(ax1, 'Y'); zlabel(ax1, 'Z'); colorbar(ax1);
+    scatter3(ax1, d.xyz(sel, 1), d.xyz(sel, 2), d.xyz(sel, 3), 4, d.T(sel), 'filled');
+    axis(ax1, 'equal'); grid(ax1, 'on'); box(ax1, 'on'); view(ax1, 3);
+    xlabel(ax1, 'X'); ylabel(ax1, 'Y'); zlabel(ax1, 'Z');
+    cb = colorbar(ax1, 'southoutside'); cb.Label.String = sprintf('T [%s]', tunits);
     hold(ax1, 'on');
     c0 = mean(d.xyz, 1); L = 0.5 * max(max(d.xyz) - min(d.xyz));
     quiver3(ax1, c0(1), c0(2), c0(3), L * E(1, 3), L * E(2, 3), L * E(3, 3), 0, 'k', 'LineWidth', 2, 'MaxHeadSize', 0.5);
     hold(ax1, 'off');
-    title(ax1, sprintf('%s   t = %g s   T [%s]   arrow = thickness axis', File{kw}, d.time, tunits), 'Interpreter', 'none');
+    title(ax1, {'cloud, arrow = thickness axis', sprintf('total delta T %.2f %s', dT_total(kw), tunits)});
 
-    ax2 = subplot(1, 3, 2, 'Parent', h);
-    imagesc(ax2, d.u, d.v, d.Tmean', 'AlphaData', ~isnan(d.Tmean'));
-    set(ax2, 'YDir', 'normal'); axis(ax2, 'equal', 'tight'); colorbar(ax2);
+    ax2 = nexttile(tl);
+    imagesc(ax2, d.u, d.v, smooth_nan(d.Tmean)', 'AlphaData', ~isnan(d.Tmean'));
+    set(ax2, 'YDir', 'normal'); axis(ax2, 'equal', 'tight'); box(ax2, 'on');
+    cb = colorbar(ax2, 'southoutside'); cb.Label.String = sprintf('T [%s]', tunits);
     xlabel(ax2, sprintf('in-plane u [%s]', lunits)); ylabel(ax2, sprintf('in-plane v [%s]', lunits));
-    title(ax2, sprintf('mean T through the thickness [%s]   in-plane delta %.2f, steepest %.3g /%s', ...
-                       tunits, dT_ip(kw), grad_ip(kw), lunits));
+    title(ax2, {'IN-PLANE: mean T through the thickness', ...
+                sprintf('delta %.2f %s, steepest %.3g %s/%s', dT_ip(kw), tunits, grad_ip(kw), tunits, lunits)});
 
-    ax3 = subplot(1, 3, 3, 'Parent', h);
-    imagesc(ax3, d.u, d.v, d.dTtt', 'AlphaData', ~isnan(d.dTtt'));
-    set(ax3, 'YDir', 'normal'); axis(ax3, 'equal', 'tight'); colorbar(ax3);
+    ax3 = nexttile(tl);
+    imagesc(ax3, d.u, d.v, smooth_nan(d.dTtt)', 'AlphaData', ~isnan(d.dTtt'));
+    set(ax3, 'YDir', 'normal'); axis(ax3, 'equal', 'tight'); box(ax3, 'on');
+    caxis(ax3, [0 max(dT_tt_95(kw), eps)]);                       % edge cells saturate, the map stays readable
+    cb = colorbar(ax3, 'southoutside'); cb.Label.String = sprintf('delta T [%s]  (clipped at the 95%% value)', tunits);
     xlabel(ax3, sprintf('in-plane u [%s]', lunits)); ylabel(ax3, sprintf('in-plane v [%s]', lunits));
-    title(ax3, sprintf('through-thickness delta T [%s]   max %.2f over t = %.4g %s (%.3g /%s)', ...
-                       tunits, dT_tt_max(kw), d.thick, lunits, grad_tt(kw), lunits));
-    annotation(h, 'textbox', [0.01 0.005 0.98 0.06], 'String', verdict, 'EdgeColor', 'none', ...
-               'FontWeight', 'bold', 'HorizontalAlignment', 'center', 'Interpreter', 'none');
+    title(ax3, {'THROUGH-THICKNESS: spread of T within each cell', ...
+                sprintf('95%% of cells < %.2f %s (median %.2f, max %.2f) = %.3g %s/%s', ...
+                        dT_tt_95(kw), tunits, dT_tt_med(kw), dT_tt_max(kw), grad_tt(kw), tunits, lunits)});
 end
 if nargout == 0
     disp(S); clear S D h
@@ -287,6 +301,17 @@ function E = part_axes(xyz, ax3)
         E = [e1 e2 e3];
     end
     if det(E) < 0, E(:, 2) = -E(:, 2); end    % right-handed
+end
+
+
+function M = smooth_nan(M)
+%SMOOTH_NAN  3x3 mean of the defined neighbours (display only); NaN cells stay NaN.
+    ok = ~isnan(M);
+    V = M; V(~ok) = 0;
+    k = ones(3);
+    num = conv2(V, k, 'same'); den = conv2(double(ok), k, 'same');
+    Ms = num ./ max(den, 1);
+    M(ok) = Ms(ok);
 end
 
 

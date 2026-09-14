@@ -591,10 +591,10 @@ update_state();
         end
         lu = bdfUnitsDD.Value;
         lines = {sprintf('Cloud check: %s', what); S.Properties.Description; ''; ...
-                 sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
+                 sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt 95%', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
         for k = 1:height(S)
             lines{end+1} = sprintf('%-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', S.File{k}, S.dT_total(k), ...
-                                   S.dT_tt_max(k), S.grad_tt(k), S.dT_ip(k), S.grad_ip(k), S.R2(k)); %#ok<AGROW>
+                                   S.dT_tt_95(k), S.grad_tt(k), S.dT_ip(k), S.grad_ip(k), S.R2(k)); %#ok<AGROW>
         end
         lines{end+1} = sprintf('(thickness %.4g %s; tt = through-thickness delta T, ip = in-plane delta T, deg %s)', ...
                                S.Thick(1), lu, unitsDD.Value);
