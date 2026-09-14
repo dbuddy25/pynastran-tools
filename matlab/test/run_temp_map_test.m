@@ -259,6 +259,17 @@ check(contains(txt, 't100.csv') && contains(txt, '<svg') && contains(txt, 'overh
       'report has the step table, chart, warnings and plot links');
 check(exist(fullfile(outP, 't100_temp.png'), 'file') == 2, 'PNG per step written');
 
+% --- cloud check (no BDF) ----------------------------------------------------------
+[Sc, Dc, hc] = temp_cloud_check(here, 'OUT_UNITS', 'K', 'OUT_LENGTH_UNITS', 'in');
+check(height(Sc) == 2 && abs(Sc.R2(1) - 1) < 1e-9, 'cloud check: linear fixture field fits with R2 = 1');
+check(abs(Sc.gfit_ip(1)^2 + Sc.gfit_tt(1)^2 - 129) < 1e-6, 'cloud check: fit gradient sqrt(129) split into in-plane + through-thickness');
+check(abs(Sc.dT_total(1) - (max(R(1).cloud_T) - min(R(1).cloud_T))) < 1e-9 && numel(Dc) == 2 && ishandle(hc), ...
+      'cloud check: total delta T, detail struct, figure');
+close(hc);
+Sa = temp_cloud_check({fullfile(here, 't000.csv')}, 'AXIS', [0 0 1], 'PLOT', false, 'OUT_UNITS', 'K');
+check(abs(Sa.gfit_tt - 2) < 1e-6 && abs(Sa.gfit_ip - sqrt(125)) < 1e-6 && abs(Sa.Thick - 3) < 1e-9, ...
+      'cloud check: AXIS [0 0 1] -> through-thickness gradient 2, in-plane sqrt(125), thickness 3');
+
 % --- plot smoke test --------------------------------------------------------
 h = temp_map_plot(R(1), 'Visible', 'off', 'Units', 'C');
 h.set_view('+Z'); h.set_view('ISO');

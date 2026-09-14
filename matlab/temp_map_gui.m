@@ -107,11 +107,17 @@ uilabel(su, 'Text', '= TEMP card units = isothermal T units', 'FontColor', [0.45
 % --- 2  Temperature clouds ---------------------------------------------------
 p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
 g2 = uigridlayout(p2, [4 4]);
-g2.ColumnWidth = {60, '1x', 64, 64}; g2.RowHeight = {20, '1x', 24, 22};
+g2.ColumnWidth = {60, '1x', 64, 92}; g2.RowHeight = {22, '1x', 24, 22};
 g2.Padding = [8 4 8 4]; g2.RowSpacing = 5;
 
 stepsLbl = put(uilabel(g2, 'Text', 'Time steps (CSV files) -- add a part first', ...
-               'FontColor', [0.45 0.45 0.45]), 1, [1 4]);
+               'FontColor', [0.45 0.45 0.45]), 1, [1 3]);
+put(uibutton(g2, 'Text', 'Cloud check', ...
+             'Tooltip', sprintf(['Before meshing: is there a gradient worth modelling?  Reads the clouds alone (no BDF)\n' ...
+                                 'and splits the temperature variation into THROUGH-THICKNESS vs IN-PLANE, with a\n' ...
+                                 'verdict: isothermal / shells + TEMP / solids.  Uses the first cloud part''s folder and\n' ...
+                                 'the ticked steps, or asks for a folder when no part has a cloud.']), ...
+             'ButtonPushedFcn', @on_cloud_check), 1, 4);
 
 csvLB = put(uilistbox(g2, 'Items', {}, 'Multiselect', 'on', ...
             'Tooltip', 'Ctrl / Shift-click to choose which time steps to map.', ...
@@ -505,6 +511,38 @@ update_state();
         csvLB.Value = names;                 % everything selected by default
         save_prefs();
         update_state();
+    end
+
+    function on_cloud_check(~, ~)
+        P = parts();
+        ic = source_rows();
+        if ic > 0
+            [~, folder] = source_kind(P{ic, 3});
+            sel = cellstr(csvLB.Value);
+            if isempty(sel) || numel(sel) == numel(csvLB.Items), src = folder; else, src = fullfile(folder, sel); end
+        else
+            src = uigetdir(pwd, 'Folder holding the temperature clouds to check');
+            figure(fig);
+            if isequal(src, 0), return; end
+        end
+        status('Cloud check running ... (details in the command window)'); drawnow
+        try
+            S = temp_cloud_check(src, 'CSV_LENGTH_UNITS', csvUnitsDD.Value, 'OUT_LENGTH_UNITS', bdfUnitsDD.Value, ...
+                                 'CSV_TEMP_UNITS', csvTempDD.Value, 'OUT_UNITS', unitsDD.Value, ...
+                                 'CSV_HAS_HEADER', headerCB.Value);
+        catch ME
+            uialert(fig, ME.message, 'Cloud check failed'); status('Cloud check failed.'); return
+        end
+        lu = bdfUnitsDD.Value;
+        lines = {S.Properties.Description; ''; ...
+                 sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
+        for k = 1:height(S)
+            lines{end+1} = sprintf('%-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', S.File{k}, S.dT_total(k), ...
+                                   S.dT_tt_max(k), S.grad_tt(k), S.dT_ip(k), S.grad_ip(k), S.R2(k)); %#ok<AGROW>
+        end
+        lines{end+1} = sprintf('(thickness %.4g %s; tt = through-thickness delta T, ip = in-plane delta T, deg %s)', ...
+                               S.Thick(1), lu, unitsDD.Value);
+        status(lines);
     end
 
     function on_len_units()
