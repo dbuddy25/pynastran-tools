@@ -118,7 +118,8 @@ for k = 1:ns
             r.dT_ip, r.grad_ip, lunits, r.gfit_tt, r.gfit_ip, r.R2);
     end
 end
-S = struct2table(rows);
+S = struct2table(rows, 'AsArray', true);
+if ischar(S.File), S.File = cellstr(S.File); end      % one row: struct2table gives a char
 if nb == 1, S.Body = []; end
 
 % --- verdicts, one per body ----------------------------------------------------------
