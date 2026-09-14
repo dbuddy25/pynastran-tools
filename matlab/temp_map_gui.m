@@ -252,6 +252,7 @@ statusTA = uitextarea(Lg, 'Editable', 'off', 'FontName', 'Courier New', 'FontSiz
 %                              RIGHT: VIEW
 % =========================================================================
 Rg = uigridlayout(root, [5 1]);
+Rg.Layout.Row = 1; Rg.Layout.Column = 2;   % explicit: the left column spans both rows
 Rg.RowHeight = {34, 30, 26, 20, '1x'};     % banner / case + views / display / plot title / axes
 Rg.Padding = [0 0 0 0]; Rg.RowSpacing = 6;
 
