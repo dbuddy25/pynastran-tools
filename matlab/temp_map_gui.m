@@ -18,6 +18,7 @@ function fig = temp_map_gui()
 R = [];          % results from the last Load & Map  (parts x steps)
 RM = [];         % merged assembly view per step
 G = [];          % cached grids from Read BDFs, one struct per part
+stepTimes = [];  % uniform step times when no part has a cloud (from a T(t) table)
 H = [];          % plot handles from temp_map_plot
 hNow = [];       % current-case marker line on the time strip
 VIEWS = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
@@ -58,29 +59,36 @@ put(uibutton(sb, 'Text', 'Reset', 'Tooltip', 'Back to defaults', ...
              'ButtonPushedFcn', @on_reset_setup), 1, 4);
 
 % --- 1  Parts ----------------------------------------------------------------
-p1 = uipanel(Lg, 'Title', '1  Parts  (BDF + its cloud folder)', 'FontWeight', 'bold');
-g1 = uigridlayout(p1, [3 4]);
-g1.ColumnWidth = {'1x', 84, 84, 96}; g1.RowHeight = {'1x', 26, 24};
+p1 = uipanel(Lg, 'Title', '1  Parts  (BDF + cloud folder, or a temperature)', 'FontWeight', 'bold');
+g1 = uigridlayout(p1, [3 5]);
+g1.ColumnWidth = {'1x', 72, 104, 72, 84}; g1.RowHeight = {'1x', 26, 24};
 g1.Padding = [8 4 8 4]; g1.RowSpacing = 5;
 
-partsT = put(uitable(g1, 'ColumnName', {'Part', 'BDF', 'Cloud folder'}, ...
-             'ColumnWidth', {90, '1x', '1x'}, 'ColumnEditable', [true false false], ...
+partsT = put(uitable(g1, 'ColumnName', {'Part', 'BDF', 'Cloud folder  |  T  |  T(t).csv'}, ...
+             'ColumnWidth', {90, '1x', '1x'}, 'ColumnEditable', [true false true], ...
              'RowName', [], 'Data', cell(0, 3), ...
-             'Tooltip', sprintf(['One row per part = one BDF and the folder holding THAT part''s temperature CSVs.\n' ...
-                                 'Add part asks for the BDF first, then its cloud folder. Repeat for each part.\n' ...
-                                 'Double-click the Part cell to rename it (used for the output subfolder).']), ...
-             'CellEditCallback', @(~, ~) on_parts_edited()), 1, [1 4]);
-modelLbl = put(uilabel(g1, 'Text', 'Add part: pick a BDF, then its CSV folder', 'FontColor', [0.45 0.45 0.45]), 2, 1);
+             'Tooltip', sprintf(['One row per part = one BDF and its temperature source:\n' ...
+                                 '   a folder holding THAT part''s cloud CSVs (Add part), or\n' ...
+                                 '   a constant temperature in model units, or a 2-column CSV of time, T (Add isothermal).\n' ...
+                                 'Isothermal parts follow the cloud parts'' time steps; with no cloud part at all you get\n' ...
+                                 'one step (or the T(t) table''s steps).  Double-click a cell to rename a part or type a temperature.']), ...
+             'CellEditCallback', @(~, ~) on_parts_edited()), 1, [1 5]);
+modelLbl = put(uilabel(g1, 'Text', 'Add part: BDF + cloud folder.  Add isothermal: BDF + one temperature', ...
+               'FontColor', [0.45 0.45 0.45]), 2, 1);
 put(uibutton(g1, 'Text', 'Add part', 'Tooltip', 'Pick a BDF, then the folder holding its temperature clouds', ...
              'ButtonPushedFcn', @on_add_part), 2, 2);
+put(uibutton(g1, 'Text', 'Add isothermal', ...
+             'Tooltip', sprintf(['Pick a BDF, then type one temperature (model units) for the whole part,\n' ...
+                                 'or leave it blank to pick a 2-column CSV (time, T) for a uniform T per step.']), ...
+             'ButtonPushedFcn', @on_add_iso), 2, 3);
 put(uibutton(g1, 'Text', 'Remove', 'Tooltip', 'Remove the highlighted part', ...
-             'ButtonPushedFcn', @on_remove_part), 2, 3);
+             'ButtonPushedFcn', @on_remove_part), 2, 4);
 readB = put(uibutton(g1, 'Text', 'Read BDFs', 'Enable', 'off', ...
             'Tooltip', 'Parse GRIDs and element faces of every part once; cached until a part changes.', ...
-            'ButtonPushedFcn', @on_read_bdf), 2, 4);
+            'ButtonPushedFcn', @on_read_bdf), 2, 5);
 
 put(uilabel(g1, 'Text', 'Structural units'), 3, 1);
-su = uigridlayout(g1, [1 5]); put(su, 3, [2 4]);
+su = uigridlayout(g1, [1 5]); put(su, 3, [2 5]);
 su.ColumnWidth = {44, 60, 38, 60, '1x'}; su.Padding = [0 0 0 0]; su.ColumnSpacing = 4;
 uilabel(su, 'Text', 'length');
 bdfUnitsDD = uidropdown(su, 'Items', {'in', 'mm', 'm'}, 'Value', 'in', ...
@@ -90,7 +98,7 @@ uilabel(su, 'Text', 'temp');
 unitsDD = uidropdown(su, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                      'Tooltip', 'Temperature units of the structural model = what is written on the TEMP cards', ...
                      'ValueChangedFcn', @(~, ~) on_units_change());
-uilabel(su, 'Text', '= TEMP card units', 'FontColor', [0.45 0.45 0.45]);
+uilabel(su, 'Text', '= TEMP card units = isothermal T units', 'FontColor', [0.45 0.45 0.45]);
 
 % --- 2  Temperature clouds ---------------------------------------------------
 p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
@@ -218,8 +226,9 @@ sumT = uitable(Lg, 'ColumnName', {'File', 'Time', 'SID', 'Grids', 'Outside', 'Fa
 statusTA = uitextarea(Lg, 'Editable', 'off', 'FontName', 'Courier New', 'FontSize', 11, ...
                       'Value', {'How to use:', ...
                                 '1  Add part -- pick a BDF, then the folder holding that part''s CSVs (t000.csv, t001.csv ...).', ...
+                                '   Add isothermal -- pick a BDF, then one temperature (model units) or a time,T CSV. No cloud needed.', ...
                                 '   One row per part / assembly. Read BDFs parses them once.', ...
-                                '2  Tick the time steps to map (names come from part 1; every part folder needs the same names).', ...
+                                '2  Tick the time steps to map (names come from the first cloud part; every cloud folder needs the same names).', ...
                                 '3  Set units and method, Load & Map -> check the 3D view and the coverage banner.', ...
                                 '4  Write -> one TEMP file per part per step, plus subcases + includes.'});
 
@@ -301,8 +310,29 @@ update_state();
 %                                CALLBACKS
 % =========================================================================
     function P = parts()
-        P = partsT.Data;                       % {name, bdf, folder}
+        P = partsT.Data;                       % {name, bdf, folder | temperature | T(t) csv}
         if isempty(P), P = cell(0, 3); end
+    end
+
+    function [kind, src] = source_kind(spec)
+        % mirrors the engine's part_source: 'const' | 'table' | 'cloud'
+        if isnumeric(spec) && isscalar(spec), kind = 'const'; src = double(spec); return; end
+        s = strtrim(char(spec)); v = str2double(s);
+        if ~isnan(v),                 kind = 'const'; src = v;
+        elseif exist(s, 'dir') == 7,  kind = 'cloud'; src = s;
+        elseif exist(s, 'file') == 2, kind = 'table'; src = s;
+        else,                         kind = 'cloud'; src = s;
+        end
+    end
+
+    function [ic, it] = source_rows()
+        % row of the first cloud part and of the first T(t) table part (0 = none)
+        P = parts(); ic = 0; it = 0;
+        for i = 1:size(P, 1)
+            k = source_kind(P{i, 3});
+            if ic == 0 && strcmp(k, 'cloud'), ic = i; end
+            if it == 0 && strcmp(k, 'table'), it = i; end
+        end
     end
 
     function set_parts(P)
@@ -328,6 +358,32 @@ update_state();
         set_parts([P; {name, fullfile(p, f), d}]);
     end
 
+    function on_add_iso(~, ~)
+        P = parts();
+        start = pwd;
+        if ~isempty(P), start = fileparts(P{end, 2}); end
+        [f, p] = uigetfile({'*.bdf;*.dat;*.nas;*.blk;*.inc', 'Nastran decks'; '*.*', 'All files'}, ...
+                           'Pick the isothermal part''s BDF', start);
+        figure(fig);
+        if isequal(f, 0), return; end
+        [~, name] = fileparts(f);
+        a = inputdlg(sprintf(['Temperature of "%s" in model units (deg %s), written to every grid.\n' ...
+                              'Leave blank to pick a 2-column CSV (time, T) instead.'], name, unitsDD.Value), ...
+                     'Isothermal part', 1, {'70'});
+        figure(fig);
+        if isempty(a), return; end
+        v = str2double(strtrim(a{1}));
+        if ~isnan(v)
+            spec = v;
+        else
+            [tf, tp] = uigetfile({'*.csv', 'T(t) table: time, T'}, sprintf('T(t) table for "%s"', name), p);
+            figure(fig);
+            if isequal(tf, 0), return; end
+            spec = fullfile(tp, tf);
+        end
+        set_parts([P; {name, fullfile(p, f), spec}]);
+    end
+
     function on_remove_part(~, ~)
         P = parts();
         sel = partsT.Selection;
@@ -339,6 +395,7 @@ update_state();
     function on_parts_edited()
         invalidate_grids();
         save_prefs();
+        refresh_list();
         update_state();
     end
 
@@ -346,12 +403,12 @@ update_state();
         G = [];
         P = parts();
         if isempty(P)
-            modelLbl.Text = 'Add part: pick a BDF, then its CSV folder';
+            modelLbl.Text = 'Add part: BDF + cloud folder.  Add isothermal: BDF + one temperature';
         else
             modelLbl.Text = sprintf('%d part(s), not read yet', size(P, 1));
         end
         modelLbl.FontColor = [0.45 0.45 0.45];
-        p1.Title = '1  Parts  (BDF + its cloud folder)';
+        p1.Title = '1  Parts  (BDF + cloud folder, or a temperature)';
     end
 
     function ok = on_read_bdf(~, ~)
@@ -400,18 +457,42 @@ update_state();
 
     function refresh_list()
         P = parts();
-        if isempty(P) || exist(P{1, 3}, 'dir') ~= 7
+        stepTimes = [];
+        [ic, it] = source_rows();
+        if isempty(P)
             csvLB.Items = {}; csvLB.Value = {};
             stepsLbl.Text = 'Time steps (CSV files) -- add a part first';
             update_state();
             return
         end
-        stepsLbl.Text = sprintf('Time steps in %s -- every part folder must hold the same names', P{1, 3});
-        d = dir(fullfile(P{1, 3}, '*.csv'));
-        names = {d.name};
-        keys = regexprep(names, '(\d+)', '${sprintf(''%012d'', str2double($1))}');
-        [~, order] = sort(lower(keys));
-        names = names(order);
+        if ic > 0
+            [~, folder] = source_kind(P{ic, 3});
+            if exist(folder, 'dir') ~= 7
+                csvLB.Items = {}; csvLB.Value = {};
+                stepsLbl.Text = sprintf('Cloud folder not found: %s', folder);
+                update_state();
+                return
+            end
+            stepsLbl.Text = sprintf('Time steps in %s -- every cloud folder must hold the same names', folder);
+            d = dir(fullfile(folder, '*.csv'));
+            names = {d.name};
+            keys = regexprep(names, '(\d+)', '${sprintf(''%012d'', str2double($1))}');
+            [~, order] = sort(lower(keys));
+            names = names(order);
+        elseif it > 0
+            [~, tab] = source_kind(P{it, 3});
+            try
+                M = readmatrix(tab); M = M(:, 1:2); M(any(isnan(M), 2), :) = [];
+                stepTimes = unique(M(:, 1))';
+            catch
+                stepTimes = [];
+            end
+            names = arrayfun(@(t) sprintf('t%g', t), stepTimes, 'UniformOutput', false);
+            stepsLbl.Text = sprintf('No cloud part: one uniform step per time in %s', shortname(tab));
+        else
+            names = {'isothermal'};
+            stepsLbl.Text = 'No cloud part: one isothermal step (every grid at the part''s temperature)';
+        end
         csvLB.Items = names;
         csvLB.Value = names;                 % everything selected by default
         save_prefs();
@@ -448,9 +529,17 @@ update_state();
     function on_map(~, ~)
         sel = cellstr(csvLB.Value);
         if isempty(sel)
-            uialert(fig, 'No CSV files selected.', 'Nothing to map'); return
+            uialert(fig, 'No time steps selected.', 'Nothing to map'); return
         end
         if isempty(G) && ~on_read_bdf(), return; end   % first run: read it now
+        ic = source_rows();
+        if ic > 0
+            stepArgs = {'CSV_FILES', sel};
+        elseif ~isempty(stepTimes)
+            stepArgs = {'TIMES', stepTimes(ismember(csvLB.Items, sel))};
+        else
+            stepArgs = {};
+        end
         dlg = uiprogressdlg(fig, 'Title', 'Mapping', 'Value', 0, 'Cancelable', 'on', ...
                             'Message', 'Starting ...');
         t0 = tic;
@@ -459,7 +548,7 @@ update_state();
             [R, S, RM] = temp_map_matlab( ...
                 'PARTS',             parts(), ...
                 'GRIDS',             G, ...
-                'CSV_FILES',         sel, ...
+                stepArgs{:}, ...
                 'CSV_HAS_HEADER',    headerCB.Value, ...
                 'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
                 'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
@@ -782,7 +871,9 @@ update_state();
         if isstruct(st) && isfield(st, 'parts') && ~isempty(st.parts)
             ps = st.parts;
             for i = 1:numel(ps)
-                P(end+1, :) = {char(ps(i).name), char(ps(i).bdf), char(ps(i).csv_dir)}; %#ok<AGROW>
+                src = ps(i).csv_dir;
+                if ~isnumeric(src), src = char(src); end
+                P(end+1, :) = {char(ps(i).name), char(ps(i).bdf), src}; %#ok<AGROW>
             end
         elseif isstruct(st) && isfield(st, 'bdf') && ~isempty(st.bdf)     % old single-part setup
             [~, nm] = fileparts(char(st.bdf));

@@ -162,6 +162,65 @@ h = temp_map_plot(RM(1), 'Visible', 'off', 'Style', 'contour');
 check(~isempty(h.mesh), 'merged assembly contour plot');
 close(h.fig);
 
+% --- isothermal / uniform parts (no cloud) -------------------------------------------
+toF = @(K) (K - 273.15) * 9/5 + 32;
+outI = fullfile(tempdir, 'temp_map_test_iso');
+if exist(outI, 'dir'), rmdir(outI, 's'); end
+[Ri, Si] = temp_map_matlab('BDF_FILE', bdf, 'ISOTHERMAL', 70, 'OUT_UNITS', 'F', 'OUT_DIR', outI, 'SID_START', 7);
+check(isequal(size(Ri), [1 1]) && max(abs(toF(Ri.grid_T) - 70)) < 1e-9 && numel(Ri.grid_T) == 12, ...
+      'ISOTHERMAL constant: every grid at 70 F (stored in K)');
+check(Ri.sid == 7 && isempty(Ri.cloud_T) && ~any(Ri.extrap) && isempty(Ri.warnings) && Ri.time == 0, ...
+      'isothermal: one step at t = 0, no cloud, nothing flagged');
+check(strcmp(Si.File{1}, 'isothermal') && exist(fullfile(outI, 'isothermal_temp.bdf'), 'file') == 2, ...
+      'isothermal -> isothermal_temp.bdf');
+txt = fileread(Ri.out_file);
+lines = regexp(txt, '\r?\n', 'split');
+L = lines{find(startsWith(lines, 'TEMP    '), 1)};
+check(abs(str2double(L(25:32)) - 70) < 5e-3 && contains(txt, '$ Source : isothermal 70 F'), ...
+      'isothermal card value 70 F and header names the source');
+tab = fullfile(outI, 'T_of_t.csv');
+fid = fopen(tab, 'w'); fprintf(fid, 'time_s,T_F\n100,150\n0,50\n'); fclose(fid);   % unsorted on purpose
+[Rt, St] = temp_map_matlab('BDF_FILE', bdf, 'ISOTHERMAL', tab, 'OUT_UNITS', 'F', 'OUT_DIR', outI);
+check(isequal(size(Rt), [1 2]) && isequal([Rt.time], [0 100]) && isequal(St.File', {'t0', 't100'}), ...
+      'T(t) table: one step per table time, sorted');
+check(max(abs(toF(Rt(1).grid_T) - 50)) < 1e-9 && max(abs(toF(Rt(2).grid_T) - 150)) < 1e-9 && ...
+      exist(fullfile(outI, 't100_temp.bdf'), 'file') == 2, 'T(t) table: temperatures per step, t<time>_temp.bdf');
+Rx = temp_map_matlab('BDF_FILE', bdf, 'ISOTHERMAL', tab, 'OUT_UNITS', 'F', 'TIMES', [25 75], 'WRITE', false);
+check(isequal([Rx.time], [25 75]) && abs(toF(Rx(1).grid_T(1)) - 75) < 1e-9 && abs(toF(Rx(2).grid_T(1)) - 125) < 1e-9, ...
+      'TIMES: explicit steps, T interpolated in the table');
+% mixed assembly: cloud part + constant part, uniform part listed first
+outX = fullfile(tempdir, 'temp_map_test_mixed');
+if exist(outX, 'dir'), rmdir(outX, 's'); end
+PX = {'B', fullfile(here, 'test_temp_map_B.bdf'), 20; 'A', bdf, fullfile(here, 'partA')};
+[Rm, Sm, RMm] = temp_map_matlab('PARTS', PX, 'OUT_DIR', outX, 'OUT_UNITS', 'C', 'SID_START', 50);
+check(isequal(size(Rm), [2 2]) && isequal([Rm(1, :).time], [Rm(2, :).time]) && isequal([Rm(1, :).time], [0 100]), ...
+      'mixed: steps and times come from the cloud part even when listed second');
+check(max(abs(Rm(1, 2).grid_T - 293.15)) < 1e-9 && max(abs(Rm(2, 1).grid_T - R2(1, 1).grid_T)) < 1e-9, ...
+      'mixed: part B uniform 20 C, part A mapped from its cloud');
+check(Rm(1, 2).sid == Rm(2, 2).sid && Rm(1, 2).sid == 51 && strcmp(Sm.File{1}, 't000.csv'), ...
+      'mixed: shared SIDs and step names');
+check(numel(RMm(1).grid_ids) == 24 && size(RMm(1).cloud_xyz, 1) == size(R2(1, 1).cloud_xyz, 1), ...
+      'mixed: merged view carries both parts and only the real cloud');
+check(exist(fullfile(outX, 'B', 't000_temp.bdf'), 'file') == 2 && exist(fullfile(outX, 'A', 't100_temp.bdf'), 'file') == 2, ...
+      'mixed: per-part output folders');
+txt = fileread(fullfile(outX, 'temp_includes.bdf'));
+check(numel(regexp(txt, 'INCLUDE ''[AB]/t\d+_temp\.bdf''')) == 4, 'mixed: includes list every part x step');
+h = temp_map_plot(RMm(1), 'Visible', 'off', 'Style', 'contour');
+check(~isempty(h.mesh), 'mixed: merged plot with a cloud-less part');
+close(h.fig);
+h = temp_map_plot(Ri, 'Visible', 'off');
+close(h.fig);
+check(true, 'isothermal-only plot ran');
+% typed as text (the GUI table hands the engine a string)
+Rs2 = temp_map_matlab('PARTS', {'B', fullfile(here, 'test_temp_map_B.bdf'), ' 25 '}, 'OUT_UNITS', 'C', 'WRITE', false);
+check(max(abs(Rs2.grid_T - 298.15)) < 1e-9, 'a temperature typed as text is accepted');
+try
+    temp_map_matlab('PARTS', {'B', fullfile(here, 'test_temp_map_B.bdf'), 'no_such_source'}, 'WRITE', false);
+    check(false, 'bad source should error');
+catch ME
+    check(strcmp(ME.identifier, 'temp_map_matlab:noDir'), 'bad source errors clearly');
+end
+
 % --- parallel path (falls back to serial without the toolbox) + report ---------
 outP = fullfile(tempdir, 'temp_map_test_par');
 if exist(outP, 'dir'), rmdir(outP, 's'); end

@@ -19,6 +19,19 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %                                    'fuse', 'fuse.bdf', 'clouds\fuse'}, ...
 %                          'OUT_DIR', 'temp_cards', 'OUT_UNITS', 'F')
 %
+%   No cloud for a part?  Put a temperature in column 3 instead of a folder: a
+%   constant (in OUT_UNITS, the model's units) or a 2-column CSV (time, T in
+%   OUT_UNITS) for a uniform temperature that changes per step.  Uniform parts
+%   follow the cloud parts' time steps, so they mix freely:
+%       >> temp_map_matlab('PARTS', {'wing', 'wing.bdf', 'clouds\wing'; ...
+%                                    'fuse', 'fuse.bdf', 70; ...
+%                                    'tank', 'tank.bdf', 'tank_T.csv'}, 'OUT_UNITS', 'F')
+%   Whole model isothermal (one step, isothermal_temp.bdf), or several uniform
+%   steps from a T(t) table / an explicit list of times (t<time>_temp.bdf):
+%       >> temp_map_matlab('BDF_FILE', 'model.bdf', 'ISOTHERMAL', 70, 'OUT_UNITS', 'F')
+%       >> temp_map_matlab('BDF_FILE', 'model.bdf', 'ISOTHERMAL', 'model_T.csv')
+%       >> temp_map_matlab('PARTS', P, 'TIMES', [0 100 200])       % no cloud parts in P
+%
 %   Or edit the CONFIG block below and run TEMP_MAP_MATLAB with no arguments.
 %   Every name/value pair overrides the CONFIG field of the same name; unknown
 %   names error out, so typos cannot silently do nothing.
@@ -107,8 +120,14 @@ C = struct();
 % --- input ---------------------------------------------------------------
 C.BDF_FILE       = 'model.bdf';
 C.CSV_DIR        = '.';         % folder holding the temperature clouds
-C.PARTS          = {};          % multi-part: N x 3 cell {name, bdf_file, cloud_folder};
-                                % when given, BDF_FILE and CSV_DIR are ignored
+C.PARTS          = {};          % multi-part: N x 3 cell {name, bdf_file, source};
+                                % source = cloud folder | constant T | T(t) csv (see ISOTHERMAL)
+                                % when given, BDF_FILE, CSV_DIR and ISOTHERMAL are ignored
+C.ISOTHERMAL     = [];          % single part without a cloud: a constant temperature in
+                                % OUT_UNITS, or a 2-column CSV (time, T in OUT_UNITS) giving
+                                % one uniform temperature per step.  Replaces CSV_DIR.
+C.TIMES          = [];          % runs with no cloud part: the time steps to write, one file
+                                % each ([] = the T(t) table's times, or one step at t = 0)
 C.CSV_FILES      = {};          % {} = every *.csv in the folder (natural-sorted),
                                 % or an explicit cell list of file names (base
                                 % names for multi-part: the same in every folder)
@@ -189,7 +208,7 @@ C = apply_overrides(C, varargin);
 validate_config(C);
 
 parts = C.PARTS;
-if isempty(parts), parts = {'', C.BDF_FILE, C.CSV_DIR}; end   % single part = today's flow
+if isempty(parts), parts = {'', C.BDF_FILE, single_source(C)}; end   % single part = today's flow
 np = size(parts, 1);
 
 if isempty(C.RESULTS)
@@ -233,19 +252,34 @@ if isempty(C.RESULTS)
         end
     end
 
-    % ---- time steps: part 1 defines the list, every part must have the same names --
-    C1 = C; C1.CSV_DIR = G(1).csv_dir;
+    % ---- time steps: the first CLOUD part defines the list, every cloud part must
+    %      have the same names; uniform (isothermal / T(t)) parts follow along -------
+    kinds = cell(1, np); srcs = cell(1, np);
+    for i = 1:np, [kinds{i}, srcs{i}] = part_source(G(i).csv_dir); end
+    ic = find(strcmp(kinds, 'cloud'));
+    iu = find(~strcmp(kinds, 'cloud'));
     files = cell(1, np);
-    files{1} = resolve_csv_files(C1);
-    steps = cellfun(@shortname, files{1}, 'UniformOutput', false);
-    ns = numel(steps);
-    for i = 2:np
-        files{i} = fullfile(G(i).csv_dir, steps);
-        miss = steps(cellfun(@(f) exist(f, 'file') ~= 2, files{i}));
-        if ~isempty(miss)
-            error('temp_map_matlab:missingStep', ...
-                'Part "%s" (%s) is missing %d of the %d time steps, e.g. %s', ...
-                G(i).name, G(i).csv_dir, numel(miss), ns, strjoin(miss(1:min(3, end)), ', '));
+    if ~isempty(ic)
+        C1 = C; C1.CSV_DIR = srcs{ic(1)};
+        files{ic(1)} = resolve_csv_files(C1);
+        steps = cellfun(@shortname, files{ic(1)}, 'UniformOutput', false);
+        ns = numel(steps);
+        for i = ic(2:end)
+            files{i} = fullfile(srcs{i}, steps);
+            miss = steps(cellfun(@(f) exist(f, 'file') ~= 2, files{i}));
+            if ~isempty(miss)
+                error('temp_map_matlab:missingStep', ...
+                    'Part "%s" (%s) is missing %d of the %d time steps, e.g. %s', ...
+                    G(i).name, srcs{i}, numel(miss), ns, strjoin(miss(1:min(3, end)), ', '));
+            end
+        end
+    else
+        times = uniform_times(C, kinds, srcs);
+        ns = numel(times);
+        if ns == 1 && isempty(C.TIMES) && ~any(strcmp(kinds, 'table'))
+            steps = {'isothermal'};
+        else
+            steps = arrayfun(@(t) sprintf('t%g', t), times, 'UniformOutput', false);
         end
     end
 
@@ -254,14 +288,15 @@ if isempty(C.RESULTS)
     %   later steps of the same cloud reuse it -- serially, or in a parfor
     %   with PARALLEL (the CSV read is what parallelises).
     R = repmat(empty_result(), np, ns);
-    total = np * ns;
+    total = numel(ic) * ns;
     use_par = C.PARALLEL && ns > 1 && parallel_ok();
-    for i = 1:np
+    for ci = 1:numel(ic)
+        i = ic(ci);
         Gi = G(i);
         cache = struct('xyz', [], 'M', [], 'surface', []);
         fi = files{i};
         % step 1 always serial: it builds the cache
-        st = @(k) @(frac, msg) progress(C, 0.05 + 0.95 * (((i - 1) * ns + k - 1) + frac) / total, ...
+        st = @(k) @(frac, msg) progress(C, 0.05 + 0.95 * (((ci - 1) * ns + k - 1) + frac) / total, ...
                                         sprintf('[%d/%d] %s%s: %s', k, ns, pfx(Gi.name), steps{k}, msg));
         tic;
         [q, cache] = map_step(fi{1}, C, Gi, cache, st(1));
@@ -272,7 +307,7 @@ if isempty(C.RESULTS)
                 Cw = C; Cw.PROGRESS = []; Cw.RESULTS = []; Cw.GRIDS = [];   % nothing GUI-bound goes to workers
                 dq = parallel.pool.DataQueue;
                 cnt = containers.Map('KeyType', 'char', 'ValueType', 'double'); cnt('done') = 0;
-                afterEach(dq, @(k) par_progress(C, cnt, i, k, ns, total, Gi.name, steps{k}));
+                afterEach(dq, @(k) par_progress(C, cnt, ci, k, ns, total, Gi.name, steps{k}));
                 t0 = tic;
                 Qp = cell(1, ns - 1);
                 parfor j = 1:ns - 1
@@ -293,6 +328,13 @@ if isempty(C.RESULTS)
                     R(i, k) = assemble_result(q, C, Gi, fi{k}, k, cache);
                 end
             end
+        end
+    end
+    % uniform parts: the cloud steps' times when there are clouds, else the synthesized list
+    for i = iu
+        for k = 1:ns
+            if ~isempty(ic), t = R(ic(1), k).time; else, t = times(k); end
+            R(i, k) = uniform_result(G(i), kinds{i}, srcs{i}, t, steps{k}, k, C);
         end
     end
 else
@@ -533,9 +575,10 @@ function validate_config(C)
 %VALIDATE_CONFIG  Fail early and readably.
     if isempty(C.RESULTS)
         parts = C.PARTS;
-        if isempty(parts), parts = {'', C.BDF_FILE, C.CSV_DIR}; end
+        if isempty(parts), parts = {'', C.BDF_FILE, single_source(C)}; end
         if ~iscell(parts) || size(parts, 2) ~= 3
-            error('temp_map_matlab:badParts', 'C.PARTS must be an N x 3 cell: {name, bdf_file, cloud_folder}.');
+            error('temp_map_matlab:badParts', ...
+                'C.PARTS must be an N x 3 cell: {name, bdf_file, cloud folder | temperature | T(t) csv}.');
         end
         if ~isempty(C.GRIDS) && ~all(isfield(C.GRIDS, {'ids', 'xyz', 'faces', 'bdf_file'}))
             error('temp_map_matlab:badGrids', 'C.GRIDS must come from a READ_ONLY call.');
@@ -549,10 +592,17 @@ function validate_config(C)
             end
         end
         if C.READ_ONLY, return; end
+        kinds = cell(1, size(parts, 1));
         for i = 1:size(parts, 1)
-            if (i > 1 || isempty(C.CSV_FILES)) && exist(parts{i, 3}, 'dir') ~= 7
-                error('temp_map_matlab:noDir', '%sCSV folder not found: %s', pfx(parts{i, 1}), parts{i, 3});
+            [kinds{i}, src] = part_source(parts{i, 3});
+            first_cloud = strcmp(kinds{i}, 'cloud') && ~any(strcmp(kinds(1:i-1), 'cloud'));
+            if strcmp(kinds{i}, 'cloud') && ~(first_cloud && ~isempty(C.CSV_FILES)) && exist(src, 'dir') ~= 7
+                error('temp_map_matlab:noDir', ...
+                    '%ssource "%s" is not a cloud folder, a T(t) CSV file or a temperature.', pfx(parts{i, 1}), src);
             end
+        end
+        if ~any(strcmp(kinds, 'cloud')) && ~isempty(C.TIMES) && (~isnumeric(C.TIMES) || ~isvector(C.TIMES))
+            error('temp_map_matlab:badTimes', 'C.TIMES must be a numeric vector of time steps.');
         end
     end
     length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);   % errors on a bad name
@@ -606,6 +656,112 @@ end
 
 
 % =========================================================================
+function src = single_source(C)
+%SINGLE_SOURCE  Column 3 of the implicit single part: ISOTHERMAL when set, else CSV_DIR.
+    if isempty(C.ISOTHERMAL), src = C.CSV_DIR; else, src = C.ISOTHERMAL; end
+end
+
+
+function [kind, src] = part_source(spec)
+%PART_SOURCE  What column 3 of PARTS means.
+%   'const'  a number (temperature in OUT_UNITS)         src = the number
+%   'table'  an existing file: 2-column CSV (time, T)    src = the path
+%   'cloud'  anything else: a folder of cloud CSVs       src = the path
+    if isnumeric(spec) && isscalar(spec)
+        kind = 'const'; src = double(spec); return
+    end
+    s = strtrim(char(spec));
+    v = str2double(s);
+    if ~isnan(v)
+        kind = 'const'; src = v;
+    elseif exist(s, 'dir') == 7
+        kind = 'cloud'; src = s;
+    elseif exist(s, 'file') == 2
+        kind = 'table'; src = s;
+    else
+        kind = 'cloud'; src = s;
+    end
+end
+
+
+function times = uniform_times(C, kinds, srcs)
+%UNIFORM_TIMES  Time steps for a run with no cloud part: TIMES, else the first
+%   T(t) table's times, else a single step at t = 0.
+    if ~isempty(C.TIMES)
+        times = double(C.TIMES(:)');
+        return
+    end
+    it = find(strcmp(kinds, 'table'), 1);
+    if isempty(it), times = 0; return; end
+    times = read_temperature_table(srcs{it});
+    times = times(:)';
+end
+
+
+function [tt, TT] = read_temperature_table(file)
+%READ_TEMPERATURE_TABLE  (time, T) columns of a 2-column CSV; header rows dropped.
+    M = readmatrix(file);
+    if size(M, 2) < 2
+        error('temp_map_matlab:badTable', '%s: expected 2 columns (time, T) but found %d.', file, size(M, 2));
+    end
+    M = M(:, 1:2);
+    M(any(isnan(M), 2), :) = [];
+    if isempty(M)
+        error('temp_map_matlab:emptyTable', '%s: no numeric rows.', file);
+    end
+    [tt, order] = sort(M(:, 1));
+    TT = M(order, 2);
+    [tt, iu] = unique(tt, 'stable');
+    TT = TT(iu);
+end
+
+
+function T = table_temperature(file, t)
+%TABLE_TEMPERATURE  Uniform temperature at time t, linear in the table; clamped
+%   to the end values outside it (with a warning).
+    [tt, TT] = read_temperature_table(file);
+    if numel(tt) == 1, T = TT; return; end
+    if t < tt(1) - 1e-9 || t > tt(end) + 1e-9
+        warning('temp_map_matlab:tableRange', ...
+            '%s: t = %g is outside the table (%g .. %g); the end value is used.', shortname(file), t, tt(1), tt(end));
+    end
+    T = interp1(tt, TT, min(max(t, tt(1)), tt(end)), 'linear');
+end
+
+
+function r = uniform_result(Gi, kind, src, t, step, k, C)
+%UNIFORM_RESULT  One part at one uniform temperature, no cloud: a constant, or
+%   T(t) read from a table at the step's time.
+    units = upper(char(C.OUT_UNITS));
+    if strcmp(kind, 'const')
+        Tout = src;
+        how = sprintf('isothermal %g %s', Tout, units);
+    else
+        Tout = table_temperature(src, t);
+        how = sprintf('isothermal %g %s from %s', Tout, units, shortname(src));
+    end
+    n = numel(Gi.ids);
+    r = empty_result();
+    r.part      = Gi.name;
+    r.csv_file  = step;                  % names the output file like a cloud step would
+    r.bdf_file  = Gi.bdf_file;
+    r.time      = t;
+    r.sid       = assign_sid(C, k, t);
+    r.grid_ids  = Gi.ids;
+    r.grid_xyz  = Gi.xyz;
+    r.faces     = Gi.faces;
+    r.grid_T    = repmat(to_kelvin(Tout, units), n, 1);
+    r.cloud_xyz = zeros(0, 3);
+    r.cloud_T   = zeros(0, 1);
+    r.extrap    = false(n, 1);
+    r.nn_dist   = zeros(n, 1);
+    r.far       = false(n, 1);
+    r.method    = how;
+    r.coverage  = {sprintf('%s: all %d grids, no cloud', how, n)};
+    fprintf('  %s%s: %s  (%d grids)\n', pfx(Gi.name), step, how, n);
+end
+
+
 function files = resolve_csv_files(C)
 %RESOLVE_CSV_FILES  Explicit list, or every *.csv in CSV_DIR in natural order.
     if ~isempty(C.CSV_FILES)
@@ -1353,7 +1509,11 @@ function write_temp_cards(r, C)
 
     fprintf(fid, '$ TEMP cards generated by temp_map_matlab  (%s)\n', datestr(now, 'yyyy-mm-dd HH:MM'));
     fprintf(fid, '$ BDF    : %s\n', r.bdf_file);
-    fprintf(fid, '$ CSV    : %s   (time = %g s)\n', r.csv_file, r.time);
+    if isempty(r.cloud_T)
+        fprintf(fid, '$ Source : %s   (step %s, time = %g s)\n', r.method, r.csv_file, r.time);
+    else
+        fprintf(fid, '$ CSV    : %s   (time = %g s)\n', r.csv_file, r.time);
+    end
     fprintf(fid, '$ Lengths: BDF in %s, cloud read as %s%s\n', C.BDF_LENGTH_UNITS, C.CSV_LENGTH_UNITS, ...
             ternary(strcmpi(C.BDF_LENGTH_UNITS, C.CSV_LENGTH_UNITS), '', ' (converted)'));
     fprintf(fid, '$ Units  : deg %s   grids: %d   outside cloud hull (nearest used): %d\n', ...
@@ -1525,8 +1685,10 @@ function write_report(R, RM, S, C)
     % ---- settings ------------------------------------------------------------------
     w('<h2>Settings</h2><table>\n');
     for i = 1:np
+        src = fileparts(R(i, 1).csv_file);
+        if isempty(R(i, 1).cloud_T), src = R(i, 1).method; end
         w('<tr><td>part</td><td>%s</td><td style="text-align:left">%s &nbsp;&larr;&nbsp; %s</td></tr>\n', ...
-          esc(R(i, 1).part), esc(R(i, 1).bdf_file), esc(fileparts(R(i, 1).csv_file)));
+          esc(R(i, 1).part), esc(R(i, 1).bdf_file), esc(src));
     end
     rows = {'method', C.METHOD; 'model length units', C.BDF_LENGTH_UNITS; 'cloud length units', C.CSV_LENGTH_UNITS; ...
             'cloud temperature units', C.CSV_TEMP_UNITS; 'output temperature units', units; ...
