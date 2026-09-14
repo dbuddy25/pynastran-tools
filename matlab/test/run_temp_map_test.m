@@ -266,6 +266,9 @@ check(abs(Sc.gfit_ip(1)^2 + Sc.gfit_tt(1)^2 - 129) < 1e-6, 'cloud check: fit gra
 check(abs(Sc.dT_total(1) - (max(R(1).cloud_T) - min(R(1).cloud_T))) < 1e-9 && numel(Dc) == 2 && ishandle(hc), ...
       'cloud check: total delta T, detail struct, figure');
 close(hc);
+Sr = temp_cloud_check({fullfile(here, 't000.csv')}, 'PICK', 'z', 'RANGE', [-0.5 0.5], 'PLOT', false, 'OUT_UNITS', 'K');
+check(Sr.N < Sc.N(1) && Sr.Thick <= 1 + 1e-9 && abs(Sr.R2 - 1) < 1e-6, ...
+      'cloud check: RANGE along z keeps only the middle layer');
 Sa = temp_cloud_check({fullfile(here, 't000.csv')}, 'AXIS', [0 0 1], 'PLOT', false, 'OUT_UNITS', 'K');
 check(abs(Sa.gfit_tt - 2) < 1e-6 && abs(Sa.gfit_ip - sqrt(125)) < 1e-6 && abs(Sa.Thick - 3) < 1e-9, ...
       'cloud check: AXIS [0 0 1] -> through-thickness gradient 2, in-plane sqrt(125), thickness 3');

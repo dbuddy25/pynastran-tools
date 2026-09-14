@@ -570,11 +570,22 @@ update_state();
             if isequal(src, 0), return; end
             what = src;
         end
+        picks = {'Whole cloud', 'Crop along X (click twice on a side view)', 'Crop along Y', 'Crop along Z', ...
+                 'Crop along the thickness axis (PCA)'};
+        [ix, ok] = listdlg('PromptString', 'Several plates in one cloud?  Crop first:', 'SelectionMode', 'single', ...
+                           'ListString', picks, 'ListSize', [330 110]);
+        figure(fig);
+        if ~ok, return; end
+        pickArg = {};
+        if ix > 1
+            axes_ = {'x', 'y', 'z', 'thickness'};
+            pickArg = {'PICK', axes_{ix - 1}};
+        end
         status(sprintf('Cloud check on %s running ... (details in the command window)', what)); drawnow
         try
             S = temp_cloud_check(src, 'CSV_LENGTH_UNITS', csvUnitsDD.Value, 'OUT_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                  'CSV_TEMP_UNITS', csvTempDD.Value, 'OUT_UNITS', unitsDD.Value, ...
-                                 'CSV_HAS_HEADER', headerCB.Value);
+                                 'CSV_HAS_HEADER', headerCB.Value, pickArg{:});
         catch ME
             uialert(fig, ME.message, 'Cloud check failed'); status('Cloud check failed.'); return
         end

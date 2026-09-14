@@ -25,6 +25,12 @@ function [S, D, h] = temp_cloud_check(src, varargin)
 %     CSV_HAS_HEADER    true
 %     BBOX              []        crop: [xmin ymin zmin; xmax ymax zmax] in CSV length units
 %                                 (use when one cloud spans several parts)
+%     PICK              ''        crop along one axis by clicking: 'x' | 'y' | 'z' | 'thickness'
+%                                 (thickness = smallest PCA axis of the whole cloud).  Shows the
+%                                 first step side-on plus a histogram along that axis; click
+%                                 twice, everything between the clicks is kept for every step.
+%     RANGE             []        [lo hi] along the PICK axis (OUT_LENGTH_UNITS): same crop, no
+%                                 clicking -- the picked range is printed so you can reuse it
 %     AXIS              []        thickness direction [x y z]; [] = PCA
 %     CELL              []        in-plane bin size in OUT_LENGTH_UNITS; [] = auto (~8 pts / cell)
 %     ISO_TOL           1         total delta T below this (OUT_UNITS) = "isothermal" in the verdict
@@ -39,8 +45,8 @@ function [S, D, h] = temp_cloud_check(src, varargin)
 
 % --- options --------------------------------------------------------------------
 o = struct('CSV_LENGTH_UNITS', 'in', 'OUT_LENGTH_UNITS', 'in', 'CSV_TEMP_UNITS', 'K', 'OUT_UNITS', 'C', ...
-           'CSV_HAS_HEADER', true, 'BBOX', [], 'AXIS', [], 'CELL', [], 'ISO_TOL', 1, ...
-           'PLOT', true, 'MAX_POINTS', 2e5);
+           'CSV_HAS_HEADER', true, 'BBOX', [], 'PICK', '', 'RANGE', [], 'AXIS', [], 'CELL', [], ...
+           'ISO_TOL', 1, 'PLOT', true, 'MAX_POINTS', 2e5);
 for q = 1:2:numel(varargin)
     name = upper(char(varargin{q}));
     if ~isfield(o, name), error('temp_cloud_check:badOption', 'Unknown option "%s".', varargin{q}); end
@@ -77,6 +83,7 @@ File = cell(ns, 1); Time = zeros(ns, 1); N = zeros(ns, 1); Thick = zeros(ns, 1);
 dT_total = zeros(ns, 1); dT_tt_max = zeros(ns, 1); dT_tt_med = zeros(ns, 1); grad_tt = zeros(ns, 1);
 dT_ip = zeros(ns, 1); grad_ip = zeros(ns, 1); gfit_tt = zeros(ns, 1); gfit_ip = zeros(ns, 1); R2 = zeros(ns, 1);
 E = [];                                   % [e1 e2 e3] columns, fixed from the first step
+crop = [];                                % {axis vector, [lo hi], centre} from PICK / RANGE
 for k = 1:ns
     [t, xyz, T] = read_cloud(files{k}, o.CSV_HAS_HEADER);
     xyz = xyz * lf;
@@ -86,6 +93,13 @@ for k = 1:ns
         keep = all(xyz >= bb(1, :) & xyz <= bb(2, :), 2);
         xyz = xyz(keep, :); T = T(keep);
         if isempty(T), error('temp_cloud_check:emptyBox', '%s: no cloud points inside BBOX.', files{k}); end
+    end
+    if ~isempty(o.PICK)
+        if isempty(crop), crop = pick_range(xyz, T, o, lunits, tunits); end
+        w = (xyz - crop.ctr) * crop.dir;
+        keep = w >= crop.range(1) & w <= crop.range(2);
+        xyz = xyz(keep, :); T = T(keep);
+        if isempty(T), error('temp_cloud_check:emptyRange', '%s: no cloud points inside the picked range.', files{k}); end
     end
     n = numel(T);
     if isempty(E), E = part_axes(xyz, o.AXIS); end
@@ -200,6 +214,63 @@ end
 
 
 % =========================================================================
+function crop = pick_range(xyz, T, o, lunits, tunits)
+%PICK_RANGE  Crop axis + [lo hi] along it, from RANGE or from two clicks on a side view.
+    ax = lower(char(o.PICK));
+    ctr = mean(xyz, 1);
+    switch ax
+        case 'x', dirn = [1 0 0]'; label = 'X';
+        case 'y', dirn = [0 1 0]'; label = 'Y';
+        case 'z', dirn = [0 0 1]'; label = 'Z';
+        case {'thickness', 't', 'pca'}
+            E = part_axes(xyz, []); dirn = E(:, 3); label = sprintf('thickness axis [%.2f %.2f %.2f]', dirn);
+        otherwise
+            error('temp_cloud_check:badPick', 'PICK must be ''x'', ''y'', ''z'' or ''thickness''.');
+    end
+    if strcmp(ax, 'x') || strcmp(ax, 'y') || strcmp(ax, 'z'), ctr = [0 0 0]; end   % world axes: absolute coords
+    w = (xyz - ctr) * dirn;
+    if ~isempty(o.RANGE)
+        crop = struct('dir', dirn, 'ctr', ctr, 'range', sort(o.RANGE(:))');
+        fprintf('Crop along %s: keeping %.4g .. %.4g %s (%d of %d points)\n', label, crop.range, lunits, ...
+                nnz(w >= crop.range(1) & w <= crop.range(2)), numel(w));
+        return
+    end
+    % side view: the crop axis horizontal, the widest perpendicular direction vertical
+    [~, i] = min(abs(dirn)); a = zeros(3, 1); a(i) = 1;
+    p1 = cross(dirn, a); p1 = p1 / norm(p1); p2 = cross(dirn, p1);
+    Q = (xyz - ctr) * [p1 p2];
+    [~, j] = max(max(Q) - min(Q)); v = Q(:, j);
+    sel = thin(numel(T), o.MAX_POINTS);
+    f = figure('Name', 'Cloud check: click twice to set the range to keep', 'NumberTitle', 'off', 'Color', 'w', ...
+               'Position', [120 120 1100 620]);
+    colormap(f, 'jet');
+    a1 = subplot(3, 1, [1 2], 'Parent', f);
+    scatter(a1, w(sel), v(sel), 5, T(sel), 'filled'); axis(a1, 'equal'); grid(a1, 'on'); colorbar(a1);
+    xlabel(a1, sprintf('position along %s [%s]', label, lunits)); ylabel(a1, sprintf('perpendicular [%s]', lunits));
+    title(a1, sprintf('Side view, T [%s].  CLICK TWICE on either panel: the range between the clicks is kept.', tunits));
+    a2 = subplot(3, 1, 3, 'Parent', f);
+    histogram(a2, w, 200); grid(a2, 'on');
+    xlabel(a2, sprintf('position along %s [%s]', label, lunits)); ylabel(a2, 'points');
+    linkaxes([a1 a2], 'x');
+    [px, ~] = ginput(2);
+    if numel(px) < 2
+        close(f); error('temp_cloud_check:noPick', 'Range not picked (need two clicks).');
+    end
+    rng_ = sort(px(:))';
+    for a = [a1 a2]
+        hold(a, 'on'); yl = ylim(a);
+        plot(a, [rng_(1) rng_(1)], yl, 'k--', [rng_(2) rng_(2)], yl, 'k--', 'LineWidth', 1.5);
+        hold(a, 'off');
+    end
+    title(a1, sprintf('Keeping %.4g .. %.4g %s along %s  (reuse: ''PICK'', ''%s'', ''RANGE'', [%.6g %.6g])', ...
+                      rng_, lunits, label, ax, rng_));
+    drawnow
+    crop = struct('dir', dirn, 'ctr', ctr, 'range', rng_);
+    fprintf('Crop along %s: keeping %.4g .. %.4g %s (%d of %d points).  Reuse with ''PICK'', ''%s'', ''RANGE'', [%.6g %.6g]\n', ...
+            label, rng_, lunits, nnz(w >= rng_(1) & w <= rng_(2)), numel(w), ax, rng_);
+end
+
+
 function E = part_axes(xyz, ax3)
 %PART_AXES  [e1 e2 e3]: e3 = thickness (given, or the smallest principal axis).
     if isempty(ax3)
