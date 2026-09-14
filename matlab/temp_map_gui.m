@@ -43,7 +43,8 @@ root.Padding = [8 8 8 8];
 %                              LEFT: STEPS
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
-Lg.RowHeight = {26, 196, 230, 124, 210, 150, 128};
+Lg.Layout.Row = [1 2]; Lg.Layout.Column = 1;     % full height: the time strip sits under the 3D view only
+Lg.RowHeight = {26, 262, 230, 124, 210, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 Lg.Scrollable = 'on';                  % small screens: scroll the step column instead of squashing it
 
@@ -309,7 +310,7 @@ ax = uiaxes(Rg);
 
 % --- bottom strip: min / max temperature vs time across all cases ------------
 tax = uiaxes(root);
-tax.Layout.Row = 2; tax.Layout.Column = [1 2];
+tax.Layout.Row = 2; tax.Layout.Column = 2;
 title(tax, 'Min / max mapped temperature vs time');
 xlabel(tax, 'time [s]'); grid(tax, 'on'); box(tax, 'on');
 tax.ButtonDownFcn = @(~, ev) jump_to_time(ev.IntersectionPoint(1));
@@ -474,25 +475,54 @@ update_state();
         stepTimes = [];
         [ic, it] = source_rows();
         if isempty(P)
-            csvLB.Items = {}; csvLB.Value = {};
+            csvLB.Items = {}; csvLB.ItemsData = {}; csvLB.Value = {};
             stepsLbl.Text = 'Time steps (CSV files) -- add a part first';
+            stepsLbl.FontColor = [0.45 0.45 0.45];
             update_state();
             return
         end
+        stepsLbl.FontColor = [0.45 0.45 0.45];
         if ic > 0
             [~, folder] = source_kind(P{ic, 3});
             if exist(folder, 'dir') ~= 7
-                csvLB.Items = {}; csvLB.Value = {};
+                csvLB.Items = {}; csvLB.ItemsData = {}; csvLB.Value = {};
                 stepsLbl.Text = sprintf('Cloud folder not found: %s', folder);
                 update_state();
                 return
             end
-            stepsLbl.Text = sprintf('Time steps in %s -- other cloud folders pair by the number before .csv (wing_20 <-> fuse_20)', folder);
             d = dir(fullfile(folder, '*.csv'));
             names = {d.name};
             keys = regexprep(names, '(\d+)', '${sprintf(''%012d'', str2double($1))}');
             [~, order] = sort(lower(keys));
             names = names(order);
+            % pair every step with the other cloud parts by the number before .csv
+            k1 = step_keys(names);
+            labels = cellfun(@(n, k) sprintf('%s   [#%s]', n, k), names, k1, 'UniformOutput', false);
+            others = {}; nbad = 0;
+            for j = 1:size(P, 1)
+                [kj, fj] = source_kind(P{j, 3});
+                if j == ic || ~strcmp(kj, 'cloud'), continue; end
+                others{end+1} = P{j, 1};                                            %#ok<AGROW>
+                dj = dir(fullfile(fj, '*.csv')); kk = step_keys({dj.name});
+                [~, firstIx] = unique(kk, 'stable'); dupk = kk(setdiff(1:numel(kk), firstIx));
+                for q = 1:numel(names)
+                    if ~ismember(k1{q}, kk)
+                        labels{q} = sprintf('%s   MISSING in %s', labels{q}, P{j, 1}); nbad = nbad + 1;
+                    elseif ismember(k1{q}, dupk)
+                        labels{q} = sprintf('%s   AMBIGUOUS in %s', labels{q}, P{j, 1}); nbad = nbad + 1;
+                    end
+                end
+            end
+            if isempty(others)
+                stepsLbl.Text = sprintf('%d steps in %s', numel(names), folder);
+            elseif nbad == 0
+                stepsLbl.Text = sprintf('%d steps in %s -- %s: every step found (paired by the number before .csv)', ...
+                                        numel(names), P{ic, 1}, strjoin(others, ', '));
+                stepsLbl.FontColor = [0.1 0.5 0.2];
+            else
+                stepsLbl.Text = sprintf('%d step(s) MISSING or AMBIGUOUS in other cloud parts -- see the list (paired by the number before .csv)', nbad);
+                stepsLbl.FontColor = [0.75 0.1 0.1];
+            end
         elseif it > 0
             [~, tab] = source_kind(P{it, 3});
             try
@@ -507,7 +537,8 @@ update_state();
             names = {'isothermal'};
             stepsLbl.Text = 'No cloud part: one isothermal step (every grid at the part''s temperature)';
         end
-        csvLB.Items = names;
+        if ~exist('labels', 'var'), labels = names; end
+        csvLB.Items = labels; csvLB.ItemsData = names;
         csvLB.Value = names;                 % everything selected by default
         save_prefs();
         update_state();
@@ -515,17 +546,34 @@ update_state();
 
     function on_cloud_check(~, ~)
         P = parts();
-        ic = source_rows();
-        if ic > 0
-            [~, folder] = source_kind(P{ic, 3});
+        rows = find(cellfun(@(x) strcmp(source_kind(x), 'cloud'), P(:, 3)))';
+        pick = 0;
+        if numel(rows) == 1
+            pick = rows;
+        elseif numel(rows) > 1
+            [ix, ok] = listdlg('PromptString', 'Cloud check which part?', 'SelectionMode', 'single', ...
+                               'ListString', [P(rows, 1); {'Other folder ...'}], 'ListSize', [260 150]);
+            figure(fig);
+            if ~ok, return; end
+            if ix <= numel(rows), pick = rows(ix); end
+        end
+        if pick > 0
+            [~, folder] = source_kind(P{pick, 3});
+            what = P{pick, 1};
             sel = cellstr(csvLB.Value);
-            if isempty(sel) || numel(sel) == numel(csvLB.Items), src = folder; else, src = fullfile(folder, sel); end
+            src = folder;
+            if ~isempty(sel) && numel(sel) < numel(csvLB.ItemsData)
+                d = dir(fullfile(folder, '*.csv')); nm = {d.name};
+                [tf, loc] = ismember(step_keys(sel), step_keys(nm));
+                if any(tf), src = fullfile(folder, nm(loc(tf))); end
+            end
         else
             src = uigetdir(pwd, 'Folder holding the temperature clouds to check');
             figure(fig);
             if isequal(src, 0), return; end
+            what = src;
         end
-        status('Cloud check running ... (details in the command window)'); drawnow
+        status(sprintf('Cloud check on %s running ... (details in the command window)', what)); drawnow
         try
             S = temp_cloud_check(src, 'CSV_LENGTH_UNITS', csvUnitsDD.Value, 'OUT_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                  'CSV_TEMP_UNITS', csvTempDD.Value, 'OUT_UNITS', unitsDD.Value, ...
@@ -534,7 +582,7 @@ update_state();
             uialert(fig, ME.message, 'Cloud check failed'); status('Cloud check failed.'); return
         end
         lu = bdfUnitsDD.Value;
-        lines = {S.Properties.Description; ''; ...
+        lines = {sprintf('Cloud check: %s', what); S.Properties.Description; ''; ...
                  sprintf('%-22s %7s %8s %9s %8s %9s %5s', 'step', 'dT', 'tt max', ['tt/' lu], 'ip', ['ip/' lu], 'R2')};
         for k = 1:height(S)
             lines{end+1} = sprintf('%-22s %7.2f %8.2f %9.3g %8.2f %9.3g %5.2f', S.File{k}, S.dT_total(k), ...
@@ -582,7 +630,7 @@ update_state();
         if ic > 0
             stepArgs = {'CSV_FILES', sel};
         elseif ~isempty(stepTimes)
-            stepArgs = {'TIMES', stepTimes(ismember(csvLB.Items, sel))};
+            stepArgs = {'TIMES', stepTimes(ismember(csvLB.ItemsData, sel))};
         else
             stepArgs = {};
         end
@@ -973,7 +1021,7 @@ update_state();
         if ic > 0 && ~isempty(sel) && numel(sel) < numel(csvLB.Items)
             stepPair = {'CSV_FILES', sel};
         elseif ic == 0 && ~isempty(stepTimes) && numel(sel) < numel(csvLB.Items)
-            stepPair = {'TIMES', stepTimes(ismember(csvLB.Items, sel))};
+            stepPair = {'TIMES', stepTimes(ismember(csvLB.ItemsData, sel))};
         end
         args = [stepPair, { ...
             'CSV_HAS_HEADER',   headerCB.Value, ...
@@ -1092,6 +1140,16 @@ function v = getfield_or(st, name, dflt)
     if islogical(dflt), v = logical(v); end
 end
 
+
+function keys = step_keys(names)
+%STEP_KEYS  Mirrors the engine: the number before .csv (no leading zeros), else the lower-case name.
+    names = cellstr(names);
+    keys = cell(size(names));
+    for k = 1:numel(names)
+        tok = regexp(names{k}, '(\d+)\.csv$', 'tokens', 'once', 'ignorecase');
+        if isempty(tok), keys{k} = lower(names{k}); else, keys{k} = sprintf('%d', str2double(tok{1})); end
+    end
+end
 
 function s = mlit(v)
 %MLIT  MATLAB source literal for a value the GUI hands the engine.
