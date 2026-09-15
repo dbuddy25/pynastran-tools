@@ -1732,6 +1732,8 @@ function srf = cloud_surface(P, nmax)
         rs = RandStream('mt19937ar', 'Seed', 0);
         P = P(sort(randperm(rs, n, round(nmax))), :);
     end
+    P = unique(P, 'rows');                    % alphaShape warns on repeats
+    if size(P, 1) < 4, return; end
     try
         shp = alphaShape(P(:, 1), P(:, 2), P(:, 3));
         shp.Alpha = 1.5 * criticalAlpha(shp, 'one-region');   % closed, but not convex
