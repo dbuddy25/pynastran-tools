@@ -757,7 +757,8 @@ update_state();
         if reportCB.Value && all_of_them
             extra = [extra; {fullfile(outE.Value, 'temp_map_report.html')}];
         end
-        status([{sprintf('Wrote %d file(s) to %s:', height(S) + numel(extra), outE.Value)}; extra; S.OutFile(:)]);
+        files = unique(S.OutFile, 'stable');
+        status([{sprintf('Wrote %d file(s) to %s:', numel(files) + numel(extra), outE.Value)}; extra; files(:)]);
     end
 
     function r = current()

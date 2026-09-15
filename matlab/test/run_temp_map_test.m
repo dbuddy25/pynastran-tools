@@ -171,10 +171,13 @@ check(R2(1, 2).sid == R2(2, 2).sid && R2(1, 2).sid == 51, 'same SID across parts
 Bexp = 300 + 10 * (R2(2, 1).grid_xyz(:, 1) - 10) + 5 * R2(2, 1).grid_xyz(:, 2) - 2 * R2(2, 1).grid_xyz(:, 3);
 inB = R2(2, 1).grid_ids ~= 1999;
 check(max(abs(R2(2, 1).grid_T(inB) - Bexp(inB))) < 1e-6, 'part B mapped against its own cloud');
-check(exist(fullfile(outM, 'A', 't000_temp.bdf'), 'file') == 2 && exist(fullfile(outM, 'B', 't100_temp.bdf'), 'file') == 2, ...
-      'per-part output folders');
+txt = fileread(fullfile(outM, 't100_temp.bdf'));
+check(exist(fullfile(outM, 'A'), 'dir') ~= 7 && strcmp(R2(1, 2).out_file, R2(2, 2).out_file) && ...
+      contains(txt, '$ ---- part A ----') && contains(txt, '$ ---- part B ----') && ...
+      numel(regexp(txt, '^TEMP ', 'lineanchors')) == ceil(numel(R2(1, 2).grid_ids) / 3) + ceil(numel(R2(2, 2).grid_ids) / 3), ...
+      'one file per step holds every part');
 txt = fileread(fullfile(outM, 'temp_includes.bdf'));
-check(numel(regexp(txt, 'INCLUDE ''[AB]/t\d+_temp\.bdf''')) == 4, 'includes list every part x step');
+check(numel(regexp(txt, 'INCLUDE ''t\d+_temp\.bdf''')) == 2, 'includes: one per step');
 txt = fileread(fullfile(outM, 'temp_subcases.dat'));
 check(numel(regexp(txt, 'SUBCASE \d+')) == 2, 'one SUBCASE per step for the whole assembly');
 check(iscell(RM(1).surface) && numel(RM(1).surface) == 2 && any(contains(RM(1).warnings, 'B:')), ...
@@ -253,10 +256,11 @@ check(Rm(1, 2).sid == Rm(2, 2).sid && Rm(1, 2).sid == 51 && strcmp(Sm.File{1}, '
       'mixed: shared SIDs and step names');
 check(numel(RMm(1).grid_ids) == 24 && size(RMm(1).cloud_xyz, 1) == size(R2(1, 1).cloud_xyz, 1), ...
       'mixed: merged view carries both parts and only the real cloud');
-check(exist(fullfile(outX, 'B', 't000_temp.bdf'), 'file') == 2 && exist(fullfile(outX, 'A', 't100_temp.bdf'), 'file') == 2, ...
-      'mixed: per-part output folders');
+txt = fileread(fullfile(outX, 't000_temp.bdf'));
+check(contains(txt, '$ ---- part B ----') && contains(txt, '$ ---- part A ----') && contains(txt, '$ Source : '), ...
+      'mixed: one step file holds the uniform and the cloud part');
 txt = fileread(fullfile(outX, 'temp_includes.bdf'));
-check(numel(regexp(txt, 'INCLUDE ''[AB]/t\d+_temp\.bdf''')) == 4, 'mixed: includes list every part x step');
+check(numel(regexp(txt, 'INCLUDE ''t\d+_temp\.bdf''')) == 2, 'mixed: includes one per step');
 h = temp_map_plot(RMm(1), 'Visible', 'off', 'Style', 'contour');
 check(~isempty(h.mesh), 'mixed: merged plot with a cloud-less part');
 close(h.fig);
