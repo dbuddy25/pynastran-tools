@@ -44,7 +44,7 @@ root.Padding = [8 8 8 8];
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
 Lg.Layout.Row = [1 2]; Lg.Layout.Column = 1;     % full height: the time strip sits under the 3D view only
-Lg.RowHeight = {26, 262, 230, 124, 210, 150, 128};
+Lg.RowHeight = {26, 262, 230, 124, 240, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 Lg.Scrollable = 'on';                  % small screens: scroll the step column instead of squashing it
 
