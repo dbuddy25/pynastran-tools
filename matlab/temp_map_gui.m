@@ -203,7 +203,7 @@ caseCB = put(uicheckbox(g4, 'Text', 'Case control', 'Value', true, ...
              'Tooltip', sprintf(['Also write temp_subcases.dat (SUBCASE id = TEMP SID, with\n' ...
                                  'TEMPERATURE(LOAD)) and temp_includes.bdf (one INCLUDE per TEMP file).']), ...
              'ValueChangedFcn', @(~, ~) save_prefs()), 3, 1);
-subE = put(uieditfield(g4, 'text', 'Value', '{file}  t = {time} s', ...
+subE = put(uieditfield(g4, 'text', 'Value', 't = {time} s', ...
            'Tooltip', 'SUBTITLE template. Tokens: {file} {time} {sid} {index}. Empty = no SUBTITLE.', ...
            'ValueChangedFcn', @(~, ~) save_prefs()), 3, [2 4]);
 put(uilabel(g4, 'Text', 'Global lines'), 4, 1);
@@ -995,7 +995,7 @@ update_state();
         warnE.Value      = f('warn_dist', 0);
         tempdCB.Value    = f('tempd', false);
         caseCB.Value     = f('case', true);
-        subE.Value       = f('subtitle', '{file}  t = {time} s');
+        subE.Value       = f('subtitle', 't = {time} s');
         extraE.Value     = f('extra', '');
         trefE.Value      = f('tref', '');
         parCB.Value      = f('parallel', false);
@@ -1142,7 +1142,7 @@ update_state();
         fieldDD.Value     = getpref(PREF, 'field',    8);
         headerCB.Value    = getpref(PREF, 'header',   true);
         caseCB.Value      = getpref(PREF, 'case',     true);
-        subE.Value        = getpref(PREF, 'subtitle', '{file}  t = {time} s');
+        subE.Value        = getpref(PREF, 'subtitle', 't = {time} s');
         extraE.Value      = getpref(PREF, 'extra',    '');
         trefE.Value       = getpref(PREF, 'tref',     '');
         parCB.Value       = getpref(PREF, 'parallel', false);

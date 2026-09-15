@@ -160,7 +160,7 @@ C.PARALLEL       = false;           % true = map the steps of each part in a par
 % --- case control (optional, one file for the whole batch) ---------------------
 C.WRITE_CASE     = true;            % write OUT_DIR/temp_subcases.dat + temp_includes.bdf
 C.SUBCASE_OFFSET = 0;               % SUBCASE id = SID + this
-C.SUBTITLE       = '{file}  t = {time} s';   % tokens: {file} {time} {sid} {index}; '' = none
+C.SUBTITLE       = 't = {time} s';   % tokens: {file} {time} {sid} {index}; '' = none
 C.LABEL          = '';              % same tokens; '' = none
 C.CASE_EXTRA     = {};              % global case-control lines written once above the
                                     % first SUBCASE, e.g. {'SPC = 1', 'DISP(PLOT) = ALL'}
