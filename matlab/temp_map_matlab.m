@@ -148,6 +148,8 @@ C.FIELD_SIZE     = 8;               % 8 = small field | 16 = large field
 C.WRITE_TEMPD    = false;           % also emit TEMPD,SID,<mean T> for unlisted grids
 C.WRITE          = true;            % false = map only, write nothing (GUI preview)
 C.SAVE_PNG       = false;           % true = save an ISO-view PNG next to each .bdf
+C.PNG_PLOT_ARGS  = {};              % extra temp_map_plot name/value pairs for those PNGs
+                                    % (Style, CLim, Camera, Show*); the GUI passes its view
 C.REPORT         = false;           % true = OUT_DIR/temp_map_report.html: settings,
                                     % per-step table, coverage, warnings, min/max chart,
                                     % and the PNGs when SAVE_PNG is on
@@ -392,7 +394,7 @@ if C.WRITE
     if C.SAVE_PNG
         for k = 1:size(R, 2)
             [~, base] = fileparts(R(1, k).csv_file);
-            h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS, 'Buttons', false);
+            h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS, 'Buttons', false, C.PNG_PLOT_ARGS{:});
             png = fullfile(C.OUT_DIR, [base '_temp.png']);
             try
                 exportgraphics(h.ax, png, 'Resolution', 150);      % R2020a+

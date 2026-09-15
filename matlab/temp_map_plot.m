@@ -28,6 +28,7 @@ function h = temp_map_plot(r, varargin)
 %                     larger sets are randomly thinned for a responsive view
 %       'View'        '+X' '-X' '+Y' '-Y' '+Z' '-Z' 'ISO'   (default 'ISO');
 %                     H.set_view('FIT') re-frames without changing direction
+%       'Camera'      [] | struct .pos .target .up .va  -- applied after View
 %       'Visible'     'on' | 'off'  (figure visibility, standalone only)
 %       'Buttons'     true | false   add the view buttons / toggles to a
 %                     standalone figure (false for figures you will export)
@@ -39,7 +40,7 @@ function h = temp_map_plot(r, varargin)
 
 o = struct('Parent', [], 'Style', 'points', 'Units', 'K', 'ShowCloud', true, 'ShowSurface', true, 'ShowExtrap', true, ...
            'Colormap', 'jet', 'CLim', [], 'MarkerSize', 36, 'CloudSize', 8, ...
-           'ShowMinMax', true, 'MaxPoints', 2e5, 'View', 'ISO', 'Visible', 'on', 'Buttons', true);
+           'ShowMinMax', true, 'MaxPoints', 2e5, 'View', 'ISO', 'Camera', [], 'Visible', 'on', 'Buttons', true);
 for k = 1:2:numel(varargin)
     name = char(varargin{k});
     if ~isfield(o, name)
@@ -183,6 +184,10 @@ legend(ax, 'Location', 'northeast');
 hold(ax, 'off');
 h.set_view = @(name) set_view(ax, name);
 h.set_view(o.View);
+if ~isempty(o.Camera)
+    camtarget(ax, o.Camera.target); campos(ax, o.Camera.pos);
+    camup(ax, o.Camera.up); camva(ax, o.Camera.va);
+end
 % drag = rotate, scroll = zoom, shift-drag / right-drag = pan (R2019a+ interactions);
 % older releases fall back to rotate3d mode (zoom via the figure toolbar there).
 try

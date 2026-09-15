@@ -743,6 +743,7 @@ update_state();
                 'TREF',         tref_value(), ...
                 'REPORT',       reportCB.Value && all_of_them, ...   % a partial write must not overwrite the run report
                 'SAVE_PNG',     pngCB.Value, ...
+                'PNG_PLOT_ARGS', png_plot_args(), ...
                 'WRITE',        true);
         catch ME
             uialert(fig, ME.message, 'Write failed');
@@ -831,6 +832,20 @@ update_state();
                           'CLim',       color_limits());
         plotTitle.Text = char(ax.Title.String);
         title(ax, '');
+    end
+
+    function a = png_plot_args()
+        % the PNGs show the whole assembly, so a fixed scale spans every step and part
+        a = {'Style', styleDD.Value, 'ShowCloud', cloudCB.Value, 'ShowSurface', surfCB.Value, ...
+             'ShowMinMax', mmCB.Value, 'ShowExtrap', extrapCB.Value};
+        if any(strcmp(scaleDD.Value, {'steps', 'global'}))
+            lims = conv_out([min(arrayfun(@(r) min(r.grid_T), RM)) max(arrayfun(@(r) max(r.grid_T), RM))], unitsDD.Value);
+            if lims(1) == lims(2), lims = lims + [-0.5 0.5]; end
+            a = [a, {'CLim', lims}];
+        end
+        if ~isempty(H) && isvalid(ax)
+            a = [a, {'Camera', struct('pos', campos(ax), 'target', camtarget(ax), 'up', camup(ax), 'va', camva(ax))}];
+        end
     end
 
     function lims = color_limits()
