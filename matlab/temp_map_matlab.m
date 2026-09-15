@@ -27,8 +27,8 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %       >> temp_map_matlab('PARTS', {'wing', 'wing.bdf', 'clouds\wing'; ...
 %                                    'fuse', 'fuse.bdf', 70; ...
 %                                    'tank', 'tank.bdf', 'tank_T.csv'}, 'OUT_UNITS', 'F')
-%   Whole model isothermal (one step, isothermal_temp.bdf), or several uniform
-%   steps from a T(t) table / an explicit list of times (t<time>_temp.bdf):
+%   Whole model isothermal (one step), or several uniform steps from a T(t)
+%   table / an explicit list of times:
 %       >> temp_map_matlab('BDF_FILE', 'model.bdf', 'ISOTHERMAL', 70, 'OUT_UNITS', 'F')
 %       >> temp_map_matlab('BDF_FILE', 'model.bdf', 'ISOTHERMAL', 'model_T.csv')
 %       >> temp_map_matlab('PARTS', P, 'TIMES', [0 100 200])       % no cloud parts in P
@@ -39,15 +39,16 @@ function [R, S, RM] = temp_map_matlab(varargin)
 %
 %   OUTPUT FILES  (all under OUT_DIR)
 %   -----------------------------------
-%       <csv>_temp.bdf            TEMP cards for one time step, one SID, every
+%       <OUT_NAME>.bdf            TEMP cards for one time step, one SID, every
 %                                 part in its own $ section; meant to be INCLUDEd.
+%                                 Default temp_001.bdf, temp_002.bdf, ...
 %       temp_subcases.dat         case control: global lines (CASE_EXTRA,
 %                                 TEMPERATURE(INITIAL) if TREF) then one SUBCASE
 %                                 per step with TEMPERATURE(LOAD) = SID.
 %                                 Paste above BEGIN BULK.        (WRITE_CASE)
 %       temp_includes.bdf         one INCLUDE per TEMP file (+ TEMPD for TREF).
 %                                 Paste below BEGIN BULK.         (WRITE_CASE)
-%       <csv>_temp.png            ISO check plot per step          (SAVE_PNG)
+%       <OUT_NAME>.png            ISO check plot per step          (SAVE_PNG)
 %       temp_map_report.html      run record: settings, coverage warnings,
 %                                 min/max-vs-time chart, per-step table,
 %                                 check plots                     (REPORT)
@@ -141,6 +142,8 @@ C.CSV_TEMP_UNITS   = 'K';       % 'K' | 'C' | 'F'   (what the CSV's 5th column i
 
 % --- output --------------------------------------------------------------
 C.OUT_DIR        = 'temp_cards';    % created if missing
+C.OUT_NAME       = 'temp_{index:03}';   % file name per step (no extension); tokens
+                                    % {file} {time} {sid} {index}; {index:03} / {sid:04} zero-pad
 C.OUT_UNITS      = 'K';             % 'K' | 'C' | 'F'  temperature units of the
                                     % structural model = units written on the TEMP cards
 C.FIELD_SIZE     = 8;               % 8 = small field | 16 = large field
@@ -377,21 +380,26 @@ RM = merge_parts(R);
 if C.WRITE
     if exist(C.OUT_DIR, 'dir') ~= 7, mkdir(C.OUT_DIR); end
     ns = size(R, 2);
+    bases = arrayfun(@(k) out_base(R(1, k), C, k), 1:ns, 'UniformOutput', false);
+    if numel(unique(bases)) < ns
+        error('temp_map_matlab:dupOutName', ...
+              'OUT_NAME ''%s'' gives the same file name for more than one step -- add {index} or {sid}.', C.OUT_NAME);
+    end
     wspan = ternary(C.SAVE_PNG, 0.5, 0.85);         % TEMP files, then PNGs, then case / report
     for k = 1:ns
         tic;
-        [~, base] = fileparts(R(1, k).csv_file);
-        [R(:, k).out_file] = deal(fullfile(C.OUT_DIR, [base '_temp.bdf']));
-        progress(C, wspan * (k - 1) / ns, sprintf('writing TEMP cards %d / %d: %s_temp.bdf ...', k, ns, base));
+        base = bases{k};
+        [R(:, k).out_file] = deal(fullfile(C.OUT_DIR, [base '.bdf']));
+        progress(C, wspan * (k - 1) / ns, sprintf('writing TEMP cards %d / %d: %s.bdf ...', k, ns, base));
         write_temp_cards(R(:, k), C);
         fprintf('  wrote %s  (%.1f s)\n', R(1, k).out_file, toc);
     end
     if C.SAVE_PNG
         for k = 1:ns
-            [~, base] = fileparts(R(1, k).csv_file);
-            progress(C, wspan + (0.85 - wspan) * (k - 1) / ns, sprintf('check plot %d / %d: %s_temp.png ...', k, ns, base));
+            base = bases{k};
+            progress(C, wspan + (0.85 - wspan) * (k - 1) / ns, sprintf('check plot %d / %d: %s.png ...', k, ns, base));
             h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS, 'Buttons', false, C.PNG_PLOT_ARGS{:});
-            png = fullfile(C.OUT_DIR, [base '_temp.png']);
+            png = fullfile(C.OUT_DIR, [base '.png']);
             try
                 exportgraphics(h.ax, png, 'Resolution', 150);      % R2020a+
             catch
@@ -1876,7 +1884,7 @@ function write_case_control(R, C)
     for k = 1:ns
         r = R(1, k);
         [~, base] = fileparts(r.csv_file);
-        tok = @(s) fill_tokens(s, base, r.time, r.sid, k);
+        tok = @(s) title72(fill_tokens(s, base, r.time, r.sid, k));
         fprintf(fid, 'SUBCASE %d\n', r.sid + C.SUBCASE_OFFSET);
         if ~isempty(C.SUBTITLE), fprintf(fid, '  SUBTITLE = %s\n', tok(C.SUBTITLE)); end
         if ~isempty(C.LABEL),    fprintf(fid, '  LABEL = %s\n',    tok(C.LABEL));    end
@@ -1907,11 +1915,33 @@ end
 
 
 function s = fill_tokens(s, file, t, sid, idx)
-    s = strrep(char(s), '{file}',  file);
-    s = strrep(s, '{time}',  sprintf('%g', t));
-    s = strrep(s, '{sid}',   sprintf('%d', sid));
-    s = strrep(s, '{index}', sprintf('%d', idx));
+    s = strrep(char(s), '{file}', file);
+    s = strrep(s, '{time}', sprintf('%g', t));
+    s = pad_token(s, 'sid', sid);
+    s = pad_token(s, 'index', idx);
+end
+
+
+function s = pad_token(s, name, v)
+%PAD_TOKEN  {name} -> v, {name:03} -> zero-padded to 3 digits.
+    [tok, ext] = regexp(s, ['\{' name '(?::0?(\d+))?\}'], 'tokens', 'match');
+    for i = 1:numel(tok)
+        s = strrep(s, ext{i}, sprintf('%0*d', str2double(['0' tok{i}{1}]), v));
+    end
+end
+
+
+function s = title72(s)
     if numel(s) > 72, s = s(1:72); end          % Nastran title field limit
+end
+
+
+function base = out_base(r, C, k)
+%OUT_BASE  File name (no extension) of step k from the OUT_NAME template.
+    [~, csv] = fileparts(r.csv_file);
+    base = fill_tokens(C.OUT_NAME, csv, r.time, r.sid, k);
+    base = regexprep(strtrim(base), '[<>:"/\\|?*\s]+', '_');
+    if isempty(base), base = sprintf('temp_%03d', k); end
 end
 
 
@@ -2021,8 +2051,8 @@ function write_report(R, RM, S, C)
     if C.SAVE_PNG
         w('<h2>Check plots</h2>\n');
         for k = 1:ns
-            [~, base] = fileparts(RM(k).csv_file);
-            w('<details%s><summary>%s &nbsp; t = %g s</summary><img src="%s_temp.png"></details>\n', ...
+            [~, base] = fileparts(R(1, k).out_file);
+            w('<details%s><summary>%s &nbsp; t = %g s</summary><img src="%s.png"></details>\n', ...
               ternary(k == 1, ' open', ''), esc(shortname(RM(k).csv_file)), RM(k).time, esc(base));
         end
     end

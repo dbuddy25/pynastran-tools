@@ -100,7 +100,7 @@ check(contains(txt, 'SUBCASE 10') && contains(txt, 'SUBCASE 11') && ...
       contains(txt, 'TEMPERATURE(LOAD) = 10') && contains(txt, 'SUBTITLE = t = 100 s'), ...
       'temp_subcases.dat: SUBCASE ids match SIDs, subtitle tokens filled');
 txt = fileread(fullfile(out, 'temp_includes.bdf'));
-check(contains(txt, 'INCLUDE ''t000_temp.bdf''') && contains(txt, 'INCLUDE ''t100_temp.bdf'''), ...
+check(contains(txt, 'INCLUDE ''temp_001.bdf''') && contains(txt, 'INCLUDE ''temp_002.bdf'''), ...
       'temp_includes.bdf lists both TEMP files');
 temp_map_matlab('RESULTS', R, 'OUT_DIR', out, 'TREF', 20, 'OUT_UNITS', 'C', 'CASE_EXTRA', {'SPC = 1'});
 txt = fileread(fullfile(out, 'temp_subcases.dat'));
@@ -171,13 +171,13 @@ check(R2(1, 2).sid == R2(2, 2).sid && R2(1, 2).sid == 51, 'same SID across parts
 Bexp = 300 + 10 * (R2(2, 1).grid_xyz(:, 1) - 10) + 5 * R2(2, 1).grid_xyz(:, 2) - 2 * R2(2, 1).grid_xyz(:, 3);
 inB = R2(2, 1).grid_ids ~= 1999;
 check(max(abs(R2(2, 1).grid_T(inB) - Bexp(inB))) < 1e-6, 'part B mapped against its own cloud');
-txt = fileread(fullfile(outM, 't100_temp.bdf'));
+txt = fileread(fullfile(outM, 'temp_002.bdf'));
 check(exist(fullfile(outM, 'A'), 'dir') ~= 7 && strcmp(R2(1, 2).out_file, R2(2, 2).out_file) && ...
       contains(txt, '$ ---- part A ----') && contains(txt, '$ ---- part B ----') && ...
       numel(regexp(txt, '^TEMP ', 'lineanchors')) == ceil(numel(R2(1, 2).grid_ids) / 3) + ceil(numel(R2(2, 2).grid_ids) / 3), ...
       'one file per step holds every part');
 txt = fileread(fullfile(outM, 'temp_includes.bdf'));
-check(numel(regexp(txt, 'INCLUDE ''t\d+_temp\.bdf''')) == 2, 'includes: one per step');
+check(numel(regexp(txt, 'INCLUDE ''temp_\d{3}\.bdf''')) == 2, 'includes: one per step');
 txt = fileread(fullfile(outM, 'temp_subcases.dat'));
 check(numel(regexp(txt, 'SUBCASE \d+')) == 2, 'one SUBCASE per step for the whole assembly');
 check(iscell(RM(1).surface) && numel(RM(1).surface) == 2 && any(contains(RM(1).warnings, 'B:')), ...
@@ -226,8 +226,8 @@ check(isequal(size(Ri), [1 1]) && max(abs(toF(Ri.grid_T) - 70)) < 1e-9 && numel(
       'ISOTHERMAL constant: every grid at 70 F (stored in K)');
 check(Ri.sid == 7 && isempty(Ri.cloud_T) && ~any(Ri.extrap) && isempty(Ri.warnings) && Ri.time == 0, ...
       'isothermal: one step at t = 0, no cloud, nothing flagged');
-check(strcmp(Si.File{1}, 'isothermal') && exist(fullfile(outI, 'isothermal_temp.bdf'), 'file') == 2, ...
-      'isothermal -> isothermal_temp.bdf');
+check(strcmp(Si.File{1}, 'isothermal') && exist(fullfile(outI, 'temp_001.bdf'), 'file') == 2, ...
+      'isothermal -> temp_001.bdf');
 txt = fileread(Ri.out_file);
 lines = regexp(txt, '\r?\n', 'split');
 L = lines{find(startsWith(lines, 'TEMP    '), 1)};
@@ -239,7 +239,7 @@ fid = fopen(tab, 'w'); fprintf(fid, 'time_s,T_F\n100,150\n0,50\n'); fclose(fid);
 check(isequal(size(Rt), [1 2]) && isequal([Rt.time], [0 100]) && isequal(St.File', {'t0', 't100'}), ...
       'T(t) table: one step per table time, sorted');
 check(max(abs(toF(Rt(1).grid_T) - 50)) < 1e-9 && max(abs(toF(Rt(2).grid_T) - 150)) < 1e-9 && ...
-      exist(fullfile(outI, 't100_temp.bdf'), 'file') == 2, 'T(t) table: temperatures per step, t<time>_temp.bdf');
+      exist(fullfile(outI, 'temp_002.bdf'), 'file') == 2, 'T(t) table: temperatures per step, temp_002.bdf');
 Rx = temp_map_matlab('BDF_FILE', bdf, 'ISOTHERMAL', tab, 'OUT_UNITS', 'F', 'TIMES', [25 75], 'WRITE', false);
 check(isequal([Rx.time], [25 75]) && abs(toF(Rx(1).grid_T(1)) - 75) < 1e-9 && abs(toF(Rx(2).grid_T(1)) - 125) < 1e-9, ...
       'TIMES: explicit steps, T interpolated in the table');
@@ -256,11 +256,11 @@ check(Rm(1, 2).sid == Rm(2, 2).sid && Rm(1, 2).sid == 51 && strcmp(Sm.File{1}, '
       'mixed: shared SIDs and step names');
 check(numel(RMm(1).grid_ids) == 24 && size(RMm(1).cloud_xyz, 1) == size(R2(1, 1).cloud_xyz, 1), ...
       'mixed: merged view carries both parts and only the real cloud');
-txt = fileread(fullfile(outX, 't000_temp.bdf'));
+txt = fileread(fullfile(outX, 'temp_001.bdf'));
 check(contains(txt, '$ ---- part B ----') && contains(txt, '$ ---- part A ----') && contains(txt, '$ Source : '), ...
       'mixed: one step file holds the uniform and the cloud part');
 txt = fileread(fullfile(outX, 'temp_includes.bdf'));
-check(numel(regexp(txt, 'INCLUDE ''t\d+_temp\.bdf''')) == 2, 'mixed: includes one per step');
+check(numel(regexp(txt, 'INCLUDE ''temp_\d{3}\.bdf''')) == 2, 'mixed: includes one per step');
 h = temp_map_plot(RMm(1), 'Visible', 'off', 'Style', 'contour');
 check(~isempty(h.mesh), 'mixed: merged plot with a cloud-less part');
 close(h.fig);
@@ -288,9 +288,9 @@ check(contains(Rp(2).method, '(reused)'), 'PARALLEL step 2 reused the step-1 map
 rep = fullfile(outP, 'temp_map_report.html');
 check(exist(rep, 'file') == 2, 'HTML report written');
 txt = fileread(rep);
-check(contains(txt, 't100.csv') && contains(txt, '<svg') && contains(txt, 'overhangs') && contains(txt, 't000_temp.png'), ...
+check(contains(txt, 't100.csv') && contains(txt, '<svg') && contains(txt, 'overhangs') && contains(txt, 'temp_001.png'), ...
       'report has the step table, chart, warnings and plot links');
-check(exist(fullfile(outP, 't100_temp.png'), 'file') == 2, 'PNG per step written');
+check(exist(fullfile(outP, 'temp_002.png'), 'file') == 2, 'PNG per step written');
 
 % --- cloud check (no BDF) ----------------------------------------------------------
 [Sc, Dc, hc] = temp_cloud_check(here, 'OUT_UNITS', 'K', 'OUT_LENGTH_UNITS', 'in');
