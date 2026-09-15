@@ -154,7 +154,12 @@ h.cbar.Ticks = tk;
 h.cbar.TickLabels = arrayfun(@(v) sprintf('%.1f', v), tk, 'UniformOutput', false);
 h.cbar.Title.String = sprintf('max %.1f', lims(2));
 h.cbar.Title.FontWeight = 'bold';
-h.cbar.Label.String = sprintf('T [deg %s]      min %.1f  /  max %.1f', units, lims(1), lims(2));
+if isempty(o.CLim)
+    h.cbar.Label.String = sprintf('T [deg %s]      min %.1f  /  max %.1f', units, lims(1), lims(2));
+else
+    % fixed scale: the bar shows the scale; the title keeps this view's own range
+    h.cbar.Label.String = sprintf('T [deg %s]      fixed scale %.1f .. %.1f', units, lims(1), lims(2));
+end
 
 % --- dressing --------------------------------------------------------------
 axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');

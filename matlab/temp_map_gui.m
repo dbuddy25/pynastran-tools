@@ -284,8 +284,8 @@ put(uibutton(bar, 'Text', 'Fit', 'Tooltip', 'Re-frame the model without changing
              'ButtonPushedFcn', @(~, ~) snap('FIT')), 1, 15);
 
 % --- row 3: display options ----------------------------------------------------
-db = uigridlayout(Rg, [1 6]);
-db.ColumnWidth = {200, 90, 100, 110, 110, '1x'};
+db = uigridlayout(Rg, [1 7]);
+db.ColumnWidth = {200, 90, 100, 110, 110, 190, '1x'};
 db.Padding = [0 0 0 0]; db.ColumnSpacing = 6;
 styleDD = put(uidropdown(db, 'Items', {'Points (grids)', 'Smooth contour (element faces)'}, ...
               'ItemsData', {'points', 'contour'}, 'Value', 'points', ...
@@ -302,6 +302,12 @@ extrapCB = put(uicheckbox(db, 'Text', 'Ring outside', 'Value', true, ...
 mmCB = put(uicheckbox(db, 'Text', 'Min / max', 'Value', true, ...
            'Tooltip', 'Star + label on the hottest and coldest grid.', ...
            'ValueChangedFcn', @(src, ~) toggle('minmax', src.Value)), 1, 5);
+scaleDD = put(uidropdown(db, ...
+              'Items', {'Scale: this view', 'Scale: all steps', 'Scale: all parts', 'Scale: all steps + parts'}, ...
+              'ItemsData', {'view', 'steps', 'parts', 'global'}, 'Value', 'view', ...
+              'Tooltip', ['Colour-bar limits. "all steps" = min/max of the shown part over every time step; ' ...
+                          '"all parts" = min/max of the whole assembly at this step; "all steps + parts" = one fixed scale.'], ...
+              'ValueChangedFcn', @(~, ~) replot()), 1, 6);
 
 % --- row 4: plot title as a label: a 3D uiaxes title drifts above the axes box
 %     with the camera framing and gets hidden under the toolbar ------------------------
@@ -821,9 +827,26 @@ update_state();
                           'ShowCloud',  cloudCB.Value, ...
                           'ShowSurface', surfCB.Value, ...
                           'ShowMinMax', mmCB.Value, ...
-                          'ShowExtrap', extrapCB.Value);
+                          'ShowExtrap', extrapCB.Value, ...
+                          'CLim',       color_limits());
         plotTitle.Text = char(ax.Title.String);
         title(ax, '');
+    end
+
+    function lims = color_limits()
+        % [] = auto from the view; otherwise [lo hi] in display units
+        k = viewDD.Value; p = partDD.Value;
+        switch scaleDD.Value
+            case 'steps'
+                if p == 0, rs = RM; else, rs = R(p, :); end
+            case 'parts',  rs = RM(k);
+            case 'global', rs = RM;
+            otherwise,     lims = []; return;
+        end
+        T = arrayfun(@(r) [min(r.grid_T) max(r.grid_T)], rs, 'UniformOutput', false);
+        T = vertcat(T{:});
+        lims = conv_out([min(T(:, 1)) max(T(:, 2))], unitsDD.Value);
+        if lims(1) == lims(2), lims = lims + [-0.5 0.5]; end
     end
 
     function on_view_change()
@@ -939,7 +962,7 @@ update_state();
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
                     'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
                     'parallel', parCB.Value, 'shell', shellCB.Value, 'report', reportCB.Value, 'png', pngCB.Value, ...
-                    'style', styleDD.Value);
+                    'style', styleDD.Value, 'scale', scaleDD.Value);
     end
 
     function apply_setup(st)
@@ -965,6 +988,7 @@ update_state();
         reportCB.Value   = f('report', true);
         pngCB.Value      = f('png', false);
         styleDD.Value    = f('style', 'points');
+        scaleDD.Value    = f('scale', 'view');
         partsT.Data      = P;
         invalidate_grids();
         on_len_units();
