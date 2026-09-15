@@ -728,9 +728,12 @@ update_state();
                 return
             end
         end
+        dlg = uiprogressdlg(fig, 'Title', 'Writing', 'Value', 0, 'Message', 'Starting ...');
+        t0 = tic;
         try
             [~, S] = temp_map_matlab( ...
                 'RESULTS',      sub, ...
+                'PROGRESS',     @(frac, msg) set_progress(dlg, frac, msg, t0), ...
                 'OUT_DIR',      outE.Value, ...
                 'OUT_UNITS',    unitsDD.Value, ...
                 'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
@@ -746,9 +749,11 @@ update_state();
                 'PNG_PLOT_ARGS', png_plot_args(), ...
                 'WRITE',        true);
         catch ME
+            close(dlg);
             uialert(fig, ME.message, 'Write failed');
             return
         end
+        close(dlg);
         p4.Title = sprintf('4  Write TEMP cards  --  %d file(s) written %s', height(S), datestr(now, 'HH:MM'));
         extra = {};
         if caseCB.Value

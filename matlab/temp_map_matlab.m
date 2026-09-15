@@ -376,16 +376,20 @@ RM = merge_parts(R);
 
 if C.WRITE
     if exist(C.OUT_DIR, 'dir') ~= 7, mkdir(C.OUT_DIR); end
-    for k = 1:size(R, 2)
+    ns = size(R, 2);
+    wspan = ternary(C.SAVE_PNG, 0.5, 0.85);         % TEMP files, then PNGs, then case / report
+    for k = 1:ns
         tic;
         [~, base] = fileparts(R(1, k).csv_file);
         [R(:, k).out_file] = deal(fullfile(C.OUT_DIR, [base '_temp.bdf']));
+        progress(C, wspan * (k - 1) / ns, sprintf('writing TEMP cards %d / %d: %s_temp.bdf ...', k, ns, base));
         write_temp_cards(R(:, k), C);
         fprintf('  wrote %s  (%.1f s)\n', R(1, k).out_file, toc);
     end
     if C.SAVE_PNG
-        for k = 1:size(R, 2)
+        for k = 1:ns
             [~, base] = fileparts(R(1, k).csv_file);
+            progress(C, wspan + (0.85 - wspan) * (k - 1) / ns, sprintf('check plot %d / %d: %s_temp.png ...', k, ns, base));
             h = temp_map_plot(RM(k), 'Visible', 'off', 'Units', C.OUT_UNITS, 'Buttons', false, C.PNG_PLOT_ARGS{:});
             png = fullfile(C.OUT_DIR, [base '_temp.png']);
             try
@@ -399,11 +403,13 @@ if C.WRITE
 end
 
 if C.WRITE && C.WRITE_CASE && ~isempty(R)
+    progress(C, 0.88, 'writing case control + includes ...');
     write_case_control(R, C);
 end
 
 S = summary_table(R, C);
 if C.WRITE && C.REPORT && ~isempty(R)
+    progress(C, 0.94, 'writing HTML report ...');
     write_report(R, RM, S, C);
 end
 progress(C, 1, 'Done.');
