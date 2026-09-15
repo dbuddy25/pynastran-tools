@@ -1924,9 +1924,11 @@ end
 
 function s = pad_token(s, name, v)
 %PAD_TOKEN  {name} -> v, {name:03} -> zero-padded to 3 digits.
-    [tok, ext] = regexp(s, ['\{' name '(?::0?(\d+))?\}'], 'tokens', 'match');
-    for i = 1:numel(tok)
-        s = strrep(s, ext{i}, sprintf('%0*d', str2double(['0' tok{i}{1}]), v));
+    ext = unique(regexp(s, ['\{' name '(:\d+)?\}'], 'match'));
+    for i = 1:numel(ext)
+        wdt = sscanf(ext{i}, ['{' name ':%d}']);
+        if isempty(wdt), rep = sprintf('%d', v); else, rep = sprintf('%0*d', wdt, v); end
+        s = strrep(s, ext{i}, rep);
     end
 end
 
