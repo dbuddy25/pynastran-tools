@@ -194,7 +194,12 @@ if nargout == 0, clear Vout hout; end
         if i == 0
             set(applyB, 'Enable', 'off', 'String', 'No transform to propose');
         else
-            set(applyB, 'Enable', 'on', 'String', sprintf('Apply: axes %s  (%s)', V(i).proposed.axes, names{i}));
+            tip = sprintf('%s: set Cloud xform to axes %s, offset [%.4g %.4g %.4g]', names{i}, ...
+                          V(i).proposed.axes, V(i).proposed.offset);
+            if isfield(V(i).proposed, 'rotations')
+                tip = sprintf('%s\nThis is a mirror. Rotated 90 deg instead?  use %s or %s', tip, V(i).proposed.rotations{:});
+            end
+            set(applyB, 'Enable', 'on', 'String', sprintf('Apply  %s', V(i).proposed.axes), 'Tooltip', tip);
         end
     end
 
@@ -316,6 +321,15 @@ function v = verdict(q, lu, cu)
             L{end+1} = sprintf('  proposed cloud transform: axes ''%s'' (model <- cloud), offset [%.4g %.4g %.4g]%s%s', ...
                                v.proposed.axes, off(1), off(2), off(3), lu, ...
                                ternary(any(sgn < 0), '  (sign flips from shape skew -- best effort)', ''));
+            if all(sgn > 0) && nnz(pb ~= [1 2 3]) == 2
+                % a bare swap is a MIRROR; the same silhouette also comes from a 90-degree rotation
+                sw = find(pb ~= [1 2 3]);
+                r1 = names; r1{sw(1)} = ['-' r1{sw(1)}];
+                r2 = names; r2{sw(2)} = ['-' r2{sw(2)}];
+                L{end+1} = sprintf('  NOTE: ''%s'' mirrors the cloud. If the thermal model was ROTATED 90 deg, use ''%s'' or ''%s'' instead (same shape, opposite handedness -- the check cannot tell them apart).', ...
+                                   v.proposed.axes, strjoin(r1, ' '), strjoin(r2, ' '));
+                v.proposed.rotations = {strjoin(r1, ' '), strjoin(r2, ' ')};
+            end
         end
     end
 
