@@ -1,4 +1,4 @@
-function [V, h] = temp_geom_check(Q, varargin)
+function [Vout, hout] = temp_geom_check(Q, varargin)
 %TEMP_GEOM_CHECK  Overlay the structural mesh and the temperature cloud to
 %   confirm length units, orientation and position BEFORE mapping.
 %
@@ -16,7 +16,8 @@ function [V, h] = temp_geom_check(Q, varargin)
 %       'Visible'      'on' | 'off'                       (default 'on')
 %
 %   V(i): .part .level ('ok' | 'warn' | 'bad' | 'none') .cover (0..1)
-%         .lines (cell of messages)      h: .fig .ax .banner
+%         .lines (cell of messages)      h: .fig .ax .banner .show_part(i)
+%   With several parts a dropdown shows one part at a time (0 = all).
 %
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_GUI.
 
@@ -39,27 +40,30 @@ fig = figure('Name', 'Geometry check: mesh vs temperature cloud', 'NumberTitle',
 ax = axes('Parent', fig, 'Position', [0.07 0.06 0.86 0.74]);
 hold(ax, 'on');
 cols = lines(max(np, 1));
+HP = cell(1, np);                                  % graphics per part, for the filter
 for i = 1:np
     q = Q(i); col = cols(i, :);
     tag = q.name; if isempty(tag), tag = 'model'; end
+    hp = gobjects(0);
     if ~isempty(q.faces)
         big = size(q.faces, 1) > 2e5;
-        patch('Parent', ax, 'Faces', q.faces, 'Vertices', q.grid_xyz, ...
+        hp(end+1) = patch('Parent', ax, 'Faces', q.faces, 'Vertices', q.grid_xyz, ...
               'FaceColor', [0.82 0.82 0.82], 'FaceAlpha', 0.55, ...
               'EdgeColor', ternary(big, 'none', [0.35 0.35 0.35]), 'EdgeAlpha', 0.35, ...
               'DisplayName', ['mesh: ' tag]);
     else
         gs = thin(size(q.grid_xyz, 1), o.MaxPoints);
-        scatter3(ax, q.grid_xyz(gs, 1), q.grid_xyz(gs, 2), q.grid_xyz(gs, 3), 10, [0.4 0.4 0.4], ...
+        hp(end+1) = scatter3(ax, q.grid_xyz(gs, 1), q.grid_xyz(gs, 2), q.grid_xyz(gs, 3), 10, [0.4 0.4 0.4], ...
                  'filled', 'DisplayName', ['grids: ' tag]);
     end
-    draw_box(ax, q.grid_xyz, [0.15 0.15 0.15], '-', 1.6, ['mesh box: ' tag]);
+    hp(end+1) = draw_box(ax, q.grid_xyz, [0.15 0.15 0.15], '-', 1.6, ['mesh box: ' tag]);
     if ~isempty(q.cloud_xyz)
         cs = thin(size(q.cloud_xyz, 1), o.MaxPoints);
-        scatter3(ax, q.cloud_xyz(cs, 1), q.cloud_xyz(cs, 2), q.cloud_xyz(cs, 3), 6, col, '.', ...
+        hp(end+1) = scatter3(ax, q.cloud_xyz(cs, 1), q.cloud_xyz(cs, 2), q.cloud_xyz(cs, 3), 6, col, '.', ...
                  'DisplayName', sprintf('cloud: %s  (%s)', tag, shortname(q.csv_file)));
-        draw_box(ax, q.cloud_xyz, col, '--', 1.8, ['cloud box: ' tag]);
+        hp(end+1) = draw_box(ax, q.cloud_xyz, col, '--', 1.8, ['cloud box: ' tag]);
     end
+    HP{i} = hp;
 end
 hold(ax, 'off');
 axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');
@@ -96,16 +100,41 @@ for k = 1:numel(labels)
               'Units', 'normalized', 'Position', [x0 + (k-1)*(w+0.005), 0.835, w, 0.04], ...
               'Callback', @(~, ~) set_view(ax, labels{k}));
 end
-uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.52 0.835 0.46 0.04], ...
-          'String', 'mesh box: solid black     cloud box: dashed, part colour', ...
+uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.70 0.835 0.28 0.04], ...
+          'String', 'mesh box: solid black   cloud box: dashed, part colour', ...
           'BackgroundColor', 'w', 'HorizontalAlignment', 'right', 'FontSize', 9);
+names = arrayfun(@(i) ternary(isempty(Q(i).name), 'model', Q(i).name), 1:np, 'UniformOutput', false);
+allStr = banner.String;
+if np > 1
+    uicontrol(fig, 'Style', 'popupmenu', 'Units', 'normalized', 'Position', [0.52 0.835 0.17 0.04], ...
+              'String', [{'All parts'}, names], 'Value', 1, 'FontSize', 10, ...
+              'Callback', @(src, ~) show_part(src.Value - 1));
+end
 
 for i = 1:np
     if strcmp(V(i).level, 'none'), continue; end
     fprintf('%s\n', V(i).lines{:});
 end
-h = struct('fig', fig, 'ax', ax, 'banner', banner);
-if nargout == 0, clear V h; end
+Vout = V;
+hout = struct('fig', fig, 'ax', ax, 'banner', banner, 'show_part', @show_part);
+if nargout == 0, clear Vout hout; end
+
+    function show_part(i)
+        % 0 = all parts; otherwise only part i, with its own verdict in the banner
+        for j = 1:np
+            set(HP{j}, 'Visible', ternary(i == 0 || i == j, 'on', 'off'));
+        end
+        if i == 0
+            [bg_, fg_] = banner_style(level);
+            set(banner, 'String', allStr, 'BackgroundColor', bg_, 'ForegroundColor', fg_);
+        else
+            [bg_, fg_, head_] = banner_style(V(i).level);
+            if strcmp(V(i).level, 'none'), txt = {head_; sprintf('%s: no cloud (uniform part)', names{i})};
+            else, txt = [{head_}, V(i).lines(1)]; end
+            set(banner, 'String', txt, 'BackgroundColor', bg_, 'ForegroundColor', fg_);
+        end
+        set_view(ax, 'FIT');
+    end
 end
 
 
@@ -212,18 +241,19 @@ function [bg, fg, head] = banner_style(level)
 end
 
 
-function draw_box(ax, X, col, ls, lw, name)
+function hl = draw_box(ax, X, col, ls, lw, name)
     lo = min(X); hi = max(X);
     c = [lo(1) lo(2) lo(3); hi(1) lo(2) lo(3); hi(1) hi(2) lo(3); lo(1) hi(2) lo(3); ...
          lo(1) lo(2) hi(3); hi(1) lo(2) hi(3); hi(1) hi(2) hi(3); lo(1) hi(2) hi(3)];
     E = [1 2; 2 3; 3 4; 4 1; 5 6; 6 7; 7 8; 8 5; 1 5; 2 6; 3 7; 4 8];
     xs = [c(E(:, 1), 1) c(E(:, 2), 1) nan(12, 1)]'; ys = [c(E(:, 1), 2) c(E(:, 2), 2) nan(12, 1)]';
     zs = [c(E(:, 1), 3) c(E(:, 2), 3) nan(12, 1)]';
-    plot3(ax, xs(:), ys(:), zs(:), 'Color', col, 'LineStyle', ls, 'LineWidth', lw, 'DisplayName', name);
+    hl = plot3(ax, xs(:), ys(:), zs(:), 'Color', col, 'LineStyle', ls, 'LineWidth', lw, 'DisplayName', name);
 end
 
 
 function set_view(ax, name)
+    cur = campos(ax) - camtarget(ax); cur_up = camup(ax);
     camva(ax, 'auto'); camtarget(ax, 'auto'); campos(ax, 'auto'); camup(ax, 'auto');
     axis(ax, 'auto'); axis(ax, 'equal'); axis(ax, 'tight');
     set(ax, 'Projection', 'orthographic');
@@ -234,6 +264,7 @@ function set_view(ax, name)
         case '-Y',  dirn = [ 0 -1  0]; up = [0 0 1];
         case '+Z',  dirn = [ 0  0  1]; up = [0 1 0];
         case '-Z',  dirn = [ 0  0 -1]; up = [0 1 0];
+        case 'FIT', dirn = cur / max(norm(cur), eps); up = cur_up;
         otherwise,  dirn = [-1 -1  1] / sqrt(3); up = [0 0 1];
     end
     tgt = mean([ax.XLim; ax.YLim; ax.ZLim], 2)';
