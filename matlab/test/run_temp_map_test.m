@@ -47,12 +47,19 @@ check(isscalar(Qg) && size(Qg.cloud_xyz, 2) == 3 && isequal(Qg.grid_xyz, R(1).gr
 check(any(strcmp(Vg.level, {'warn', 'bad'})) && Vg.cover < 0.9, ...
       'geometry check: fixture mesh overhangs the cloud -> not green');
 close(hg.fig);
-Qm = temp_map_matlab('BDF_FILE', bdf, 'CSV_DIR', here, 'GEOMETRY_ONLY', true, ...
-                     'CSV_LENGTH_UNITS', 'mm', 'BDF_LENGTH_UNITS', 'in');
+Qok = Qg; Qok.grid_xyz = Qg.cloud_xyz; Qok.faces = [];        % mesh == cloud footprint
+[Vok, hok] = temp_geom_check(Qok, 'Visible', 'off');
+check(strcmp(Vok.level, 'ok') && Vok.cover > 0.99, 'geometry check: matching footprints are green');
+close(hok.fig);
+Qm = Qok; Qm.cloud_xyz = Qok.cloud_xyz * 25.4;                 % cloud read in mm as if inches
 [Vm, hm] = temp_geom_check(Qm, 'Visible', 'off');
 check(strcmp(Vm.level, 'bad') && contains(Vm.lines{1}, '25.4'), ...
-      'geometry check: mm-vs-in mismatch is red and names the 25.4 factor');
+      'geometry check: 25.4x cloud is red and names the mm / in factor');
 close(hm.fig);
+Qs = Qok; Qs.cloud_xyz = Qok.cloud_xyz(:, [2 1 3]);            % X and Y swapped
+[Vs, hs] = temp_geom_check(Qs, 'Visible', 'off');
+check(~strcmp(Vs.level, 'ok') && contains(Vs.lines{1}, 'swapped'), 'geometry check: swapped axes are called out');
+close(hs.fig);
 
 % --- cached grids -----------------------------------------------------------
 G = temp_map_matlab('BDF_FILE', bdf, 'READ_ONLY', true);

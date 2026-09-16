@@ -144,6 +144,7 @@ function v = verdict(q, lu)
 
     % --- likely causes ---------------------------------------------------------
     causes = {};
+    units_bad = false;
     live = em > tiny & ec > tiny;
     emx = max(em, tiny); ecx = max(ec, tiny);
     if any(live)
@@ -153,11 +154,13 @@ function v = verdict(q, lu)
             if abs(log(med / known{k, 1})) < log(1.12) || abs(log(med * known{k, 1})) < log(1.12)
                 causes{end+1} = sprintf('cloud extents are ~%.4g x the mesh -- a %s factor (%g): check the CSV vs model length units', ...
                                         med, known{k, 2}, known{k, 1}); %#ok<AGROW>
+                units_bad = true;
                 break
             end
         end
         if isempty(causes) && (med > 2.5 || med < 0.4)
             causes{end+1} = sprintf('cloud extents are ~%.3g x the mesh -- length units or a scaled export?', med);
+            units_bad = true;
         end
     end
     % axis permutation: does the cloud's shape match the mesh better with axes swapped?
@@ -169,7 +172,7 @@ function v = verdict(q, lu)
     end
     [~, best] = min(err);
     ident = find(all(perms3 == [1 2 3], 2));
-    if best ~= ident && err(ident) > log(1.6) && err(best) < 0.5 * err(ident)
+    if best ~= ident && cover < 0.9 && err(ident) > log(1.15) && err(best) < 0.5 * err(ident)
         pb = perms3(best, :);
         causes{end+1} = sprintf('axes look swapped: cloud (%c, %c, %c) matches mesh (X, Y, Z)', ...
                                 ax(pb(1)), ax(pb(2)), ax(pb(3)));
@@ -180,7 +183,11 @@ function v = verdict(q, lu)
                                 d(1), d(2), d(3), lu);
     end
 
-    if cover >= 0.9 && isempty(causes)
+    if units_bad
+        % a cloud 25x too big still "contains" the mesh -- that is still wrong
+        v.level = 'bad';
+        head = sprintf('%s: MISMATCH -- cloud and mesh are different sizes', tag);
+    elseif cover >= 0.9 && isempty(causes)
         v.level = 'ok';
         head = sprintf('%s: OK -- mesh sits inside the cloud (%.0f%% on the tightest axis)', tag, 100 * cover);
     elseif cover >= 0.5
