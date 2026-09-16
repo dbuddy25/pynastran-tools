@@ -50,6 +50,7 @@ close(hg.fig);
 Qok = Qg; Qok.grid_xyz = Qg.cloud_xyz; Qok.faces = [];        % mesh == cloud footprint
 [Vok, hok] = temp_geom_check(Qok, 'Visible', 'off');
 check(strcmp(Vok.level, 'ok') && Vok.cover > 0.99, 'geometry check: matching footprints are green');
+check(isempty(Vok.proposed), 'geometry check: nothing proposed when green');
 close(hok.fig);
 Qm = Qok; Qm.cloud_xyz = Qok.cloud_xyz * 25.4;                 % cloud read in mm as if inches
 [Vm, hm] = temp_geom_check(Qm, 'Visible', 'off');
@@ -59,6 +60,8 @@ close(hm.fig);
 Qs = Qok; Qs.cloud_xyz = Qok.cloud_xyz(:, [2 1 3]);            % X and Y swapped
 [Vs, hs] = temp_geom_check(Qs, 'Visible', 'off');
 check(~strcmp(Vs.level, 'ok') && contains(Vs.lines{1}, 'swapped'), 'geometry check: swapped axes are called out');
+check(~isempty(Vs.proposed) && strcmp(Vs.proposed.axes, 'Y X Z') && all(abs(Vs.proposed.offset) < 1e-9), ...
+      'geometry check: proposes axes ''Y X Z'' for the swapped cloud');
 close(hs.fig);
 
 % --- cached grids -----------------------------------------------------------
@@ -74,6 +77,24 @@ Ru = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')},
                      'BDF_LENGTH_UNITS', 'mm', 'CSV_LENGTH_UNITS', 'in', 'CSV_TEMP_UNITS', 'C');
 check(max(abs(Ru.cloud_xyz - R(1).cloud_xyz * 25.4), [], 'all') < 1e-9, 'cloud x/y/z converted in -> mm');
 check(max(abs(Ru.cloud_T - (R(1).cloud_T + 273.15))) < 1e-9, 'cloud T converted C -> K');
+
+% --- cloud transform (axis map + offset) ---------------------------------------
+Rt = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, ...
+                     'CLOUD_AXES', 'Y X Z', 'SHELL_AVERAGE', false);
+check(max(abs(Rt.cloud_xyz - R(1).cloud_xyz(:, [2 1 3])), [], 'all') < 1e-12, 'CLOUD_AXES ''Y X Z'': cloud x/y swapped');
+xg = Rt.grid_xyz; Tsw = 300 + 10 * xg(:, 2) + 5 * xg(:, 1) - 2 * xg(:, 3);       % the field seen through the swap
+check(max(abs(Rt.grid_T(~Rt.extrap) - Tsw(~Rt.extrap))) < 1e-6, 'CLOUD_AXES: grids see the swapped analytic field');
+Rf2 = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, 'CLOUD_AXES', 'x, -z, y');
+check(max(abs(Rf2.cloud_xyz - [R(1).cloud_xyz(:, 1), -R(1).cloud_xyz(:, 3), R(1).cloud_xyz(:, 2)]), [], 'all') < 1e-12, ...
+      'CLOUD_AXES ''x, -z, y'': sign flip + permutation, loose spelling accepted');
+Ro = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, 'CLOUD_OFFSET', [1 2 3]);
+check(max(abs(Ro.cloud_xyz - (R(1).cloud_xyz + [1 2 3])), [], 'all') < 1e-12, 'CLOUD_OFFSET shifts the cloud');
+try
+    temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, 'CLOUD_AXES', 'X X Z');
+    check(false, 'CLOUD_AXES ''X X Z'' should error');
+catch ME
+    check(strcmp(ME.identifier, 'temp_map_matlab:badAxes'), 'CLOUD_AXES with a repeated axis errors clearly');
+end
 
 outF = fullfile(tempdir, 'temp_map_test_F');
 if exist(outF, 'dir'), rmdir(outF, 's'); end

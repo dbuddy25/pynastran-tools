@@ -139,6 +139,12 @@ C.CSV_HAS_HEADER = true;        % first CSV row is a header
 C.BDF_LENGTH_UNITS = 'in';      % 'in' | 'mm' | 'm'
 C.CSV_LENGTH_UNITS = 'in';      % 'in' | 'mm' | 'm'
 C.CSV_TEMP_UNITS   = 'K';       % 'K' | 'C' | 'F'   (what the CSV's 5th column is)
+%   Rigid re-alignment of the cloud (90-degree rotations, mirrors, datum shift),
+%   applied after the length conversion.  CLOUD_AXES lists the signed CLOUD axis
+%   that becomes each MODEL axis, in model order: 'X Y Z' = as is; 'Y X Z' =
+%   model X <- cloud Y, model Y <- cloud X; 'X -Z Y' = thermal Y-up to model Z-up.
+C.CLOUD_AXES       = 'X Y Z';
+C.CLOUD_OFFSET     = [0 0 0];   % added AFTER the axis map, in MODEL length units
 
 % --- output --------------------------------------------------------------
 C.OUT_DIR        = 'temp_cards';    % created if missing
@@ -444,7 +450,7 @@ function [q, cache] = map_step(file, C, Gi, cache, stage)
 %   caller can keep it for the next step).  q is a slim per-step result.
     stage(0, 'reading CSV ...');
     [t, cxyz, cT] = read_cloud(file, C.CSV_HAS_HEADER);
-    cxyz = cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
+    cxyz = cloud_transform(cxyz * length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS), C);
     cT   = to_kelvin(cT, C.CSV_TEMP_UNITS);
     q = struct('t', t, 'cT', cT, 'gT', [], 'extrap', [], 'nndist', [], 'far', [], ...
                'method', '', 'reused', false, 'cxyz', [], 'srf', []);
@@ -561,7 +567,7 @@ function Q = geometry_only(G, ic, files, C)
     for i = ic
         progress(C, 0.5, sprintf('%sreading %s ...', pfx(G(i).name), shortname(files{i}{1})));
         [~, xyz, T] = read_cloud(files{i}{1}, C.CSV_HAS_HEADER);
-        Q(i).cloud_xyz = xyz * f;
+        Q(i).cloud_xyz = cloud_transform(xyz * f, C);
         Q(i).cloud_T   = to_kelvin(T, C.CSV_TEMP_UNITS);
         Q(i).csv_file  = files{i}{1};
     end
@@ -677,6 +683,10 @@ function validate_config(C)
     end
     length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);   % errors on a bad name
     to_kelvin(0, C.CSV_TEMP_UNITS);
+    axes_matrix(C.CLOUD_AXES);
+    if ~isnumeric(C.CLOUD_OFFSET) || numel(C.CLOUD_OFFSET) ~= 3 || any(~isfinite(C.CLOUD_OFFSET))
+        error('temp_map_matlab:badOffset', 'C.CLOUD_OFFSET must be [dx dy dz] in model length units.');
+    end
     if ~ismember(upper(char(C.OUT_UNITS)), {'K', 'C', 'F'})
         error('temp_map_matlab:badUnits', 'C.OUT_UNITS must be ''K'', ''C'' or ''F''.');
     end
@@ -1395,6 +1405,42 @@ function f = length_factor(from, to)
 end
 
 
+function A = axes_matrix(str)
+%AXES_MATRIX  'Y X Z' / 'X -Z Y' -> 3x3 signed permutation A so that
+%   model_xyz = cloud_xyz * A'  (row vectors).  Row i names the cloud axis
+%   (with sign) that becomes model axis i.
+    tok = regexp(upper(strtrim(char(str))), '([+-]?)([XYZ])', 'tokens');
+    if numel(tok) ~= 3
+        error('temp_map_matlab:badAxes', ...
+              'CLOUD_AXES must name three signed axes, e.g. ''X Y Z'' or ''X -Z Y'' (got ''%s'').', char(str));
+    end
+    idx = zeros(1, 3); sgn = ones(1, 3);
+    for i = 1:3
+        idx(i) = find('XYZ' == tok{i}{2});
+        if strcmp(tok{i}{1}, '-'), sgn(i) = -1; end
+    end
+    if numel(unique(idx)) ~= 3
+        error('temp_map_matlab:badAxes', 'CLOUD_AXES must use each of X, Y, Z once (got ''%s'').', char(str));
+    end
+    A = zeros(3);
+    for i = 1:3, A(i, idx(i)) = sgn(i); end
+end
+
+
+function xyz = cloud_transform(xyz, C)
+%CLOUD_TRANSFORM  Axis map + offset of CLOUD_AXES / CLOUD_OFFSET (model units in and out).
+    A = axes_matrix(C.CLOUD_AXES);
+    if ~isequal(A, eye(3)), xyz = xyz * A'; end
+    off = double(C.CLOUD_OFFSET(:))';
+    if any(off), xyz = xyz + off; end
+end
+
+
+function tf = cloud_transform_active(C)
+    tf = ~isequal(axes_matrix(C.CLOUD_AXES), eye(3)) || any(C.CLOUD_OFFSET(:));
+end
+
+
 function T = to_kelvin(T, units)
     switch upper(char(units))
         case 'K', return
@@ -1792,6 +1838,10 @@ function write_temp_cards(rs, C)
     fprintf(fid, '$ Lengths: BDF in %s, cloud read as %s%s\n', C.BDF_LENGTH_UNITS, C.CSV_LENGTH_UNITS, ...
             ternary(strcmpi(C.BDF_LENGTH_UNITS, C.CSV_LENGTH_UNITS), '', ' (converted)'));
     fprintf(fid, '$ Units  : deg %s\n', units);
+    if cloud_transform_active(C)
+        fprintf(fid, '$ Cloud  : axes %s, offset [%g %g %g] %s (model axis <- cloud axis)\n', ...
+                C.CLOUD_AXES, C.CLOUD_OFFSET, C.BDF_LENGTH_UNITS);
+    end
 
     sidS = sprintf('%*d', w, rs(1).sid);
     if C.WRITE_TEMPD
@@ -2008,6 +2058,8 @@ function write_report(R, RM, S, C)
     end
     rows = {'method', C.METHOD; 'model length units', C.BDF_LENGTH_UNITS; 'cloud length units', C.CSV_LENGTH_UNITS; ...
             'cloud temperature units', C.CSV_TEMP_UNITS; 'output temperature units', units; ...
+            'cloud axes (model <- cloud)', C.CLOUD_AXES; ...
+            'cloud offset', sprintf('[%g %g %g] %s', C.CLOUD_OFFSET, C.BDF_LENGTH_UNITS); ...
             'SID start', sprintf('%d', C.SID_START); 'card format', sprintf('%d', C.FIELD_SIZE); ...
             'output folder', C.OUT_DIR};
     for q = 1:size(rows, 1)

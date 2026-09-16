@@ -17,14 +17,19 @@ function [Vout, hout] = temp_geom_check(Q, varargin)
 %       'MaxPoints'    cloud points drawn per part        (default 2e5)
 %       'Visible'      'on' | 'off'                       (default 'on')
 %       'Tiled'        true = one panel per part instead of one overlay (default false)
+%       'OnApply'      @(axesStr, offset, partIdx): when given, an 'Apply proposed
+%                      transform' button hands the proposal back (the GUI fills its
+%                      Cloud xform fields). Standalone use just prints it.
 %
 %   V(i): .part .level ('ok' | 'warn' | 'bad' | 'none') .cover (0..1)
+%         .proposed  [] or struct .axes ('Y X Z' etc, model axis <- cloud axis)
+%                    .offset [dx dy dz] (model units) that would align the cloud
 %         .lines (cell of messages)      h: .fig .ax .banner .show_part(i)
 %   With several parts a dropdown shows one part at a time (0 = all).
 %
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_GUI.
 
-o = struct('LengthUnits', '', 'CsvUnits', '', 'MaxPoints', 2e5, 'Visible', 'on', 'Tiled', false);
+o = struct('LengthUnits', '', 'CsvUnits', '', 'MaxPoints', 2e5, 'Visible', 'on', 'Tiled', false, 'OnApply', []);
 for k = 1:2:numel(varargin)
     name = char(varargin{k});
     if ~isfield(o, name), error('temp_geom_check:badOption', 'Unknown option "%s".', name); end
@@ -32,7 +37,7 @@ for k = 1:2:numel(varargin)
 end
 
 np = numel(Q);
-V = repmat(struct('part', '', 'level', 'none', 'cover', NaN, 'lines', {{}}), 1, np);
+V = repmat(struct('part', '', 'level', 'none', 'cover', NaN, 'lines', {{}}, 'proposed', []), 1, np);
 for i = 1:np
     V(i) = verdict(Q(i), o.LengthUnits, o.CsvUnits);
 end
@@ -105,7 +110,8 @@ if numel(msg) > 3
            msg(~strcmp(lv(~strcmp(lv, 'none')), 'ok'))];
     msg = msg(1:min(3, end));
 end
-banner = uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.02 0.885 0.96 0.10], ...
+bw = ternary(isempty(o.OnApply), 0.96, 0.76);
+banner = uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.02 0.885 bw 0.10], ...
                    'String', [{head}, msg], 'BackgroundColor', bg, 'ForegroundColor', fgc, ...
                    'FontSize', 10, 'FontWeight', 'bold', 'HorizontalAlignment', 'left');
 labels = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
@@ -119,6 +125,15 @@ uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.70 0.835 0
           'String', 'mesh box: solid black   cloud box: dashed, part colour', ...
           'BackgroundColor', 'w', 'HorizontalAlignment', 'right', 'FontSize', 9);
 allStr = banner.String;
+cur = 0;                                            % 0 = all parts shown
+applyB = [];
+if ~isempty(o.OnApply)
+    applyB = uicontrol(fig, 'Style', 'pushbutton', 'Units', 'normalized', 'Position', [0.80 0.905 0.18 0.06], ...
+                       'String', 'Apply proposed transform', 'FontSize', 10, 'FontWeight', 'bold', ...
+                       'Tooltip', 'Fill the GUI''s Cloud xform fields with the axes / offset proposed for the shown part', ...
+                       'Callback', @(~, ~) apply_proposal());
+    refresh_apply();
+end
 if np > 1
     uicontrol(fig, 'Style', 'pushbutton', 'Units', 'normalized', 'Position', [0.52 0.835 0.09 0.04], ...
               'String', ternary(tiled, 'Overlay', 'Tile parts'), 'FontSize', 10, ...
@@ -142,6 +157,7 @@ if nargout == 0, clear Vout hout; end
 
     function show_part(i)
         % 0 = all parts; otherwise only part i, with its own verdict in the banner
+        cur = i;
         for j = 1:np
             set(HP{j}, 'Visible', ternary(i == 0 || i == j, 'on', 'off'));
         end
@@ -155,10 +171,37 @@ if nargout == 0, clear Vout hout; end
             set(banner, 'String', txt, 'BackgroundColor', bg_, 'ForegroundColor', fg_);
         end
         set_view(ax, 'FIT');
+        refresh_apply();
     end
 
     function view_all(name)
         for a_ = AX, set_view(a_, name); end
+    end
+
+    function i = proposal_part()
+        % the shown part if it has a proposal, else the first part that does
+        i = 0;
+        if cur > 0 && ~isempty(V(cur).proposed), i = cur; return; end
+        if cur == 0
+            k_ = find(arrayfun(@(v_) ~isempty(v_.proposed), V), 1);
+            if ~isempty(k_), i = k_; end
+        end
+    end
+
+    function refresh_apply()
+        if isempty(applyB), return; end
+        i = proposal_part();
+        if i == 0
+            set(applyB, 'Enable', 'off', 'String', 'No transform to propose');
+        else
+            set(applyB, 'Enable', 'on', 'String', sprintf('Apply: axes %s  (%s)', V(i).proposed.axes, names{i}));
+        end
+    end
+
+    function apply_proposal()
+        i = proposal_part();
+        if i == 0, return; end
+        o.OnApply(V(i).proposed.axes, V(i).proposed.offset, i);
     end
 end
 
@@ -166,7 +209,7 @@ end
 % =========================================================================
 function v = verdict(q, lu, cu)
     tag = q.name; if isempty(tag), tag = 'model'; end
-    v = struct('part', tag, 'level', 'none', 'cover', NaN, 'lines', {{}});
+    v = struct('part', tag, 'level', 'none', 'cover', NaN, 'lines', {{}}, 'proposed', []);
     if isempty(q.cloud_xyz), return; end
     M = q.grid_xyz; P = q.cloud_xyz;
     lom = min(M); him = max(M); loc = min(P); hic = max(P);
@@ -242,15 +285,38 @@ function v = verdict(q, lu, cu)
     end
     [~, best] = min(err);
     ident = find(all(perms3 == [1 2 3], 2));
+    pb = [1 2 3]; swapped = false;
     if best ~= ident && cover < 0.9 && err(ident) > log(1.15) && err(best) < 0.5 * err(ident)
-        pb = perms3(best, :);
+        pb = perms3(best, :); swapped = true;
         causes{end+1} = sprintf('axes look swapped: cloud (%c, %c, %c) matches mesh (X, Y, Z)', ...
                                 ax(pb(1)), ax(pb(2)), ax(pb(3)));
     end
     d = 0.5 * (loc + hic) - 0.5 * (lom + him);
-    if cover < 0.9 && norm(d) > 0.5 * norm(emx) && isempty(causes)
+    offset_bad = cover < 0.9 && norm(d) > 0.5 * norm(emx) && ~units_bad;
+    if offset_bad && ~swapped
         causes{end+1} = sprintf('cloud centre is offset from the mesh by [%.4g %.4g %.4g]%s -- different origin / coordinate system?', ...
                                 d(1), d(2), d(3), lu);
+    end
+
+    % --- proposed rigid fix: model axis i <- sign * cloud axis pb(i), then a shift ----
+    if ~units_bad && (swapped || offset_bad)
+        sgn = ones(1, 3);
+        skew = @(x) mean((x - mean(x)).^3) / max(std(x), eps)^3;
+        for i = 1:3
+            sm = skew(M(:, i)); sc = skew(P(:, pb(i)));
+            if abs(sm) > 0.15 && abs(sc) > 0.15 && sign(sm) ~= sign(sc), sgn(i) = -1; end
+        end
+        A = zeros(3); for i = 1:3, A(i, pb(i)) = sgn(i); end
+        off = 0.5 * (lom + him) - 0.5 * (loc + hic) * A';
+        off(abs(off) < 1e-6 * max(scale, eps)) = 0;
+        if isequal(A, eye(3)) && norm(off) <= 0.05 * norm(emx), off(:) = 0; end
+        if ~isequal(A, eye(3)) || any(off)
+            names = arrayfun(@(i) [ternary(sgn(i) < 0, '-', '') ax(pb(i))], 1:3, 'UniformOutput', false);
+            v.proposed = struct('axes', strjoin(names, ' '), 'offset', off);
+            L{end+1} = sprintf('  proposed cloud transform: axes ''%s'' (model <- cloud), offset [%.4g %.4g %.4g]%s%s', ...
+                               v.proposed.axes, off(1), off(2), off(3), lu, ...
+                               ternary(any(sgn < 0), '  (sign flips from shape skew -- best effort)', ''));
+        end
     end
 
     if units_bad

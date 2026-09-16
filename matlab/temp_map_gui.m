@@ -44,7 +44,7 @@ root.Padding = [8 8 8 8];
 % =========================================================================
 Lg = uigridlayout(root, [7 1]);
 Lg.Layout.Row = [1 2]; Lg.Layout.Column = 1;     % full height: the time strip sits under the 3D view only
-Lg.RowHeight = {26, 262, 230, 124, 240, 150, 128};
+Lg.RowHeight = {26, 262, 260, 124, 240, 150, 128};
 Lg.Padding = [0 0 0 0]; Lg.RowSpacing = 6;
 Lg.Scrollable = 'on';                  % small screens: scroll the step column instead of squashing it
 
@@ -107,8 +107,8 @@ uilabel(su, 'Text', '= TEMP card units = isothermal T units', 'FontColor', [0.45
 
 % --- 2  Temperature clouds ---------------------------------------------------
 p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
-g2 = uigridlayout(p2, [4 4]);
-g2.ColumnWidth = {60, '1x', 108, 92}; g2.RowHeight = {22, '1x', 24, 22};
+g2 = uigridlayout(p2, [5 4]);
+g2.ColumnWidth = {60, '1x', 108, 92}; g2.RowHeight = {22, '1x', 24, 24, 22};
 g2.Padding = [8 4 8 4]; g2.RowSpacing = 5;
 
 stepsLbl = put(uilabel(g2, 'Text', 'Time steps (CSV files) -- add a part first', ...
@@ -142,11 +142,32 @@ csvTempDD = uidropdown(cu, 'Items', {'K', 'C', 'F'}, 'Value', 'K', ...
                        'ValueChangedFcn', @(~, ~) save_prefs());
 factorLbl = uilabel(cu, 'Text', '', 'FontColor', [0.45 0.45 0.45]);
 
+put(uilabel(g2, 'Text', 'Cloud xform', 'Tooltip', 'Rigid re-alignment of the cloud (after the unit conversion)'), 4, 1);
+xg = uigridlayout(g2, [1 6]); put(xg, 4, [2 4]);
+xg.ColumnWidth = {150, 64, 40, 54, 54, 54}; xg.Padding = [0 0 0 0]; xg.ColumnSpacing = 4;
+axesDD = uidropdown(xg, ...
+    'Items', {'as is', 'Y-up -> Z-up', 'Z-up -> Y-up', 'swap X / Y', 'swap X / Z', 'swap Y / Z', ...
+              'flip X', 'flip Y', 'flip Z', 'custom ...'}, ...
+    'ItemsData', {'X Y Z', 'X -Z Y', 'X Z -Y', 'Y X Z', 'Z Y X', 'X Z Y', '-X Y Z', 'X -Y Z', 'X Y -Z', 'custom'}, ...
+    'Value', 'X Y Z', ...
+    'Tooltip', sprintf(['Axis map applied to the cloud: which signed CLOUD axis becomes each MODEL axis.\n' ...
+                        'Y-up -> Z-up: thermal model built Y-up, structural model Z-up (model Z <- cloud Y).\n' ...
+                        'Custom: type three signed axes, e.g.  X -Z Y']), ...
+    'ValueChangedFcn', @(~, ~) on_axes_change());
+axesE = uieditfield(xg, 'text', 'Value', 'X Y Z', 'Visible', 'off', 'Placeholder', 'X -Z Y', ...
+                    'Tooltip', 'model X Y Z  <-  these signed cloud axes', ...
+                    'ValueChangedFcn', @(~, ~) save_prefs());
+uilabel(xg, 'Text', 'offset', 'HorizontalAlignment', 'right', ...
+        'Tooltip', 'dx dy dz added to the cloud AFTER the axis map, in model length units');
+dxE = uieditfield(xg, 'numeric', 'Value', 0, 'ValueChangedFcn', @(~, ~) save_prefs(), 'Tooltip', 'dx (model units)');
+dyE = uieditfield(xg, 'numeric', 'Value', 0, 'ValueChangedFcn', @(~, ~) save_prefs(), 'Tooltip', 'dy (model units)');
+dzE = uieditfield(xg, 'numeric', 'Value', 0, 'ValueChangedFcn', @(~, ~) save_prefs(), 'Tooltip', 'dz (model units)');
+
 headerCB = put(uicheckbox(g2, 'Text', 'First row is a header', 'Value', true, ...
                'Tooltip', 'Untick if the CSV starts straight with numbers.', ...
-               'ValueChangedFcn', @(~, ~) save_prefs()), 4, [1 2]);
+               'ValueChangedFcn', @(~, ~) save_prefs()), 5, [1 2]);
 put(uilabel(g2, 'Text', 'columns: time, x, y, z, T', 'FontColor', [0.45 0.45 0.45], ...
-            'HorizontalAlignment', 'right'), 4, [3 4]);
+            'HorizontalAlignment', 'right'), 5, [3 4]);
 
 % --- 3  Map ------------------------------------------------------------------
 p3 = uipanel(Lg, 'Title', '3  Map', 'FontWeight', 'bold');
@@ -571,8 +592,11 @@ update_state();
                                 'CSV_HAS_HEADER',   headerCB.Value, ...
                                 'BDF_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                 'CSV_LENGTH_UNITS', csvUnitsDD.Value, ...
-                                'CSV_TEMP_UNITS',   csvTempDD.Value);
-            V = temp_geom_check(Q, 'LengthUnits', bdfUnitsDD.Value, 'CsvUnits', csvUnitsDD.Value);
+                                'CSV_TEMP_UNITS',   csvTempDD.Value, ...
+                                'CLOUD_AXES',       axes_value(), ...
+                                'CLOUD_OFFSET',     offset_value());
+            V = temp_geom_check(Q, 'LengthUnits', bdfUnitsDD.Value, 'CsvUnits', csvUnitsDD.Value, ...
+                                'OnApply', @on_apply_transform);
         catch ME
             uialert(fig, ME.message, 'Geometry check failed'); status('Geometry check failed.'); return
         end
@@ -654,6 +678,43 @@ update_state();
         status(lines);
     end
 
+    function s = axes_value()
+        if strcmp(axesDD.Value, 'custom'), s = strtrim(axesE.Value); else, s = axesDD.Value; end
+        if isempty(s), s = 'X Y Z'; end
+    end
+
+    function v = offset_value()
+        v = [dxE.Value dyE.Value dzE.Value];
+    end
+
+    function on_axes_change()
+        axesE.Visible = onoff(strcmp(axesDD.Value, 'custom'));
+        save_prefs();
+    end
+
+    function set_transform(axesStr, off)
+        axesStr = axes_canon(axesStr);
+        if any(strcmp(axesDD.ItemsData, axesStr)) && ~strcmp(axesStr, 'custom')
+            axesDD.Value = axesStr;
+        else
+            axesDD.Value = 'custom'; axesE.Value = axesStr;
+        end
+        axesE.Visible = onoff(strcmp(axesDD.Value, 'custom'));
+        off = double(off(:))'; if numel(off) ~= 3, off = [0 0 0]; end
+        dxE.Value = off(1); dyE.Value = off(2); dzE.Value = off(3);
+    end
+
+    function on_apply_transform(axesStr, off, ~)
+        % the proposal was measured on the ALREADY transformed cloud: compose with what is set
+        Ap = axes_from_string(axesStr); Ac = axes_from_string(axes_value());
+        offc = offset_value();
+        set_transform(string_from_axes(Ap * Ac), off(:)' + offc * Ap');
+        save_prefs();
+        status(sprintf('Cloud xform set to axes %s, offset [%g %g %g] -- re-running the geometry check ...', ...
+                       axes_value(), offset_value()));
+        on_geom_check();
+    end
+
     function on_len_units()
         f = LEN_M.(csvUnitsDD.Value) / LEN_M.(bdfUnitsDD.Value);
         if abs(f - 1) < 1e-12
@@ -709,6 +770,8 @@ update_state();
                 'BDF_LENGTH_UNITS',  bdfUnitsDD.Value, ...
                 'CSV_LENGTH_UNITS',  csvUnitsDD.Value, ...
                 'CSV_TEMP_UNITS',    csvTempDD.Value, ...
+                'CLOUD_AXES',        axes_value(), ...
+                'CLOUD_OFFSET',      offset_value(), ...
                 'SID_START',         sidE.Value, ...
                 'METHOD',            methodDD.Value, ...
                 'EXTRAP_WARN_DIST',  warn_dist(), ...
@@ -1033,6 +1096,7 @@ update_state();
                     'outdir', outE.Value, 'outname', nameE.Value, ...
                     'bdf_len', bdfUnitsDD.Value, 'bdf_temp', unitsDD.Value, ...
                     'csv_len', csvUnitsDD.Value, 'csv_temp', csvTempDD.Value, ...
+                    'cloud_axes', axes_value(), 'cloud_offset', offset_value(), ...
                     'method', methodDD.Value, 'field', fieldDD.Value, 'header', headerCB.Value, ...
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
                     'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
@@ -1050,6 +1114,7 @@ update_state();
         unitsDD.Value    = f('bdf_temp', 'K');
         csvUnitsDD.Value = f('csv_len', 'in');
         csvTempDD.Value  = f('csv_temp', 'K');
+        set_transform(f('cloud_axes', 'X Y Z'), f('cloud_offset', [0 0 0]));
         methodDD.Value   = f('method', 'linear');
         fieldDD.Value    = f('field', 8);
         headerCB.Value   = f('header', true);
@@ -1143,6 +1208,8 @@ update_state();
             'BDF_LENGTH_UNITS', bdfUnitsDD.Value, ...
             'CSV_LENGTH_UNITS', csvUnitsDD.Value, ...
             'CSV_TEMP_UNITS',   csvTempDD.Value, ...
+            'CLOUD_AXES',       axes_value(), ...
+            'CLOUD_OFFSET',     offset_value(), ...
             'OUT_UNITS',        unitsDD.Value, ...
             'METHOD',           methodDD.Value, ...
             'EXTRAP_WARN_DIST', warn_dist(), ...
@@ -1207,6 +1274,7 @@ update_state();
         unitsDD.Value     = getpref(PREF, 'bdf_temp', 'K');
         csvUnitsDD.Value  = getpref(PREF, 'csv_len',  'in');
         csvTempDD.Value   = getpref(PREF, 'csv_temp', 'K');
+        set_transform(getpref(PREF, 'cloud_axes', 'X Y Z'), getpref(PREF, 'cloud_offset', [0 0 0]));
         methodDD.Value    = getpref(PREF, 'method',   'linear');
         fieldDD.Value     = getpref(PREF, 'field',    8);
         headerCB.Value    = getpref(PREF, 'header',   true);
@@ -1230,10 +1298,10 @@ update_state();
         P = parts();
         pj = jsonencode(struct('parts', struct('name', P(:, 1), 'bdf', P(:, 2), 'csv_dir', P(:, 3))));
         setpref(PREF, {'parts_json', 'outdir', 'outname', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
-                       'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref', ...
+                       'cloud_axes', 'cloud_offset', 'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref', ...
                        'parallel', 'shell', 'report', 'png', 'style', 'scale', 'cloud', 'surface', 'extrap', 'minmax'}, ...
                       {pj, outE.Value, nameE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
-                       csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value, ...
+                       csvUnitsDD.Value, csvTempDD.Value, axes_value(), offset_value(), methodDD.Value, fieldDD.Value, headerCB.Value, ...
                        caseCB.Value, subE.Value, extraE.Value, trefE.Value, ...
                        parCB.Value, shellCB.Value, reportCB.Value, pngCB.Value, ...
                        styleDD.Value, scaleDD.Value, cloudCB.Value, surfCB.Value, extrapCB.Value, mmCB.Value});
@@ -1242,6 +1310,38 @@ end
 
 
 % =========================================================================
+function A = axes_from_string(str)
+%   'X -Z Y' -> signed permutation, model = cloud * A'.  Mirrors the engine's axes_matrix.
+    tok = regexp(upper(strtrim(char(str))), '([+-]?)([XYZ])', 'tokens');
+    if numel(tok) ~= 3, error('temp_map_gui:badAxes', 'Axis map needs three signed axes, e.g. X -Z Y'); end
+    A = zeros(3);
+    for i = 1:3
+        A(i, find('XYZ' == tok{i}{2})) = 1 - 2 * strcmp(tok{i}{1}, '-');
+    end
+    if any(sum(abs(A), 1) ~= 1), error('temp_map_gui:badAxes', 'Axis map must use each of X, Y, Z once.'); end
+end
+
+
+function s = string_from_axes(A)
+    ax = 'XYZ'; parts = cell(1, 3);
+    for i = 1:3
+        j = find(A(i, :) ~= 0, 1);
+        parts{i} = [repmat('-', 1, A(i, j) < 0) ax(j)];
+    end
+    s = strjoin(parts, ' ');
+end
+
+
+function s = axes_canon(str)
+%   Normalise spacing / case so presets match: 'x,-z, y' -> 'X -Z Y'.
+    try
+        s = string_from_axes(axes_from_string(str));
+    catch
+        s = char(str);
+    end
+end
+
+
 function set_progress(dlg, frac, msg, t0)
 %   Called by the engine between stages; a running triangulation cannot be
 %   interrupted, so Cancel takes effect at the next stage boundary.
