@@ -80,7 +80,9 @@ check(max(abs(Ru.cloud_T - (R(1).cloud_T + 273.15))) < 1e-9, 'cloud T converted 
 
 % --- cloud transform (axis map + offset) ---------------------------------------
 Rt = temp_map_matlab('BDF_FILE', bdf, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false, ...
-                     'CLOUD_AXES', 'Y X Z', 'SHELL_AVERAGE', false);
+                     'CLOUD_AXES', 'Y X Z', 'SHELL_AVERAGE', false, 'SLIVER_FACTOR', []);
+% SLIVER_FACTOR off: the lattice cloud is co-spherical, so the swapped Delaunay differs and the
+% bridging guard would send a grid to nearest-point -- the check is about the transform, not the guard
 check(max(abs(Rt.cloud_xyz - R(1).cloud_xyz(:, [2 1 3])), [], 'all') < 1e-12, 'CLOUD_AXES ''Y X Z'': cloud x/y swapped');
 xg = Rt.grid_xyz; Tsw = 300 + 10 * xg(:, 2) + 5 * xg(:, 1) - 2 * xg(:, 3);       % the field seen through the swap
 check(max(abs(Rt.grid_T(~Rt.extrap) - Tsw(~Rt.extrap))) < 1e-6, 'CLOUD_AXES: grids see the swapped analytic field');
