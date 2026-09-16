@@ -293,26 +293,26 @@ db = uigridlayout(Rg, [1 7]);
 db.ColumnWidth = {200, 90, 100, 110, 110, 190, '1x'};
 db.Padding = [0 0 0 0]; db.ColumnSpacing = 6;
 styleDD = put(uidropdown(db, 'Items', {'Points (grids)', 'Smooth contour (element faces)'}, ...
-              'ItemsData', {'points', 'contour'}, 'Value', 'points', ...
+              'ItemsData', {'points', 'contour'}, 'Value', 'contour', ...
               'Tooltip', 'Contour paints the element faces read from the BDF with the temperature interpolated across each face.', ...
-              'ValueChangedFcn', @(~, ~) replot()), 1, 1);
-cloudCB = put(uicheckbox(db, 'Text', 'Cloud pts', 'Value', true, ...
-              'ValueChangedFcn', @(src, ~) toggle('cloud', src.Value)), 1, 2);
-surfCB = put(uicheckbox(db, 'Text', 'Cloud skin', 'Value', true, ...
+              'ValueChangedFcn', @(~, ~) display_changed()), 1, 1);
+cloudCB = put(uicheckbox(db, 'Text', 'Cloud pts', 'Value', false, ...
+              'ValueChangedFcn', @(src, ~) display_toggle('cloud', src.Value)), 1, 2);
+surfCB = put(uicheckbox(db, 'Text', 'Cloud skin', 'Value', false, ...
              'Tooltip', 'Translucent alpha-shape surface of the cloud: where the thermal volume ends.', ...
-             'ValueChangedFcn', @(src, ~) toggle('surface', src.Value)), 1, 3);
-extrapCB = put(uicheckbox(db, 'Text', 'Ring outside', 'Value', true, ...
+             'ValueChangedFcn', @(src, ~) display_toggle('surface', src.Value)), 1, 3);
+extrapCB = put(uicheckbox(db, 'Text', 'Ring outside', 'Value', false, ...
                'Tooltip', 'Black rings on grids outside the cloud hull or beyond the warn distance.', ...
-               'ValueChangedFcn', @(src, ~) toggle('extrap', src.Value)), 1, 4);
-mmCB = put(uicheckbox(db, 'Text', 'Min / max', 'Value', true, ...
+               'ValueChangedFcn', @(src, ~) display_toggle('extrap', src.Value)), 1, 4);
+mmCB = put(uicheckbox(db, 'Text', 'Min / max', 'Value', false, ...
            'Tooltip', 'Star + label on the hottest and coldest grid.', ...
-           'ValueChangedFcn', @(src, ~) toggle('minmax', src.Value)), 1, 5);
+           'ValueChangedFcn', @(src, ~) display_toggle('minmax', src.Value)), 1, 5);
 scaleDD = put(uidropdown(db, ...
               'Items', {'Scale: this view', 'Scale: all steps', 'Scale: all parts', 'Scale: all steps + parts'}, ...
               'ItemsData', {'view', 'steps', 'parts', 'global'}, 'Value', 'view', ...
               'Tooltip', ['Colour-bar limits. "all steps" = min/max of the shown part over every time step; ' ...
                           '"all parts" = min/max of the whole assembly at this step; "all steps + parts" = one fixed scale.'], ...
-              'ValueChangedFcn', @(~, ~) replot()), 1, 6);
+              'ValueChangedFcn', @(~, ~) display_changed()), 1, 6);
 
 % --- row 4: plot title as a label: a 3D uiaxes title drifts above the axes box
 %     with the camera framing and gets hidden under the toolbar ------------------------
@@ -846,16 +846,17 @@ update_state();
         title(ax, '');
     end
 
-    function a = png_plot_args()
+    function a = png_plot_args(with_camera)
+        if nargin < 1, with_camera = true; end
         % the PNGs show the whole assembly, so a fixed scale spans every step and part
         a = {'Style', styleDD.Value, 'ShowCloud', cloudCB.Value, 'ShowSurface', surfCB.Value, ...
              'ShowMinMax', mmCB.Value, 'ShowExtrap', extrapCB.Value};
-        if any(strcmp(scaleDD.Value, {'steps', 'global'}))
+        if ~isempty(RM) && any(strcmp(scaleDD.Value, {'steps', 'global'}))
             lims = conv_out([min(arrayfun(@(r) min(r.grid_T), RM)) max(arrayfun(@(r) max(r.grid_T), RM))], unitsDD.Value);
             if lims(1) == lims(2), lims = lims + [-0.5 0.5]; end
             a = [a, {'CLim', lims}];
         end
-        if ~isempty(H) && isvalid(ax)
+        if with_camera && ~isempty(H) && isvalid(ax)
             a = [a, {'Camera', struct('pos', campos(ax), 'target', camtarget(ax), 'up', camup(ax), 'va', camva(ax))}];
         end
     end
@@ -957,6 +958,16 @@ update_state();
         H.set_view(name);
     end
 
+    function display_changed()
+        save_prefs();
+        replot();
+    end
+
+    function display_toggle(what, on)
+        save_prefs();
+        toggle(what, on);
+    end
+
     function toggle(what, on)
         if isempty(H), return; end
         if strcmp(what, 'extrap'), r = current(); on = on && any(r.extrap | r.far); end
@@ -989,7 +1000,8 @@ update_state();
                     'sid_start', sidE.Value, 'warn_dist', warnE.Value, 'tempd', tempdCB.Value, ...
                     'case', caseCB.Value, 'subtitle', subE.Value, 'extra', extraE.Value, 'tref', trefE.Value, ...
                     'parallel', parCB.Value, 'shell', shellCB.Value, 'report', reportCB.Value, 'png', pngCB.Value, ...
-                    'style', styleDD.Value, 'scale', scaleDD.Value);
+                    'style', styleDD.Value, 'scale', scaleDD.Value, ...
+                    'cloud', cloudCB.Value, 'surface', surfCB.Value, 'extrap', extrapCB.Value, 'minmax', mmCB.Value);
     end
 
     function apply_setup(st)
@@ -1015,7 +1027,11 @@ update_state();
         shellCB.Value    = f('shell', true);
         reportCB.Value   = f('report', true);
         pngCB.Value      = f('png', false);
-        styleDD.Value    = f('style', 'points');
+        styleDD.Value    = f('style', 'contour');
+        cloudCB.Value    = f('cloud', false);
+        surfCB.Value     = f('surface', false);
+        extrapCB.Value   = f('extrap', false);
+        mmCB.Value       = f('minmax', false);
         scaleDD.Value    = f('scale', 'view');
         partsT.Data      = P;
         invalidate_grids();
@@ -1106,6 +1122,7 @@ update_state();
             'TREF',             tref_value(), ...
             'REPORT',           reportCB.Value, ...
             'SAVE_PNG',         pngCB.Value, ...
+            'PNG_PLOT_ARGS',    png_plot_args(false), ...
             'WRITE',            true}];
         L = {};
         L{end+1} = sprintf('%% %s -- headless TEMP mapping run exported from temp_map_gui  (%s)', f, datestr(now, 'yyyy-mm-dd HH:MM'));
@@ -1164,6 +1181,12 @@ update_state();
         shellCB.Value     = getpref(PREF, 'shell',    true);
         reportCB.Value    = getpref(PREF, 'report',   true);
         pngCB.Value       = getpref(PREF, 'png',      false);
+        styleDD.Value     = getpref(PREF, 'style',    'contour');
+        scaleDD.Value     = getpref(PREF, 'scale',    'view');
+        cloudCB.Value     = getpref(PREF, 'cloud',    false);
+        surfCB.Value      = getpref(PREF, 'surface',  false);
+        extrapCB.Value    = getpref(PREF, 'extrap',   false);
+        mmCB.Value        = getpref(PREF, 'minmax',   false);
     end
 
     function save_prefs()
@@ -1171,11 +1194,12 @@ update_state();
         pj = jsonencode(struct('parts', struct('name', P(:, 1), 'bdf', P(:, 2), 'csv_dir', P(:, 3))));
         setpref(PREF, {'parts_json', 'outdir', 'outname', 'bdf_len', 'bdf_temp', 'csv_len', 'csv_temp', ...
                        'method', 'field', 'header', 'case', 'subtitle', 'extra', 'tref', ...
-                       'parallel', 'shell', 'report', 'png'}, ...
+                       'parallel', 'shell', 'report', 'png', 'style', 'scale', 'cloud', 'surface', 'extrap', 'minmax'}, ...
                       {pj, outE.Value, nameE.Value, bdfUnitsDD.Value, unitsDD.Value, ...
                        csvUnitsDD.Value, csvTempDD.Value, methodDD.Value, fieldDD.Value, headerCB.Value, ...
                        caseCB.Value, subE.Value, extraE.Value, trefE.Value, ...
-                       parCB.Value, shellCB.Value, reportCB.Value, pngCB.Value});
+                       parCB.Value, shellCB.Value, reportCB.Value, pngCB.Value, ...
+                       styleDD.Value, scaleDD.Value, cloudCB.Value, surfCB.Value, extrapCB.Value, mmCB.Value});
     end
 end
 
