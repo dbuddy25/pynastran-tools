@@ -108,11 +108,16 @@ uilabel(su, 'Text', '= TEMP card units = isothermal T units', 'FontColor', [0.45
 % --- 2  Temperature clouds ---------------------------------------------------
 p2 = uipanel(Lg, 'Title', '2  Temp clouds', 'FontWeight', 'bold');
 g2 = uigridlayout(p2, [4 4]);
-g2.ColumnWidth = {60, '1x', 64, 92}; g2.RowHeight = {22, '1x', 24, 22};
+g2.ColumnWidth = {60, '1x', 108, 92}; g2.RowHeight = {22, '1x', 24, 22};
 g2.Padding = [8 4 8 4]; g2.RowSpacing = 5;
 
 stepsLbl = put(uilabel(g2, 'Text', 'Time steps (CSV files) -- add a part first', ...
-               'FontColor', [0.45 0.45 0.45]), 1, [1 3]);
+               'FontColor', [0.45 0.45 0.45]), 1, [1 2]);
+geomB = put(uibutton(g2, 'Text', 'Geometry check', 'Enable', 'off', ...
+             'Tooltip', sprintf(['Overlay the mesh and the first cloud of every part in one 3D view, with both\n' ...
+                                 'bounding boxes and a GREEN / RED verdict: are the length units, orientation and\n' ...
+                                 'origin consistent?  Reads the BDFs if needed; maps nothing.']), ...
+             'ButtonPushedFcn', @on_geom_check), 1, 3);
 put(uibutton(g2, 'Text', 'Cloud check', ...
              'Tooltip', sprintf(['Before meshing: is there a gradient worth modelling?  Reads the clouds alone (no BDF)\n' ...
                                  'and splits the temperature variation into THROUGH-THICKNESS vs IN-PLANE, with a\n' ...
@@ -558,6 +563,37 @@ update_state();
         update_state();
     end
 
+    function on_geom_check(~, ~)
+        if isempty(G) && ~on_read_bdf(), return; end
+        status('Geometry check: reading the first cloud of every part ...'); drawnow
+        try
+            Q = temp_map_matlab('PARTS', parts(), 'GRIDS', G, 'GEOMETRY_ONLY', true, ...
+                                'CSV_HAS_HEADER',   headerCB.Value, ...
+                                'BDF_LENGTH_UNITS', bdfUnitsDD.Value, ...
+                                'CSV_LENGTH_UNITS', csvUnitsDD.Value, ...
+                                'CSV_TEMP_UNITS',   csvTempDD.Value);
+            V = temp_geom_check(Q, 'LengthUnits', bdfUnitsDD.Value);
+        catch ME
+            uialert(fig, ME.message, 'Geometry check failed'); status('Geometry check failed.'); return
+        end
+        lv = {V.level};
+        lines = {'Geometry check (mesh vs first cloud, model length units):'};
+        for i = 1:numel(V)
+            if ~strcmp(V(i).level, 'none'), lines = [lines, V(i).lines]; end     %#ok<AGROW>
+        end
+        status(lines);
+        if any(strcmp(lv, 'bad'))
+            banner.Text = 'GEOMETRY MISMATCH  --  fix length units / orientation before mapping (see the check window)';
+            banner.BackgroundColor = [0.98 0.80 0.80]; banner.FontColor = [0.65 0.05 0.05];
+        elseif any(strcmp(lv, 'warn'))
+            banner.Text = 'GEOMETRY: partial overlap  --  check the overlay before mapping';
+            banner.BackgroundColor = [1.00 0.93 0.72]; banner.FontColor = [0.55 0.35 0.00];
+        elseif any(strcmp(lv, 'ok'))
+            banner.Text = 'GEOMETRY OK  --  mesh sits inside the cloud: units, orientation and origin agree';
+            banner.BackgroundColor = [0.80 0.94 0.80]; banner.FontColor = [0.05 0.40 0.10];
+        end
+    end
+
     function on_cloud_check(~, ~)
         P = parts();
         rows = find(cellfun(@(x) strcmp(source_kind(x), 'cloud'), P(:, 3)))';
@@ -635,6 +671,7 @@ update_state();
         have_bdf = ~isempty(P) && all(cellfun(@(f) exist(f, 'file') == 2, P(:, 2)));
         nsel = numel(cellstr(csvLB.Value));
         readB.Enable = onoff(have_bdf);
+        geomB.Enable = onoff(have_bdf && ~isempty(csvLB.Items));
         mapB.Enable  = onoff(have_bdf && nsel > 0);
         wselB.Enable = onoff(~isempty(R));
         wallB.Enable = onoff(~isempty(R));

@@ -39,6 +39,21 @@ check(contains(R(2).method, '(reused)') && ~contains(R(1).method, '(reused)'), .
       'second CSV with identical points reused the first mapping');
 check(isequal(R(1).far, R(1).grid_ids == 999), 'EXTRAP_WARN_DIST flags only grid 999 as far');
 
+% --- geometry check (mesh vs cloud overlay) ------------------------------------
+Qg = temp_map_matlab('BDF_FILE', bdf, 'CSV_DIR', here, 'GEOMETRY_ONLY', true);
+check(isscalar(Qg) && size(Qg.cloud_xyz, 2) == 3 && isequal(Qg.grid_xyz, R(1).grid_xyz) && ...
+      contains(Qg.csv_file, 't000.csv'), 'GEOMETRY_ONLY: grids + first cloud, no mapping');
+[Vg, hg] = temp_geom_check(Qg, 'Visible', 'off', 'LengthUnits', 'in');
+check(any(strcmp(Vg.level, {'warn', 'bad'})) && Vg.cover < 0.9, ...
+      'geometry check: fixture mesh overhangs the cloud -> not green');
+close(hg.fig);
+Qm = temp_map_matlab('BDF_FILE', bdf, 'CSV_DIR', here, 'GEOMETRY_ONLY', true, ...
+                     'CSV_LENGTH_UNITS', 'mm', 'BDF_LENGTH_UNITS', 'in');
+[Vm, hm] = temp_geom_check(Qm, 'Visible', 'off');
+check(strcmp(Vm.level, 'bad') && contains(Vm.lines{1}, '25.4'), ...
+      'geometry check: mm-vs-in mismatch is red and names the 25.4 factor');
+close(hm.fig);
+
 % --- cached grids -----------------------------------------------------------
 G = temp_map_matlab('BDF_FILE', bdf, 'READ_ONLY', true);
 Rg = temp_map_matlab('GRIDS', G, 'CSV_FILES', {fullfile(here, 't000.csv')}, 'WRITE', false);

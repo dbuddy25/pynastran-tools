@@ -209,6 +209,8 @@ C.GRIDS          = [];          % grids struct from a previous READ_ONLY call:
                                 % skips re-parsing the BDF (1M grids = seconds saved)
 C.READ_ONLY      = false;       % true = parse the BDF and return the grids struct only:
                                 %   G = temp_map_matlab('BDF_FILE', f, 'READ_ONLY', true)
+C.GEOMETRY_ONLY  = false;       % true = grids + the FIRST cloud of every part, in model
+                                % length units, no mapping -- feed to temp_geom_check
 
 % =========================================================================
 %                               MACHINERY
@@ -314,6 +316,13 @@ if isempty(C.RESULTS)
         else
             steps = arrayfun(@(t) sprintf('t%g', t), times, 'UniformOutput', false);
         end
+    end
+
+    if C.GEOMETRY_ONLY
+        R = geometry_only(G, ic, files, C);
+        S = []; RM = [];
+        progress(C, 1, 'Done.');
+        return
     end
 
     % ---- map every part at every step ------------------------------------------------
@@ -538,6 +547,24 @@ end
 function s = pfx(name)
 %PFX  'part / ' prefix for messages, or '' for the single-part case.
     if isempty(name), s = ''; else, s = [char(name) ' / ']; end
+end
+
+
+% =========================================================================
+function Q = geometry_only(G, ic, files, C)
+%GEOMETRY_ONLY  Grids + the first cloud of every cloud part, in model length
+%   units, for TEMP_GEOM_CHECK.  Uniform parts come back with an empty cloud.
+    n = numel(G);
+    Q = struct('name', {G.name}, 'bdf_file', {G.bdf_file}, 'grid_xyz', {G.xyz}, 'faces', {G.faces}, ...
+               'cloud_xyz', repmat({[]}, 1, n), 'cloud_T', repmat({[]}, 1, n), 'csv_file', repmat({''}, 1, n));
+    f = length_factor(C.CSV_LENGTH_UNITS, C.BDF_LENGTH_UNITS);
+    for i = ic
+        progress(C, 0.5, sprintf('%sreading %s ...', pfx(G(i).name), shortname(files{i}{1})));
+        [~, xyz, T] = read_cloud(files{i}{1}, C.CSV_HAS_HEADER);
+        Q(i).cloud_xyz = xyz * f;
+        Q(i).cloud_T   = to_kelvin(T, C.CSV_TEMP_UNITS);
+        Q(i).csv_file  = files{i}{1};
+    end
 end
 
 
