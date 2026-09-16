@@ -572,7 +572,7 @@ update_state();
                                 'BDF_LENGTH_UNITS', bdfUnitsDD.Value, ...
                                 'CSV_LENGTH_UNITS', csvUnitsDD.Value, ...
                                 'CSV_TEMP_UNITS',   csvTempDD.Value);
-            V = temp_geom_check(Q, 'LengthUnits', bdfUnitsDD.Value);
+            V = temp_geom_check(Q, 'LengthUnits', bdfUnitsDD.Value, 'CsvUnits', csvUnitsDD.Value);
         catch ME
             uialert(fig, ME.message, 'Geometry check failed'); status('Geometry check failed.'); return
         end

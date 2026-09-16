@@ -11,9 +11,12 @@ function [Vout, hout] = temp_geom_check(Q, varargin)
 %   axes, offset origin) spelled out.
 %
 %   Options (name/value):
-%       'LengthUnits'  label for the axes                (default '')
+%       'LengthUnits'  model length units, axes label     (default '')
+%       'CsvUnits'     length units the CSV was READ as; with LengthUnits the
+%                      verdict names the unit the CSV is probably really in
 %       'MaxPoints'    cloud points drawn per part        (default 2e5)
 %       'Visible'      'on' | 'off'                       (default 'on')
+%       'Tiled'        true = one panel per part instead of one overlay (default false)
 %
 %   V(i): .part .level ('ok' | 'warn' | 'bad' | 'none') .cover (0..1)
 %         .lines (cell of messages)      h: .fig .ax .banner .show_part(i)
@@ -21,7 +24,7 @@ function [Vout, hout] = temp_geom_check(Q, varargin)
 %
 %   See also TEMP_MAP_MATLAB, TEMP_MAP_GUI.
 
-o = struct('LengthUnits', '', 'MaxPoints', 2e5, 'Visible', 'on');
+o = struct('LengthUnits', '', 'CsvUnits', '', 'MaxPoints', 2e5, 'Visible', 'on', 'Tiled', false);
 for k = 1:2:numel(varargin)
     name = char(varargin{k});
     if ~isfield(o, name), error('temp_geom_check:badOption', 'Unknown option "%s".', name); end
@@ -31,84 +34,102 @@ end
 np = numel(Q);
 V = repmat(struct('part', '', 'level', 'none', 'cover', NaN, 'lines', {{}}), 1, np);
 for i = 1:np
-    V(i) = verdict(Q(i), o.LengthUnits);
+    V(i) = verdict(Q(i), o.LengthUnits, o.CsvUnits);
 end
 
-% ---- figure ---------------------------------------------------------------
-fig = figure('Name', 'Geometry check: mesh vs temperature cloud', 'NumberTitle', 'off', ...
-             'Color', 'w', 'Visible', o.Visible, 'Position', [80 80 1000 760]);
-ax = axes('Parent', fig, 'Position', [0.07 0.06 0.86 0.74]);
-hold(ax, 'on');
-cols = lines(max(np, 1));
-HP = cell(1, np);                                  % graphics per part, for the filter
-for i = 1:np
-    q = Q(i); col = cols(i, :);
-    tag = q.name; if isempty(tag), tag = 'model'; end
-    hp = gobjects(0);
-    if ~isempty(q.faces)
-        big = size(q.faces, 1) > 2e5;
-        hp(end+1) = patch('Parent', ax, 'Faces', q.faces, 'Vertices', q.grid_xyz, ...
-              'FaceColor', [0.82 0.82 0.82], 'FaceAlpha', 0.55, ...
-              'EdgeColor', ternary(big, 'none', [0.35 0.35 0.35]), 'EdgeAlpha', 0.35, ...
-              'DisplayName', ['mesh: ' tag]);
-    else
-        gs = thin(size(q.grid_xyz, 1), o.MaxPoints);
-        hp(end+1) = scatter3(ax, q.grid_xyz(gs, 1), q.grid_xyz(gs, 2), q.grid_xyz(gs, 3), 10, [0.4 0.4 0.4], ...
-                 'filled', 'DisplayName', ['grids: ' tag]);
-    end
-    hp(end+1) = draw_box(ax, q.grid_xyz, [0.15 0.15 0.15], '-', 1.6, ['mesh box: ' tag]);
-    if ~isempty(q.cloud_xyz)
-        cs = thin(size(q.cloud_xyz, 1), o.MaxPoints);
-        hp(end+1) = scatter3(ax, q.cloud_xyz(cs, 1), q.cloud_xyz(cs, 2), q.cloud_xyz(cs, 3), 6, col, '.', ...
-                 'DisplayName', sprintf('cloud: %s  (%s)', tag, shortname(q.csv_file)));
-        hp(end+1) = draw_box(ax, q.cloud_xyz, col, '--', 1.8, ['cloud box: ' tag]);
-    end
-    HP{i} = hp;
-end
-hold(ax, 'off');
-axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');
-u = ''; if ~isempty(o.LengthUnits), u = sprintf(' [%s]', o.LengthUnits); end
-xlabel(ax, ['X' u]); ylabel(ax, ['Y' u]); zlabel(ax, ['Z' u]);
-legend(ax, 'Location', 'northeastoutside', 'Interpreter', 'none');
-set_view(ax, 'ISO');
-try
-    ax.Interactions = [rotateInteraction zoomInteraction panInteraction];
-catch
-    try rotate3d(ax, 'on'); catch, end
-end
-
-% ---- banner + buttons -------------------------------------------------------
+% ---- overall verdict --------------------------------------------------------
 lv = {V.level};
 if any(strcmp(lv, 'bad')),      level = 'bad';
 elseif any(strcmp(lv, 'warn')), level = 'warn';
 elseif any(strcmp(lv, 'ok')),   level = 'ok';
 else,                           level = 'none';
 end
+names = arrayfun(@(i) ternary(isempty(Q(i).name), 'model', Q(i).name), 1:np, 'UniformOutput', false);
+cols = lines(max(np, 1));
+u = ''; if ~isempty(o.LengthUnits), u = sprintf(' [%s]', o.LengthUnits); end
+tiled = o.Tiled && np > 1;
+
+% ---- figure ---------------------------------------------------------------
+fig = figure('Name', 'Geometry check: mesh vs temperature cloud', 'NumberTitle', 'off', ...
+             'Color', 'w', 'Visible', o.Visible, 'Position', [80 80 1000 760]);
+HP = cell(1, np);                                  % graphics per part, for the filter
+if tiled
+    % one panel per part, its own verdict as a coloured title
+    tl = tiledlayout(fig, 'flow', 'Padding', 'compact', 'TileSpacing', 'compact');
+    tl.OuterPosition = [0 0 1 0.82];
+    AX = gobjects(1, np);
+    for i = 1:np
+        AX(i) = nexttile(tl);
+        hold(AX(i), 'on');
+        HP{i} = draw_part(AX(i), Q(i), cols(i, :), o);
+        hold(AX(i), 'off');
+        dress(AX(i), u);
+        [bgi, fgi] = banner_style(V(i).level);
+        if isempty(V(i).lines), ttl = {sprintf('%s: no cloud (uniform part)', names{i})};
+        else, ttl = strsplit(V(i).lines{1}, '.  '); end      % headline, then the causes
+        title(AX(i), ttl, 'Color', fgi, 'BackgroundColor', bgi, 'Interpreter', 'none', ...
+              'FontSize', 9, 'FontWeight', 'bold');
+        set_view(AX(i), 'ISO');
+    end
+else
+    AX = axes('Parent', fig, 'Position', [0.07 0.06 0.86 0.74]);
+    hold(AX, 'on');
+    for i = 1:np
+        HP{i} = draw_part(AX, Q(i), cols(i, :), o);
+    end
+    hold(AX, 'off');
+    dress(AX, u);
+    legend(AX, 'Location', 'northeastoutside', 'Interpreter', 'none');
+    set_view(AX, 'ISO');
+end
+for a = AX
+    try
+        a.Interactions = [rotateInteraction zoomInteraction panInteraction];
+    catch
+        try rotate3d(a, 'on'); catch, end
+    end
+end
+ax = AX(1);
+
+% ---- banner + buttons -------------------------------------------------------
 [bg, fgc, head] = banner_style(level);
 msg = {};
 for i = 1:np
-    if ~strcmp(V(i).level, 'none'), msg = [msg, V(i).lines(1)]; end   %#ok<AGROW>  headline per part
+    if ~strcmp(V(i).level, 'none'), msg{end+1} = short_line(V(i)); end   %#ok<AGROW>
 end
 if isempty(msg), msg = {'no cloud parts to compare'}; end
-banner = uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.02 0.895 0.96 0.085], ...
+if numel(msg) > 3
+    nb = nnz(strcmp(lv, 'bad')); nw = nnz(strcmp(lv, 'warn')); nk = nnz(strcmp(lv, 'ok'));
+    msg = [{sprintf('%d parts: %d mismatch, %d check, %d ok -- per-part detail in the command window%s', ...
+                    np, nb, nw, nk, ternary(tiled, ' and above each panel', '; Tile parts shows one panel each'))}, ...
+           msg(~strcmp(lv(~strcmp(lv, 'none')), 'ok'))];
+    msg = msg(1:min(3, end));
+end
+banner = uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.02 0.885 0.96 0.10], ...
                    'String', [{head}, msg], 'BackgroundColor', bg, 'ForegroundColor', fgc, ...
-                   'FontSize', 11, 'FontWeight', 'bold', 'HorizontalAlignment', 'left');
+                   'FontSize', 10, 'FontWeight', 'bold', 'HorizontalAlignment', 'left');
 labels = {'+X', '-X', '+Y', '-Y', '+Z', '-Z', 'ISO'};
 w = 0.055; x0 = 0.07;
 for k = 1:numel(labels)
     uicontrol(fig, 'Style', 'pushbutton', 'String', labels{k}, ...
               'Units', 'normalized', 'Position', [x0 + (k-1)*(w+0.005), 0.835, w, 0.04], ...
-              'Callback', @(~, ~) set_view(ax, labels{k}));
+              'Callback', @(~, ~) view_all(labels{k}));
 end
 uicontrol(fig, 'Style', 'text', 'Units', 'normalized', 'Position', [0.70 0.835 0.28 0.04], ...
           'String', 'mesh box: solid black   cloud box: dashed, part colour', ...
           'BackgroundColor', 'w', 'HorizontalAlignment', 'right', 'FontSize', 9);
-names = arrayfun(@(i) ternary(isempty(Q(i).name), 'model', Q(i).name), 1:np, 'UniformOutput', false);
 allStr = banner.String;
 if np > 1
-    uicontrol(fig, 'Style', 'popupmenu', 'Units', 'normalized', 'Position', [0.52 0.835 0.17 0.04], ...
-              'String', [{'All parts'}, names], 'Value', 1, 'FontSize', 10, ...
-              'Callback', @(src, ~) show_part(src.Value - 1));
+    uicontrol(fig, 'Style', 'pushbutton', 'Units', 'normalized', 'Position', [0.52 0.835 0.09 0.04], ...
+              'String', ternary(tiled, 'Overlay', 'Tile parts'), 'FontSize', 10, ...
+              'Tooltip', 'Open the other layout in a new window', ...
+              'Callback', @(~, ~) temp_geom_check(Q, 'Tiled', ~tiled, 'LengthUnits', o.LengthUnits, 'CsvUnits', o.CsvUnits, ...
+                                                  'MaxPoints', o.MaxPoints));
+    if ~tiled
+        uicontrol(fig, 'Style', 'popupmenu', 'Units', 'normalized', 'Position', [0.615 0.835 0.08 0.04], ...
+                  'String', [{'All parts'}, names], 'Value', 1, 'FontSize', 10, ...
+                  'Callback', @(src, ~) show_part(src.Value - 1));
+    end
 end
 
 for i = 1:np
@@ -116,7 +137,7 @@ for i = 1:np
     fprintf('%s\n', V(i).lines{:});
 end
 Vout = V;
-hout = struct('fig', fig, 'ax', ax, 'banner', banner, 'show_part', @show_part);
+hout = struct('fig', fig, 'ax', AX, 'banner', banner, 'show_part', @show_part);
 if nargout == 0, clear Vout hout; end
 
     function show_part(i)
@@ -135,11 +156,15 @@ if nargout == 0, clear Vout hout; end
         end
         set_view(ax, 'FIT');
     end
+
+    function view_all(name)
+        for a_ = AX, set_view(a_, name); end
+    end
 end
 
 
 % =========================================================================
-function v = verdict(q, lu)
+function v = verdict(q, lu, cu)
     tag = q.name; if isempty(tag), tag = 'model'; end
     v = struct('part', tag, 'level', 'none', 'cover', NaN, 'lines', {{}});
     if isempty(q.cloud_xyz), return; end
@@ -178,9 +203,25 @@ function v = verdict(q, lu)
     emx = max(em, tiny); ecx = max(ec, tiny);
     if any(live)
         med = exp(median(log(ec(live) ./ em(live))));
+        % which unit would the CSV have to be in for the sizes to agree?
+        to_m = struct('in', 0.0254, 'mm', 1e-3, 'm', 1, 'ft', 0.3048, 'cm', 0.01);
+        if ~isempty(cu) && isfield(to_m, lower(strtrim(cu)))
+            cu = lower(strtrim(cu));
+            cands = fieldnames(to_m);
+            for k = 1:numel(cands)
+                c = cands{k};
+                if strcmp(c, cu), continue; end
+                if abs(log(med * to_m.(c) / to_m.(cu))) < log(1.12)
+                    causes{end+1} = sprintf('cloud is %.4g x the mesh: the CSV looks like it is in %s, not %s -- set CSV length units to %s', ...
+                                            med, c, cu, c); %#ok<AGROW>
+                    units_bad = true;
+                    break
+                end
+            end
+        end
         known = {25.4, 'mm / in'; 1000, 'm / mm'; 39.37, 'm / in'; 12, 'ft / in'; 1e6, 'm / um'};
         for k = 1:size(known, 1)
-            if abs(log(med / known{k, 1})) < log(1.12) || abs(log(med * known{k, 1})) < log(1.12)
+            if isempty(causes) && (abs(log(med / known{k, 1})) < log(1.12) || abs(log(med * known{k, 1})) < log(1.12))
                 causes{end+1} = sprintf('cloud extents are ~%.4g x the mesh -- a %s factor (%g): check the CSV vs model length units', ...
                                         med, known{k, 2}, known{k, 1}); %#ok<AGROW>
                 units_bad = true;
@@ -228,6 +269,47 @@ function v = verdict(q, lu)
     end
     if ~isempty(causes), head = [head '.  ' strjoin(causes, '; ')]; end
     v.lines = [{head}, L];
+end
+
+
+function hp = draw_part(ax, q, col, o)
+    tag = q.name; if isempty(tag), tag = 'model'; end
+    hp = gobjects(0);
+    if ~isempty(q.faces)
+        big = size(q.faces, 1) > 2e5;
+        hp(end+1) = patch('Parent', ax, 'Faces', q.faces, 'Vertices', q.grid_xyz, ...
+              'FaceColor', [0.82 0.82 0.82], 'FaceAlpha', 0.55, ...
+              'EdgeColor', ternary(big, 'none', [0.35 0.35 0.35]), 'EdgeAlpha', 0.35, ...
+              'DisplayName', ['mesh: ' tag]);
+    else
+        gs = thin(size(q.grid_xyz, 1), o.MaxPoints);
+        hp(end+1) = scatter3(ax, q.grid_xyz(gs, 1), q.grid_xyz(gs, 2), q.grid_xyz(gs, 3), 10, [0.4 0.4 0.4], ...
+                 'filled', 'DisplayName', ['grids: ' tag]);
+    end
+    hp(end+1) = draw_box(ax, q.grid_xyz, [0.15 0.15 0.15], '-', 1.6, ['mesh box: ' tag]);
+    if ~isempty(q.cloud_xyz)
+        cs = thin(size(q.cloud_xyz, 1), o.MaxPoints);
+        hp(end+1) = scatter3(ax, q.cloud_xyz(cs, 1), q.cloud_xyz(cs, 2), q.cloud_xyz(cs, 3), 6, col, '.', ...
+                 'DisplayName', sprintf('cloud: %s  (%s)', tag, shortname(q.csv_file)));
+        hp(end+1) = draw_box(ax, q.cloud_xyz, col, '--', 1.8, ['cloud box: ' tag]);
+    end
+end
+
+
+function s = short_line(v)
+%SHORT_LINE  One banner line per part: name, verdict word, the first cause.
+    head = v.lines{1};
+    parts = strsplit(head, '.  ');
+    word = regexp(parts{1}, ':\s*(\w+)', 'tokens', 'once');
+    if isempty(word), word = {'?'}; end
+    s = sprintf('%s: %s', v.part, word{1});
+    if numel(parts) > 1, s = [s ' -- ' parts{2}]; end
+end
+
+
+function dress(ax, u)
+    axis(ax, 'equal'); axis(ax, 'vis3d'); grid(ax, 'on'); box(ax, 'on');
+    xlabel(ax, ['X' u]); ylabel(ax, ['Y' u]); zlabel(ax, ['Z' u]);
 end
 
 
